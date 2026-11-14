@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Cartesian2,
   Cartesian3,
@@ -17,29 +17,79 @@ import {
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
-import { loadBundle, type DataBundle, type Site } from './lib/data'
-import { footprintMax, hillshade } from './lib/raster'
+import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
+import { footprintMax, hillshade, loadRaster } from './lib/raster'
 import { DEFAULT_FOOTPRINT, footprintAxes, SLOPE_MAX_DEG } from './lib/requirements'
-import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
+import {
+  earthPosition,
+  ephemerisRange,
+  EPHEMERIS_LAST_SELECTABLE_YEAR,
+  EPHEMERIS_START_YEAR,
+  EPHEMERIS_WINDOW_YEARS,
+  loadEphemerisWindow,
+  sunPosition,
+} from './lib/ephemeris'
+import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
+import { dsnAt } from './lib/dsn'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
+const CSS_PIXELS_PER_CM = 96 / 2.54
+const DEFAULT_TIME_START = Date.UTC(EPHEMERIS_START_YEAR, 0, 1)
+const DEFAULT_TIME_END = Date.UTC(EPHEMERIS_START_YEAR + EPHEMERIS_WINDOW_YEARS, 0, 1)
+const CALENDAR_RANGE: [number, number] = [
+  DEFAULT_TIME_START,
+  Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
+]
 const D2R = Math.PI / 180
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
+const FUTURE_SITE_GROUPS = new Set([
+  'Artemis III candidate regions',
+  'South pole (best-lit spot near feature)',
+])
+
+function formatScaleDistance(meters: number) {
+  if (meters >= 1000) return `${Number((meters / 1000).toPrecision(2))} km`
+  if (meters >= 1) return `${Number(meters.toPrecision(2))} m`
+  if (meters >= 0.01) return `${Number((meters * 100).toPrecision(2))} cm`
+  return `${Number((meters * 1000).toPrecision(2))} mm`
+}
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
+  const radiationLayerRef = useRef<ImageryLayer | null>(null)
+  const radiationOpacityRef = useRef(0.7)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
-  const [savedSites, setSavedSites] = useState<Site[]>([])
-  const [savedSitesError, setSavedSitesError] = useState<string>()
+  const [savedSitesState, setSavedSitesState] = useState<{ sites: Site[]; error?: string }>(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_SITES_KEY)
+      if (!raw) return { sites: [] }
+      const parsed: unknown = JSON.parse(raw)
+      if (!Array.isArray(parsed) || parsed.some((site) =>
+        !site || typeof site.id !== 'string' || typeof site.name !== 'string' ||
+        typeof site.lat !== 'number' || typeof site.lon !== 'number' || site.group !== 'Saved',
+      )) {
+        throw new Error('Saved landing sites have an invalid format.')
+      }
+      return { sites: parsed as Site[] }
+    } catch (error) {
+      console.error('Could not load saved landing sites.', error)
+      return { sites: [], error: 'Saved landing sites could not be loaded from this browser.' }
+    }
+  })
+  const { sites: savedSites, error: savedSitesError } = savedSitesState
+  const [ephemeris, setEphemeris] = useState<DataBundle['ephemeris']>(null)
+  const [timeRange, setTimeRange] = useState<[number, number]>([DEFAULT_TIME_START, DEFAULT_TIME_END])
+  const [ephemerisBusy, setEphemerisBusy] = useState(false)
+  const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
@@ -47,31 +97,21 @@ export default function App() {
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
   const [selected, setSelected] = useState<Site>()
+  const [showSiteMarkers, setShowSiteMarkers] = useState(true)
   const [windowDays, setWindowDays] = useState(30)
   const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
+  const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
+  const [radiationLoading, setRadiationLoading] = useState(true)
+  const [radiationError, setRadiationError] = useState<string>()
+  const [radiationVisible, setRadiationVisible] = useState(false)
+  const [radiationOpacity, setRadiationOpacity] = useState(0.7)
+  const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
+
+  radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
   const [viewResM, setViewResM] = useState<number>()
   const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SAVED_SITES_KEY)
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw)
-        if (!Array.isArray(parsed) || parsed.some((site) =>
-          !site || typeof site.id !== 'string' || typeof site.name !== 'string' ||
-          typeof site.lat !== 'number' || typeof site.lon !== 'number' || site.group !== 'Saved',
-        )) {
-          throw new Error('Saved landing sites have an invalid format.')
-        }
-        setSavedSites(parsed as Site[])
-      }
-    } catch (error) {
-      console.error('Could not load saved landing sites.', error)
-      setSavedSitesError('Saved landing sites could not be loaded from this browser.')
-    }
-  }, [])
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -82,7 +122,9 @@ export default function App() {
       ;(window as unknown as { moon: MoonScene }).moon = scene // handy in the browser console: moon.viewer
       setBundle(data)
       if (data.ephemeris) {
+        setEphemeris(data.ephemeris)
         const [a, b] = ephemerisRange(data.ephemeris)
+        setTimeRange([a, b])
         const t0 = Math.min(Math.max(Date.now(), a), b)
         setT(t0)
         // opening view: the full Moon disc as seen from Earth right now
@@ -97,6 +139,24 @@ export default function App() {
       sceneRef.current?.viewer.destroy()
       sceneRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    loadRadiationMetadata(`${import.meta.env.BASE_URL}radiation/radiation_overlay.json`)
+      .then((metadata) => {
+        if (!cancelled) {
+          setRadiationMetadata(metadata)
+          setRadiationError(undefined)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRadiationError(`Radiation: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        if (!cancelled) setRadiationLoading(false)
+      })
+    return () => { cancelled = true }
   }, [])
 
   // ---- default overlay base: keep a readable, useful stack on first load ----
@@ -117,7 +177,13 @@ export default function App() {
     markers.current.sites = allSites.map((s) =>
       scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
-        point: { pixelSize: 9, color: Color.fromCssColorString('#ff8a3d'), outlineColor: Color.BLACK, outlineWidth: 2, disableDepthTestDistance: 500_000 },
+        point: {
+          pixelSize: 9,
+          color: FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+          disableDepthTestDistance: 500_000,
+        },
         label: {
           text: s.name, font: '13px system-ui', style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3,
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
@@ -126,6 +192,12 @@ export default function App() {
       }),
     )
   }, [ready, bundle, allSites])
+
+  useEffect(() => {
+    markers.current.sites.forEach((marker) => {
+      marker.show = showSiteMarkers
+    })
+  }, [showSiteMarkers, ready, bundle, allSites])
 
   // ---- photo basemap toggles (Moon Trek LOD stack) ----
   useEffect(() => {
@@ -240,10 +312,50 @@ export default function App() {
     return () => clearTimeout(handle)
   }, [ready, scoreFields, score])
 
+  // ---- polar raster radiation overlay ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    const metadata = radiationMetadata
+    if (!ready || !scene || !metadata || !radiationVisible) return
+
+    let cancelled = false
+    let layer: ImageryLayer | null = null
+    setRadiationError(undefined)
+    const meta = radiationLayerMeta(metadata, radiationMode)
+    loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
+      if (cancelled) return
+      layer = new ImageryLayer(asProvider(new FieldImageryProvider({
+        value: (lon, lat) => field.sampleNearest(lon, lat),
+        min: meta.min,
+        max: meta.max,
+        colormap: meta.colormap,
+        boundsRad: field.boundsRad(),
+        maximumLevel: levelForResolution(meta.resolutionM),
+        credit: meta.source,
+      })), { alpha: radiationOpacityRef.current })
+      scene.overlays.add(layer)
+      radiationLayerRef.current = layer
+    }).catch((error: unknown) => {
+      if (!cancelled) setRadiationError(`Unable to load the radiation layer: ${error instanceof Error ? error.message : String(error)}`)
+    })
+
+    return () => {
+      cancelled = true
+      if (layer) {
+        scene.overlays.remove(layer, true)
+        if (radiationLayerRef.current === layer) radiationLayerRef.current = null
+      }
+    }
+  }, [ready, radiationMetadata, radiationMode, radiationVisible])
+
+  useEffect(() => {
+    if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
+  }, [radiationOpacity])
+
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
     const scene = sceneRef.current
-    const eph = bundle?.ephemeris
+    const eph = ephemeris
     if (!ready || !scene || !eph) return
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
@@ -258,18 +370,68 @@ export default function App() {
     }
     m.sun.position = new ConstantPositionProperty(sunShown)
     m.earth!.position = new ConstantPositionProperty(new Cartesian3(...earth))
-  }, [ready, bundle, t])
+  }, [ready, ephemeris, t])
 
   useEffect(() => {
     if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting)
   }, [ready, lighting])
 
   useEffect(() => {
-    if (!playing || !bundle?.ephemeris) return
-    const [, end] = ephemerisRange(bundle.ephemeris)
+    if (!playing || !ephemeris) return
+    const end = timeRange[1]
     const id = setInterval(() => setT((x) => (x + stepMs > end ? x : x + stepMs)), 80)
     return () => clearInterval(id)
-  }, [playing, stepMs, bundle])
+  }, [playing, stepMs, ephemeris, timeRange])
+
+  const inspectCustomPoint = useCallback((lat: number, lon: number) => {
+    const scene = sceneRef.current
+    if (!scene || !bundle) return
+    const viewer = scene.viewer
+    const p = { lat, lon }
+    const dem = bundle.fields.dem_south
+    const elevation = dem?.sample(lon * D2R, lat * D2R)
+    const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
+    const horizon = dem && heightM !== undefined ? computeHorizon(dem, lat, lon) : undefined
+    const values = bundle.layers.map((m) => {
+      const v = bundle.fields[m.id]?.sample(lon * D2R, lat * D2R)
+      return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+    })
+    if (markers.current.custom) viewer.entities.remove(markers.current.custom)
+    markers.current.custom = viewer.entities.add({
+      position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+      point: {
+        pixelSize: 13,
+        color: Color.YELLOW,
+        outlineColor: Color.BLACK,
+        outlineWidth: 3,
+        disableDepthTestDistance: 500_000,
+      },
+      label: {
+        text: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+        font: '13px system-ui',
+        style: LabelStyle.FILL_AND_OUTLINE,
+        outlineWidth: 3,
+        verticalOrigin: VerticalOrigin.BOTTOM,
+        pixelOffset: new Cartesian2(0, -16),
+        disableDepthTestDistance: 500_000,
+      },
+    })
+    setInspect({ ...p, values })
+    setSelected({
+      id: `custom-${Date.now()}`,
+      name: `Custom ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
+      group: 'Custom',
+      ...p,
+      heightM,
+      horizon,
+    })
+  }, [bundle])
+
+  const searchCoordinates = useCallback((lat: number, lon: number) => {
+    inspectCustomPoint(lat, lon)
+    const scene = sceneRef.current
+    if (scene) flyToSite(scene.viewer, lat, lon)
+  }, [inspectCustomPoint])
 
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
@@ -286,56 +448,54 @@ export default function App() {
     handler.setInputAction((e: { position: Cartesian2 }) => {
       const p = pick(e.position)
       if (!p) return
-      const dem = bundle.fields.dem_south
-      const elevation = dem?.sample(p.lon * D2R, p.lat * D2R)
-      const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
-      const horizon = dem && heightM !== undefined ? computeHorizon(dem, p.lat, p.lon) : undefined
-      const values = bundle.layers.map((m) => {
-        const v = bundle.fields[m.id]?.sample(p.lon * D2R, p.lat * D2R)
-        return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
-      })
-      if (markers.current.custom) viewer.entities.remove(markers.current.custom)
-      markers.current.custom = viewer.entities.add({
-        position: Cartesian3.fromDegrees(p.lon, p.lat, 0, Ellipsoid.MOON),
-        point: {
-          pixelSize: 13,
-          color: Color.CYAN,
-          outlineColor: Color.BLACK,
-          outlineWidth: 3,
-          disableDepthTestDistance: 500_000,
-        },
-        label: {
-          text: `${p.lat.toFixed(4)}°, ${p.lon.toFixed(4)}°`,
-          font: '13px system-ui',
-          style: LabelStyle.FILL_AND_OUTLINE,
-          outlineWidth: 3,
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          pixelOffset: new Cartesian2(0, -16),
-          disableDepthTestDistance: 500_000,
-        },
-      })
-      setInspect({ ...p, values })
-      setSelected({
-        id: `custom-${Date.now()}`,
-        name: `Custom ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`,
-        group: 'Custom',
-        ...p,
-        heightM,
-        horizon,
-      })
+      inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
     return () => handler.destroy()
-  }, [ready, bundle])
+  }, [ready, bundle, inspectCustomPoint])
 
   // ---- site analysis ----
   const dayStart = Math.floor(t / DAY) * DAY
   const timeline = useMemo(() => {
-    if (!selected || !bundle?.ephemeris) return []
+    if (!selected || !ephemeris) return []
     const step = windowDays > 90 ? 6 * 3600_000 : 3600_000
-    return computeTimeline(bundle.ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
-  }, [selected, bundle, dayStart, windowDays])
+    return computeTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
+  }, [selected, ephemeris, dayStart, windowDays])
   const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
-  const now = useMemo(() => (selected && bundle?.ephemeris ? computeTimeline(bundle.ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, bundle, t])
+  const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
+  // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
+  const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
+
+  const selectCalendarDate = async (nextTime: number) => {
+    const year = new Date(nextTime).getUTCFullYear()
+    if (year < EPHEMERIS_START_YEAR || year > EPHEMERIS_LAST_SELECTABLE_YEAR) return
+    if (year === new Date(timeRange[0]).getUTCFullYear()) {
+      setT(nextTime)
+      return
+    }
+
+    setPlaying(false)
+    setEphemerisBusy(true)
+    setEphemerisError(undefined)
+    try {
+      const nextEphemeris = await loadEphemerisWindow(DATA_URL, year)
+      setEphemeris(nextEphemeris)
+      setTimeRange([Date.UTC(year, 0, 1), Date.UTC(year + EPHEMERIS_WINDOW_YEARS, 0, 1)])
+      setT(nextTime)
+    } catch (error) {
+      setEphemerisError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setEphemerisBusy(false)
+    }
+  }
+
+  const resetTimeline = () => {
+    if (!bundle?.ephemeris) return
+    setPlaying(false)
+    setEphemeris(bundle.ephemeris)
+    setTimeRange([DEFAULT_TIME_START, DEFAULT_TIME_END])
+    setT(DEFAULT_TIME_START)
+    setEphemerisError(undefined)
+  }
 
   const selectSite = (s: Site) => {
     setInspect(undefined)
@@ -359,12 +519,11 @@ export default function App() {
         sceneRef.current.viewer.entities.remove(markers.current.custom)
         markers.current.custom = undefined
       }
-      setSavedSites(nextSites)
-      setSavedSitesError(undefined)
+      setSavedSitesState({ sites: nextSites })
       setSelected(saved)
     } catch (error) {
       console.error('Could not save landing site.', error)
-      setSavedSitesError('Landing site could not be saved. Check browser storage settings and try again.')
+      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be saved. Check browser storage settings and try again.' }))
     }
   }
 
@@ -373,13 +532,12 @@ export default function App() {
     const nextSites = savedSites.filter((site) => site.id !== selected.id)
     try {
       localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
-      setSavedSites(nextSites)
-      setSavedSitesError(undefined)
+      setSavedSitesState({ sites: nextSites })
       setSelected(undefined)
       setInspect(undefined)
     } catch (error) {
       console.error('Could not remove landing site.', error)
-      setSavedSitesError('Landing site could not be removed. Check browser storage settings and try again.')
+      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be removed. Check browser storage settings and try again.' }))
     }
   }
 
@@ -393,14 +551,22 @@ export default function App() {
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
-            <SitePanel sites={allSites} selected={selected} onSelect={selectSite} timeline={timeline} summary={summary}
+            <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              timeline={timeline} summary={summary}
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
-              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError} />
+              showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
+              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
+              dsn={ephemeris ? { now: dsnNow } : undefined} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields} slopeExact={!!scoreFields?.exact} />
+              score={score} onScore={setScore} scoreAvailable={!!scoreFields}
+              radiationMetadata={radiationMetadata} radiationLoading={radiationLoading} radiationError={radiationError}
+              radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
+              radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
+              radiationMode={radiationMode} onRadiationMode={setRadiationMode}
+              slopeExact={!!scoreFields?.exact} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}
@@ -411,8 +577,23 @@ export default function App() {
               </section>
             )}
           </aside>
-          {bundle.ephemeris && (
-            <TimeBar t={t} range={ephemerisRange(bundle.ephemeris)} onChange={setT} playing={playing} onPlay={setPlaying} stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting} />
+          {bundle.ephemeris && ephemeris && (
+            <TimeBar t={t} range={timeRange} calendarRange={CALENDAR_RANGE} onChange={setT}
+              onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
+              stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
+              busy={ephemerisBusy} error={ephemerisError} />
+          )}
+          {viewResM !== undefined && Number.isFinite(viewResM) && viewResM > 0 && (
+            <div className="map-scale" role="img"
+              aria-label={`1 cm on screen corresponds to about ${formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon`}
+              title="Estimate at the map center; 1 cm uses the standard CSS scale.">
+              <span>≈ {formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon</span>
+              <div className="map-scale-ruler" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </div>
+            </div>
           )}
         </>
       )}

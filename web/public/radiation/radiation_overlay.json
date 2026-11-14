@@ -1,0 +1,29 @@
+{
+  "projection": "polar-south",
+  "width": 4096,
+  "height": 4096,
+  "halfExtentM": 151740.0,
+  "resolutionM": 74.091796875,
+  "encoding": "u8",
+  "classScale": 0.007874015748031496,
+  "classOffset": -0.007874015748031496,
+  "doseScale": 0.012718219456710214,
+  "doseOffset": 10.384125690760575,
+  "doseMin": 10.396843910217285,
+  "doseMax": 13.62727165222168,
+  "units": "uGy/h (Si)",
+  "classLegend": [
+    {
+      "color": "#2ca02c",
+      "label": "<= 12.0"
+    },
+    {
+      "color": "#ffcc00",
+      "label": "<= 12.8"
+    },
+    {
+      "color": "#d62728",
+      "label": "> 12.8"
+    }
+  ]
+}

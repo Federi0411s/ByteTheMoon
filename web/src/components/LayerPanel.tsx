@@ -1,5 +1,6 @@
 import { cssGradient } from '../lib/colormaps'
 import type { LayerMeta } from '../lib/raster'
+import type { RadiationOverlayMetadata } from '../lib/radiation'
 import { FOOTPRINT_MAX_M, FOOTPRINT_MIN_M, type Footprint, footprintLabel, SLOPE_CLASSES, SLOPE_MAX_DEG, slopeClass } from '../lib/requirements'
 
 export interface LayerState {
@@ -74,6 +75,15 @@ export function LayerPanel({
   score,
   onScore,
   scoreAvailable,
+  radiationMetadata,
+  radiationLoading,
+  radiationError,
+  radiationVisible,
+  onRadiationVisible,
+  radiationOpacity,
+  onRadiationOpacity,
+  radiationMode,
+  onRadiationMode,
   slopeExact,
 }: {
   layers: LayerMeta[]
@@ -82,6 +92,15 @@ export function LayerPanel({
   score: ScoreWeights
   onScore: (s: ScoreWeights) => void
   scoreAvailable: boolean
+  radiationMetadata: RadiationOverlayMetadata | null
+  radiationLoading: boolean
+  radiationError?: string
+  radiationVisible: boolean
+  onRadiationVisible: (visible: boolean) => void
+  radiationOpacity: number
+  onRadiationOpacity: (opacity: number) => void
+  radiationMode: 'classes' | 'continuous'
+  onRadiationMode: (mode: 'classes' | 'continuous') => void
   /** true: max slope from the 40 m LDSM (pipeline layer slope_max); false: approximated from the 100 m slope layer */
   slopeExact: boolean
 }) {
@@ -161,6 +180,58 @@ export function LayerPanel({
           )}
         </div>
       )}
+
+      <h2>Radiation</h2>
+      <div className="layer">
+        <label className="layer-head">
+          <input type="checkbox" checked={radiationVisible} disabled={!radiationMetadata} onChange={(e) => onRadiationVisible(e.target.checked)} />
+          Show layer
+        </label>
+        {radiationLoading && <p className="muted">Loading legend...</p>}
+        {radiationMetadata && (
+          <>
+            <label className="slider">
+              <span>Display</span>
+              <select value={radiationMode} onChange={(e) => {
+                if (e.target.value === 'classes' || e.target.value === 'continuous') onRadiationMode(e.target.value)
+              }}>
+                <option value="classes">Classes</option>
+                <option value="continuous">Continuous dose</option>
+              </select>
+            </label>
+            {radiationVisible && (
+              <>
+                <label className="slider">
+                  <span>Opacity: {Math.round(radiationOpacity * 100)}%</span>
+                  <input type="range" min={0} max={1} step={0.05} value={radiationOpacity}
+                    onChange={(e) => onRadiationOpacity(Number(e.target.value))} />
+                </label>
+                {radiationMode === 'classes' ? (
+                  <div className="radiation-legend">
+                    {radiationMetadata.classLegend.map((item, index) => (
+                      <div className="radiation-legend-item" key={`${item.label}-${index}`}>
+                        <span className="radiation-swatch" style={{ backgroundColor: item.color }} />
+                        <span>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="legend">
+                    <div className="legend-bar" style={{ background: cssGradient('inferno') }} />
+                    <div className="legend-labels">
+                      <span>{radiationMetadata.doseMin}</span>
+                      <span>{radiationMetadata.units}</span>
+                      <span>{radiationMetadata.doseMax}</span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+        {radiationError && <p className="muted">{radiationError}</p>}
+      </div>
+
     </section>
   )
 }

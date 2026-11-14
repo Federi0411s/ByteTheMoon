@@ -11,6 +11,7 @@ const STOPS: Record<string, Stops> = {
   ice: [[8, 16, 48], [20, 60, 130], [40, 120, 200], [120, 190, 240], [220, 245, 255]],
   // diverging-ish for slope: green (flat) -> yellow -> red (steep)
   slope: [[26, 152, 80], [145, 207, 96], [217, 239, 139], [254, 224, 139], [252, 141, 89], [215, 48, 39]],
+  radiationClasses: [[44, 160, 44], [255, 204, 0], [214, 39, 40]],
   grey: [[0, 0, 0], [255, 255, 255]],
   // terrain-like for elevation
   terrain: [[40, 30, 90], [50, 90, 160], [80, 160, 160], [170, 200, 120], [220, 200, 140], [240, 240, 240]],
@@ -18,9 +19,14 @@ const STOPS: Record<string, Stops> = {
 
 const LUTS: Record<string, Uint8ClampedArray> = {}
 
-function buildLut(stops: Stops): Uint8ClampedArray {
+function buildLut(stops: Stops, discrete = false): Uint8ClampedArray {
   const lut = new Uint8ClampedArray(256 * 3)
   for (let i = 0; i < 256; i++) {
+    if (discrete) {
+      const color = stops[Math.min(2, Math.floor((i / 256) * 3))]
+      for (let c = 0; c < 3; c++) lut[i * 3 + c] = color[c]
+      continue
+    }
     const t = (i / 255) * (stops.length - 1)
     const k = Math.min(Math.floor(t), stops.length - 2)
     const f = t - k
@@ -30,7 +36,7 @@ function buildLut(stops: Stops): Uint8ClampedArray {
 }
 
 export function getLut(name: string): Uint8ClampedArray {
-  if (!LUTS[name]) LUTS[name] = buildLut(STOPS[name] ?? STOPS.viridis)
+  if (!LUTS[name]) LUTS[name] = buildLut(STOPS[name] ?? STOPS.viridis, name === 'radiationClasses')
   return LUTS[name]
 }
 
