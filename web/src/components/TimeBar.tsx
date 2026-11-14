@@ -1,4 +1,6 @@
 const STEPS = [
+  { label: '1 min/tick', ms: 60_000 },
+  { label: '30 min/tick', ms: 30 * 60_000 },
   { label: '1 h/tick', ms: 3600_000 },
   { label: '6 h/tick', ms: 6 * 3600_000 },
   { label: '12 h/tick', ms: 12 * 3600_000 },
@@ -47,7 +49,7 @@ export function TimeBar({
         {STEPS.map((s) => <option key={s.ms} value={s.ms}>{s.label}</option>)}
       </select>
       <button onClick={() => onChange(Math.min(range[1], t + stepMs))} disabled={busy || t >= range[1]} aria-label="Next time step">+1</button>
-      <input type="range" min={range[0]} max={range[1]} step={3600_000} value={t} disabled={busy} onChange={(e) => onChange(Number(e.target.value))} aria-label="Date" />
+      <input type="range" min={range[0]} max={range[1]} step={Math.min(stepMs, 3600_000)} value={t} disabled={busy} onChange={(e) => onChange(Number(e.target.value))} aria-label="Date" />
       <input
         type="datetime-local"
         min={toDateTimeLocal(calendarRange[0])}
