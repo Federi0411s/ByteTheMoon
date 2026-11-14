@@ -112,6 +112,28 @@ button { cursor: pointer; }
 button.on { border-color: var(--accent); color: var(--accent); }
 input[type='range'] { width: 100%; accent-color: var(--accent); }
 
+.layer-menu { display: flex; flex-direction: column; gap: 8px; }
+.layer-menu > h2 { margin: 2px 0 2px; }
+.menu-section { border: 1px solid var(--border); border-radius: 8px; background: rgba(255, 255, 255, 0.025); overflow: hidden; }
+.menu-section-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 10px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.menu-section-summary::-webkit-details-marker { display: none; }
+.menu-section-summary:hover { background: rgba(255, 255, 255, 0.045); }
+.menu-section-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.menu-section-state { margin-left: auto; padding: 3px 7px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--muted); font-size: 10px; font-weight: 500; white-space: nowrap; }
+.menu-section-chevron { color: var(--muted); font-size: 19px; font-weight: 400; line-height: 1; transition: transform 160ms ease; }
+.menu-section[open] .menu-section-chevron { transform: rotate(90deg); }
+.menu-section-body { padding: 0 10px 10px; }
+.menu-section-body > .layer:first-child { border-top: 1px solid var(--border); }
 .layer { padding: 8px 0; border-top: 1px solid var(--border); }
 .layer-head { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .panel-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; background: none; border: none; text-align: left; }
