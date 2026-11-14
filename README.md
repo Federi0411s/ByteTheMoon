@@ -28,13 +28,21 @@ The generated data in `web/public/data` is committed, so you only need this to c
 
 ```powershell
 pip install -r pipeline/requirements.txt
-python pipeline/download.py      # ~400 MB into ..\data (outside the repo), resumable
+python pipeline/download.py      # ~500 MB into ..\data (outside the repo), resumable
 python pipeline/overlays.py      # -> web/public/data/overlays
 python pipeline/ephemeris.py     # -> web/public/data/ephemeris.json
 python pipeline/build_sites.py   # -> web/public/data/sites.json (with horizon masks)
 ```
 
 Set `MOON_DATA` to keep raw data somewhere other than `..\data`.
+
+To regenerate the five-year timeline data through 2205, download only the SPICE kernels and create
+year-aligned chunks (the browser loads only the chunks needed for the selected window):
+
+```powershell
+python pipeline/download.py --kernels-only
+python pipeline/ephemeris.py --start 2026-01-01 --end 2206-01-01 --step-hours 2 --chunk-years 5
+```
 
 ## Data sources
 

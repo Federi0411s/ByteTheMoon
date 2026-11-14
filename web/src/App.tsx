@@ -17,16 +17,34 @@ import {
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
-import { loadBundle, type DataBundle, type Site } from './lib/data'
+import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { hillshade } from './lib/raster'
-import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
+import {
+  earthPosition,
+  ephemerisRange,
+  EPHEMERIS_LAST_SELECTABLE_YEAR,
+  EPHEMERIS_START_YEAR,
+  EPHEMERIS_WINDOW_YEARS,
+  loadEphemerisWindow,
+  sunPosition,
+} from './lib/ephemeris'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
+const DEFAULT_TIME_START = Date.UTC(EPHEMERIS_START_YEAR, 0, 1)
+const DEFAULT_TIME_END = Date.UTC(EPHEMERIS_START_YEAR + EPHEMERIS_WINDOW_YEARS, 0, 1)
+const CALENDAR_RANGE: [number, number] = [
+  DEFAULT_TIME_START,
+  Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
+]
 const D2R = Math.PI / 180
+const FUTURE_SITE_GROUPS = new Set([
+  'Artemis III candidate regions',
+  'South pole (best-lit spot near feature)',
+])
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -36,6 +54,10 @@ export default function App() {
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
+  const [ephemeris, setEphemeris] = useState<DataBundle['ephemeris']>(null)
+  const [timeRange, setTimeRange] = useState<[number, number]>([DEFAULT_TIME_START, DEFAULT_TIME_END])
+  const [ephemerisBusy, setEphemerisBusy] = useState(false)
+  const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, flat: 0.2, maxSlope: 10, opacity: 0.7 })
   const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
@@ -58,7 +80,9 @@ export default function App() {
       ;(window as unknown as { moon: MoonScene }).moon = scene // handy in the browser console: moon.viewer
       setBundle(data)
       if (data.ephemeris) {
+        setEphemeris(data.ephemeris)
         const [a, b] = ephemerisRange(data.ephemeris)
+        setTimeRange([a, b])
         const t0 = Math.min(Math.max(Date.now(), a), b)
         setT(t0)
         // opening view: the full Moon disc as seen from Earth right now
@@ -93,7 +117,13 @@ export default function App() {
     markers.current.sites = bundle.sites.map((s) =>
       scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
-        point: { pixelSize: 9, color: Color.fromCssColorString('#ff8a3d'), outlineColor: Color.BLACK, outlineWidth: 2, disableDepthTestDistance: 500_000 },
+        point: {
+          pixelSize: 9,
+          color: FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+          disableDepthTestDistance: 500_000,
+        },
         label: {
           text: s.name, font: '13px system-ui', style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3,
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
@@ -205,7 +235,7 @@ export default function App() {
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
     const scene = sceneRef.current
-    const eph = bundle?.ephemeris
+    const eph = ephemeris
     if (!ready || !scene || !eph) return
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
@@ -220,18 +250,18 @@ export default function App() {
     }
     m.sun.position = new ConstantPositionProperty(sunShown)
     m.earth!.position = new ConstantPositionProperty(new Cartesian3(...earth))
-  }, [ready, bundle, t])
+  }, [ready, ephemeris, t])
 
   useEffect(() => {
     if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting)
   }, [ready, lighting])
 
   useEffect(() => {
-    if (!playing || !bundle?.ephemeris) return
-    const [, end] = ephemerisRange(bundle.ephemeris)
+    if (!playing || !ephemeris) return
+    const end = timeRange[1]
     const id = setInterval(() => setT((x) => (x + stepMs > end ? x : x + stepMs)), 80)
     return () => clearInterval(id)
-  }, [playing, stepMs, bundle])
+  }, [playing, stepMs, ephemeris, timeRange])
 
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
@@ -261,7 +291,7 @@ export default function App() {
         position: Cartesian3.fromDegrees(p.lon, p.lat, 0, Ellipsoid.MOON),
         point: {
           pixelSize: 13,
-          color: Color.CYAN,
+          color: Color.YELLOW,
           outlineColor: Color.BLACK,
           outlineWidth: 3,
           disableDepthTestDistance: 500_000,
@@ -292,12 +322,44 @@ export default function App() {
   // ---- site analysis ----
   const dayStart = Math.floor(t / DAY) * DAY
   const timeline = useMemo(() => {
-    if (!selected || !bundle?.ephemeris) return []
+    if (!selected || !ephemeris) return []
     const step = windowDays > 90 ? 6 * 3600_000 : 3600_000
-    return computeTimeline(bundle.ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
-  }, [selected, bundle, dayStart, windowDays])
+    return computeTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
+  }, [selected, ephemeris, dayStart, windowDays])
   const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
-  const now = useMemo(() => (selected && bundle?.ephemeris ? computeTimeline(bundle.ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, bundle, t])
+  const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
+
+  const selectCalendarDate = async (nextTime: number) => {
+    const year = new Date(nextTime).getUTCFullYear()
+    if (year < EPHEMERIS_START_YEAR || year > EPHEMERIS_LAST_SELECTABLE_YEAR) return
+    if (year === new Date(timeRange[0]).getUTCFullYear()) {
+      setT(nextTime)
+      return
+    }
+
+    setPlaying(false)
+    setEphemerisBusy(true)
+    setEphemerisError(undefined)
+    try {
+      const nextEphemeris = await loadEphemerisWindow(DATA_URL, year)
+      setEphemeris(nextEphemeris)
+      setTimeRange([Date.UTC(year, 0, 1), Date.UTC(year + EPHEMERIS_WINDOW_YEARS, 0, 1)])
+      setT(nextTime)
+    } catch (error) {
+      setEphemerisError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setEphemerisBusy(false)
+    }
+  }
+
+  const resetTimeline = () => {
+    if (!bundle?.ephemeris) return
+    setPlaying(false)
+    setEphemeris(bundle.ephemeris)
+    setTimeRange([DEFAULT_TIME_START, DEFAULT_TIME_END])
+    setT(DEFAULT_TIME_START)
+    setEphemerisError(undefined)
+  }
 
   const selectSite = (s: Site) => {
     setInspect(undefined)
@@ -336,8 +398,11 @@ export default function App() {
               </section>
             )}
           </aside>
-          {bundle.ephemeris && (
-            <TimeBar t={t} range={ephemerisRange(bundle.ephemeris)} onChange={setT} playing={playing} onPlay={setPlaying} stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting} />
+          {bundle.ephemeris && ephemeris && (
+            <TimeBar t={t} range={timeRange} calendarRange={CALENDAR_RANGE} onChange={setT}
+              onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
+              stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
+              busy={ephemerisBusy} error={ephemerisError} />
           )}
         </>
       )}

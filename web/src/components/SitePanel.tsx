@@ -46,6 +46,11 @@ export function SitePanel({
           {expanded ? 'Collapse' : 'Expand'}
         </button>
       </div>
+      <div className="site-legend">
+        <span><i className="marker-dot past" aria-hidden="true" />Past missions</span>
+        <span><i className="marker-dot future" aria-hidden="true" />Future candidates</span>
+        <span><i className="marker-dot selected" aria-hidden="true" />Selected point</span>
+      </div>
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
         {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}

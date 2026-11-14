@@ -5,6 +5,10 @@
  */
 import { MOON_RADIUS_M } from './raster'
 
+export const EPHEMERIS_START_YEAR = 2026
+export const EPHEMERIS_LAST_SELECTABLE_YEAR = 2200
+export const EPHEMERIS_WINDOW_YEARS = 5
+
 export interface Ephemeris {
   frame: string
   startMs: number
@@ -16,8 +20,19 @@ export interface Ephemeris {
 
 export type Vec3 = [number, number, number]
 
+interface EphemerisJson {
+  frame: string
+  startUtc: string
+  stepSeconds: number
+  count: number
+  sun: number[]
+  earth: number[]
+}
+
 export async function loadEphemeris(url: string): Promise<Ephemeris> {
-  const j = await (await fetch(url)).json()
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`Failed to load ephemeris (${response.status}): ${url}`)
+  const j = (await response.json()) as EphemerisJson
   return {
     frame: j.frame,
     startMs: Date.parse(j.startUtc),
@@ -25,6 +40,81 @@ export async function loadEphemeris(url: string): Promise<Ephemeris> {
     count: j.count,
     sun: Float64Array.from(j.sun),
     earth: Float64Array.from(j.earth),
+  }
+}
+
+const chunkCache = new Map<number, Promise<Ephemeris>>()
+
+function loadChunk(baseUrl: string, chunkYear: number): Promise<Ephemeris> {
+  const cached = chunkCache.get(chunkYear)
+  if (cached) return cached
+  const path = chunkYear === EPHEMERIS_START_YEAR
+    ? `${baseUrl}/ephemeris.json`
+    : `${baseUrl}/ephemeris/${chunkYear}.json`
+  const request = loadEphemeris(path)
+  chunkCache.set(chunkYear, request)
+  request.catch(() => chunkCache.delete(chunkYear))
+  return request
+}
+
+function joinChunks(chunks: Ephemeris[]): Ephemeris {
+  const first = chunks[0]
+  let count = first.count
+  for (let i = 1; i < chunks.length; i++) {
+    const previous = chunks[i - 1]
+    const current = chunks[i]
+    if (current.frame !== first.frame || current.stepMs !== first.stepMs) {
+      throw new Error('Ephemeris chunks use inconsistent frames or time steps')
+    }
+    const expectedStart = previous.startMs + (previous.count - 1) * previous.stepMs
+    if (Math.abs(current.startMs - expectedStart) > 1000) {
+      throw new Error('Ephemeris chunks are not contiguous')
+    }
+    count += current.count - 1
+  }
+
+  const sun = new Float64Array(count * 3)
+  const earth = new Float64Array(count * 3)
+  let offset = 0
+  chunks.forEach((chunk, index) => {
+    const firstValue = index === 0 ? 0 : 3
+    const values = (chunk.count - (index === 0 ? 0 : 1)) * 3
+    sun.set(chunk.sun.subarray(firstValue, firstValue + values), offset)
+    earth.set(chunk.earth.subarray(firstValue, firstValue + values), offset)
+    offset += values
+  })
+
+  return { ...first, count, sun, earth }
+}
+
+export async function loadEphemerisWindow(baseUrl: string, startYear: number): Promise<Ephemeris> {
+  if (!Number.isInteger(startYear) || startYear < EPHEMERIS_START_YEAR || startYear > EPHEMERIS_LAST_SELECTABLE_YEAR) {
+    throw new RangeError(`Unsupported ephemeris window start year: ${startYear}`)
+  }
+
+  const firstChunkYear =
+    EPHEMERIS_START_YEAR +
+    Math.floor((startYear - EPHEMERIS_START_YEAR) / EPHEMERIS_WINDOW_YEARS) * EPHEMERIS_WINDOW_YEARS
+  const endYear = startYear + EPHEMERIS_WINDOW_YEARS
+  const chunkYears: number[] = []
+  for (let year = firstChunkYear; year < endYear; year += EPHEMERIS_WINDOW_YEARS) chunkYears.push(year)
+
+  const combined = joinChunks(await Promise.all(chunkYears.map((year) => loadChunk(baseUrl, year))))
+  const startMs = Date.UTC(startYear, 0, 1)
+  const endMs = Date.UTC(endYear, 0, 1)
+  const startIndex = Math.round((startMs - combined.startMs) / combined.stepMs)
+  const endIndex = Math.round((endMs - combined.startMs) / combined.stepMs)
+  if (startIndex < 0 || endIndex >= combined.count || Math.abs(combined.startMs + startIndex * combined.stepMs - startMs) > 1000) {
+    throw new Error(`Ephemeris data does not cover ${startYear}-${endYear}`)
+  }
+  const valueStart = startIndex * 3
+  const valueEnd = (endIndex + 1) * 3
+  return {
+    ...combined,
+    startMs,
+    count: endIndex - startIndex + 1,
+    sun: combined.sun.slice(valueStart, valueEnd),
+    earth: combined.earth.slice(valueStart, valueEnd),
   }
 }
 

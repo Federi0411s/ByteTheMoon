@@ -65,6 +65,12 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .site-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .site-panel-heading h2 { margin: 4px 0 10px; }
 .site-panel-expand { margin-bottom: 6px; }
+.site-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 8px; color: var(--muted); font-size: 11px; }
+.site-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.marker-dot { width: 9px; height: 9px; border: 1px solid #000; border-radius: 50%; }
+.marker-dot.past { background: #ff0000; }
+.marker-dot.future { background: #1e90ff; }
+.marker-dot.selected { background: #ffff00; }
 .panel h3 { margin: 12px 0 4px; font-size: 15px; }
 .panel.warn p { color: #ffc27a; font-size: 12px; margin: 4px 0; }
 .muted { color: var(--muted); font-size: 12px; }
@@ -125,10 +131,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
-<<<<<<< HEAD
   .site-panel-expand { display: none; }
-=======
   /* panels stack in normal flow here, so credits just sit above the time bar */
   .app .cesium-viewer-bottom { left: 12px !important; max-width: calc(100% - 24px); }
->>>>>>> 59fd4541c5db401daa8d5d339c91136a8e816f5b
 }
