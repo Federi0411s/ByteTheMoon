@@ -39,6 +39,10 @@ export interface FieldImageryOptions {
 
 const TILE = 256
 
+type RawTile = { width: number; height: number; arrayBufferView: Uint8Array }
+/** One shared fully transparent tile (Cesium only reads it to build a texture). */
+const EMPTY_TILE: RawTile = { width: 1, height: 1, arrayBufferView: new Uint8Array(4) }
+
 export class FieldImageryProvider {
   readonly tilingScheme = new GeographicTilingScheme({ ellipsoid: Ellipsoid.MOON })
   readonly tileWidth = TILE
@@ -71,16 +75,13 @@ export class FieldImageryProvider {
     return undefined
   }
 
-  requestImage(x: number, y: number, level: number): Promise<HTMLCanvasElement> {
+  // Tiles are raw RGBA pixels ({ width, height, arrayBufferView }, accepted by Cesium's Texture), not
+  // canvases: canvas memory lives outside the JS heap and piles up between garbage collections.
+  requestImage(x: number, y: number, level: number): Promise<RawTile> {
     const r = this.tilingScheme.tileXYToRectangle(x, y, level)
-    const canvas = document.createElement('canvas')
-    canvas.width = TILE
-    canvas.height = TILE
-    if (!Rectangle.intersection(r, this.rectangle)) return Promise.resolve(canvas)
+    if (!Rectangle.intersection(r, this.rectangle)) return Promise.resolve(EMPTY_TILE)
 
-    const ctx = canvas.getContext('2d')!
-    const img = ctx.createImageData(TILE, TILE)
-    const px = img.data
+    const px = new Uint8Array(TILE * TILE * 4)
     const { value, min, max, transparentIf, contrast = 1, alpha } = this.opts
     const lut = this.lut
     const dLon = (r.east - r.west) / TILE
@@ -106,8 +107,7 @@ export class FieldImageryProvider {
         px[o + 3] = a >= 1 ? 255 : Math.round(a * 255)
       }
     }
-    ctx.putImageData(img, 0, 0)
-    return Promise.resolve(canvas)
+    return Promise.resolve({ width: TILE, height: TILE, arrayBufferView: px })
   }
 }
 
