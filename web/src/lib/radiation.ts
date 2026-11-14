@@ -1,64 +1,110 @@
+import type { LayerMeta } from './raster'
+
 export interface RadiationClassLegendItem {
-  colore: string
-  etichetta: string
+  color: string
+  label: string
 }
 
 export interface RadiationOverlayMetadata {
-  west: number
-  south: number
-  east: number
-  north: number
-  unita: string
-  dose_min: number
-  dose_max: number
-  legenda_classi: RadiationClassLegendItem[]
+  projection: 'polar-south'
+  width: number
+  height: number
+  halfExtentM: number
+  resolutionM: number
+  encoding: 'u8'
+  classScale: number
+  classOffset: number
+  doseScale: number
+  doseOffset: number
+  units: string
+  doseMin: number
+  doseMax: number
+  classLegend: RadiationClassLegendItem[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
 export async function loadRadiationMetadata(url: string): Promise<RadiationOverlayMetadata> {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`Metadata radiazioni non disponibili (${response.status} ${response.statusText})`)
+  if (!response.ok) throw new Error(`Radiation metadata unavailable (${response.status} ${response.statusText})`)
 
   const value: unknown = await response.json()
-  if (!isRecord(value)) throw new Error('Formato non valido per i metadata delle radiazioni')
+  if (!isRecord(value)) throw new Error('Invalid radiation metadata format')
 
-  const { west, south, east, north, unita, dose_min, dose_max } = value
-  const bounds = [west, south, east, north]
-  if (!bounds.every((v) => typeof v === 'number' && Number.isFinite(v))) {
-    throw new Error('Il JSON delle radiazioni deve contenere west, south, east e north numerici')
+  if (value.projection !== 'polar-south' || value.encoding !== 'u8') {
+    throw new Error('Radiation metadata must describe a u8 raster in south-polar projection')
   }
-  if (typeof west !== 'number' || typeof south !== 'number' || typeof east !== 'number' || typeof north !== 'number') {
-    throw new Error('Il rettangolo geografico delle radiazioni non è valido')
+  const { width, height, halfExtentM, resolutionM } = value
+  if (!finiteNumber(width) || !Number.isInteger(width) || width <= 0 ||
+      !finiteNumber(height) || !Number.isInteger(height) || height <= 0 ||
+      !finiteNumber(halfExtentM) || halfExtentM <= 0 ||
+      !finiteNumber(resolutionM) || resolutionM <= 0) {
+    throw new Error('Invalid radiation raster dimensions, extent, or resolution')
   }
-  if (west >= east || south >= north) {
-    throw new Error('Il rettangolo geografico delle radiazioni non è valido')
+  const { classScale, classOffset, doseScale, doseOffset, doseMin, doseMax } = value
+  if (!finiteNumber(classScale) || classScale <= 0 ||
+      !finiteNumber(classOffset) ||
+      !finiteNumber(doseScale) || doseScale <= 0 ||
+      !finiteNumber(doseOffset) ||
+      !finiteNumber(doseMin) ||
+      !finiteNumber(doseMax) || doseMin > doseMax) {
+    throw new Error('Invalid radiation encoding or dose range')
   }
-  if (typeof unita !== 'string' || typeof dose_min !== 'number' || !Number.isFinite(dose_min) ||
-      typeof dose_max !== 'number' || !Number.isFinite(dose_max) || dose_min > dose_max) {
-    throw new Error('Il JSON delle radiazioni deve contenere unita, dose_min e dose_max')
+  if (typeof value.units !== 'string' || !Array.isArray(value.classLegend)) {
+    throw new Error('Radiation metadata must include units and a class legend')
   }
-  if (!Array.isArray(value.legenda_classi)) {
-    throw new Error('Il JSON delle radiazioni deve contenere una legenda_classi valida')
-  }
-  const legenda_classi: RadiationClassLegendItem[] = []
-  for (const item of value.legenda_classi) {
-    if (!isRecord(item) || typeof item.colore !== 'string' || typeof item.etichetta !== 'string') {
-      throw new Error('Il JSON delle radiazioni deve contenere una legenda_classi valida')
+
+  const classLegend: RadiationClassLegendItem[] = []
+  for (const item of value.classLegend) {
+    if (!isRecord(item) || typeof item.color !== 'string' || typeof item.label !== 'string') {
+      throw new Error('Radiation metadata contains an invalid class legend')
     }
-    legenda_classi.push({ colore: item.colore, etichetta: item.etichetta })
+    classLegend.push({ color: item.color, label: item.label })
   }
 
   return {
-    west,
-    south,
-    east,
-    north,
-    unita,
-    dose_min,
-    dose_max,
-    legenda_classi,
+    projection: 'polar-south',
+    width,
+    height,
+    halfExtentM,
+    resolutionM,
+    encoding: 'u8',
+    classScale,
+    classOffset,
+    doseScale,
+    doseOffset,
+    units: value.units,
+    doseMin,
+    doseMax,
+    classLegend,
+  }
+}
+
+export function radiationLayerMeta(metadata: RadiationOverlayMetadata, mode: 'classes' | 'continuous'): LayerMeta {
+  const classes = mode === 'classes'
+  return {
+    id: 'radiation',
+    title: 'Radiation',
+    description: 'Lunar radiation dose from GCRs and albedo',
+    source: 'GCR + albedo model, LOLA DEM',
+    file: classes ? 'radiation_classes.png' : 'radiation_continuous.png',
+    projection: metadata.projection,
+    width: metadata.width,
+    height: metadata.height,
+    halfExtentM: metadata.halfExtentM,
+    encoding: metadata.encoding,
+    scale: classes ? metadata.classScale : metadata.doseScale,
+    offset: classes ? metadata.classOffset : metadata.doseOffset,
+    units: classes ? 'class' : metadata.units,
+    min: classes ? 0 : metadata.doseMin,
+    max: classes ? 2 : metadata.doseMax,
+    colormap: classes ? 'radiationClasses' : 'inferno',
+    resolutionM: metadata.resolutionM,
   }
 }

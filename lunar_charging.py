@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -147,6 +148,19 @@ class ChargingModel:
         sun_hat = sun_hat / np.linalg.norm(sun_hat)
         earth_hat = earth_hat / np.linalg.norm(earth_hat)
 
+        inc, lit, terrain_shadow = self.surface_conditions(normals, up, sun_hat, horizon_deg)
+        return self.potential(inc, lit, terrain_shadow, self.in_magnetotail(sun_hat, earth_hat))
+
+    def surface_conditions(
+        self,
+        normals: np.ndarray,
+        up: np.ndarray,
+        sun_hat: np.ndarray,
+        horizon_deg: np.ndarray | float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return incidence, illumination and terrain-shadow arrays for one epoch."""
+        sun_hat = np.asarray(sun_hat, float)
+        sun_hat = sun_hat / np.linalg.norm(sun_hat)
         inc = self.incidence_deg(normals, sun_hat)
         el = self.elevation_deg(up, sun_hat)
         hz = np.zeros_like(el) if horizon_deg is None else np.asarray(horizon_deg, float)
@@ -154,7 +168,7 @@ class ChargingModel:
         above_horizon = el > hz - SUN_RADIUS_DEG
         lit = above_horizon & (inc < 90.0)
         terrain_shadow = ~above_horizon
-        return self.potential(inc, lit, terrain_shadow, self.in_magnetotail(sun_hat, earth_hat))
+        return inc, lit, terrain_shadow
 
 
 class ChargingStats:
@@ -240,8 +254,13 @@ def surface_charging_over_ephemeris(
     start_index: int = 0,
     end_index: int | None = None,
     step: int = 1,
+    on_epoch: Callable[[int, np.ndarray, np.ndarray, np.ndarray], None] | None = None,
 ):
-    """Compute temporal statistics for a surface from lunar ephemerides."""
+    """Compute temporal statistics and optionally pass shared surface conditions per epoch.
+
+    on_epoch receives (sample_index, incidence_deg, lit, sun_vector) after charging
+    has been evaluated for that same ephemeris sample.
+    """
     normals = np.asarray(normals, dtype=float)
     up = np.asarray(up, dtype=float)
     if normals.shape != up.shape:
@@ -264,11 +283,14 @@ def surface_charging_over_ephemeris(
     end_index = min(len(sun), end_index)
 
     stats = ChargingStats(n_points=normals.shape[0], threshold_V=threshold_V)
-    for k in range(start_index, end_index, step):
+    for sample_index, k in enumerate(range(start_index, end_index, step)):
         sun_hat = normalize(sun[k])
         earth_hat = normalize(earth[k])
-        V = model.potential_from_geometry(normals, up, sun_hat, earth_hat, horizon_deg=horizon_deg)
+        inc, lit, terrain_shadow = model.surface_conditions(normals, up, sun_hat, horizon_deg)
+        V = model.potential(inc, lit, terrain_shadow, model.in_magnetotail(sun_hat, earth_hat))
         stats.add(V)
+        if on_epoch is not None:
+            on_epoch(sample_index, inc, lit, sun[k])
     return stats
 
 

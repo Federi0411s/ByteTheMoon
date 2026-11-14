@@ -10,19 +10,17 @@ import {
   ImageryLayer,
   LabelStyle,
   Math as CMath,
-  Rectangle,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
-  SingleTileImageryProvider,
   VerticalOrigin,
 } from 'cesium'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { loadBundle, type DataBundle, type Site } from './lib/data'
-import { hillshade } from './lib/raster'
+import { hillshade, loadRaster } from './lib/raster'
 import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
-import { loadRadiationMetadata, type RadiationOverlayMetadata } from './lib/radiation'
+import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
@@ -81,7 +79,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
-    loadRadiationMetadata(`${import.meta.env.BASE_URL}radiazioni/radiazioni_overlay.json`)
+    loadRadiationMetadata(`${import.meta.env.BASE_URL}radiation/radiation_overlay.json`)
       .then((metadata) => {
         if (!cancelled) {
           setRadiationMetadata(metadata)
@@ -89,7 +87,7 @@ export default function App() {
         }
       })
       .catch((error: unknown) => {
-        if (!cancelled) setRadiationError(`Radiazioni: ${error instanceof Error ? error.message : String(error)}`)
+        if (!cancelled) setRadiationError(`Radiation: ${error instanceof Error ? error.message : String(error)}`)
       })
       .finally(() => {
         if (!cancelled) setRadiationLoading(false)
@@ -189,7 +187,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, scoreFields !== null, score])
 
-  // ---- single-tile radiation overlay ----
+  // ---- polar raster radiation overlay ----
   useEffect(() => {
     const scene = sceneRef.current
     const metadata = radiationMetadata
@@ -198,18 +196,22 @@ export default function App() {
     let cancelled = false
     let layer: ImageryLayer | null = null
     setRadiationError(undefined)
-    const imageName = radiationMode === 'classes' ? 'radiazioni_classi.png' : 'radiazioni_continua.png'
-    const imageUrl = `${import.meta.env.BASE_URL}radiazioni/${imageName}`
-    SingleTileImageryProvider.fromUrl(imageUrl, {
-      rectangle: Rectangle.fromDegrees(metadata.west, metadata.south, metadata.east, metadata.north),
-      ellipsoid: Ellipsoid.MOON,
-    }).then((provider) => {
+    const meta = radiationLayerMeta(metadata, radiationMode)
+    loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
       if (cancelled) return
-      layer = new ImageryLayer(provider, { alpha: radiationOpacityRef.current })
+      layer = new ImageryLayer(asProvider(new FieldImageryProvider({
+        value: (lon, lat) => field.sampleNearest(lon, lat),
+        min: meta.min,
+        max: meta.max,
+        colormap: meta.colormap,
+        boundsRad: field.boundsRad(),
+        maximumLevel: levelForResolution(meta.resolutionM),
+        credit: meta.source,
+      })), { alpha: radiationOpacityRef.current })
       scene.overlays.add(layer)
       radiationLayerRef.current = layer
     }).catch((error: unknown) => {
-      if (!cancelled) setRadiationError(`Impossibile caricare ${imageName}: ${error instanceof Error ? error.message : String(error)}`)
+      if (!cancelled) setRadiationError(`Unable to load the radiation layer: ${error instanceof Error ? error.message : String(error)}`)
     })
 
     return () => {

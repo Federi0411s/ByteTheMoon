@@ -21,8 +21,8 @@ npm run dev                    # http://localhost:5173
 
 Without a token, or if Cesium ion fails, the app falls back to the NASA Moon Trek basemap. Overlays work the same either way.
 
-The optional radiation layer expects `radiazioni_overlay.json`, `radiazioni_classi.png`, and
-`radiazioni_continua.png` in `web/public/radiazioni`. Its controls appear in the map-layer panel when
+The optional radiation layer expects `radiation_overlay.json`, `radiation_classes.png`, and
+`radiation_continuous.png` in `web/public/radiation`. Its controls appear in the map-layer panel when
 the metadata JSON is available.
 
 ## Rebuild the data (Python, optional)
@@ -33,12 +33,17 @@ The generated data in `web/public/data` is committed, so you only need this to c
 pip install -r pipeline/requirements.txt
 python pipeline/download.py      # ~400 MB into ..\data (outside the repo), resumable
 python pipeline/overlays.py      # -> web/public/data/overlays
+python pipeline/lunar_radiation.py  # -> web/public/radiation (LOLA, about 2 min)
 python pipeline/ephemeris.py     # -> web/public/data/ephemeris.json
 python pipeline/build_sites.py   # -> web/public/data/sites.json (with horizon masks)
-python pipeline/charging.py --csv pipeline/equipot_results.csv  # -> charging map layers + site report
+python pipeline/charging.py --csv pipeline/equipot_results.csv  # -> charging + thermal layers and CSVs
 ```
 
 Set `MOON_DATA` to keep raw data somewhere other than `..\data`.
+
+The radiation pipeline uses the raw LOLA LDEM 80S when available, otherwise the generated
+`dem_south.png` overlay; it computes horizons on a 500 m polar grid and writes the two Cesium PNGs
+plus their metadata under `web/public/radiation`.
 
 The charging pipeline samples the SPICE ephemeris every 12 hours by default, derives surface normals
 from the LOLA DEM, and generates low-resolution mean-potential, minimum-potential, and below-threshold
@@ -46,6 +51,11 @@ heatmaps. It uses the raw DEM if available, otherwise the generated `dem_south.p
 The current model uses a flat local horizon; terrain-horizon shadows are not included in these charging
 maps. Adjust the temporal and spatial sampling with `--step-hours` and `--resolution-m`. The generated
 site summary is `web/public/data/charging_sites.csv`.
+The charging command also generates `thermal_mean`, `thermal_min`, and `thermal_max` overlays and
+per-point `charging_points.csv` data. By default, the 1D regolith model runs at Artemis candidate
+sites while other pixels use the module's equilibrium-temperature estimate; use `--thermal-mode all`
+to run the slower model at every pixel. CSV columns `T_mean`, `T_min`, and `T_max` are in kelvin.
+Spin-up defaults to one year of sampled epochs and can be overridden with `--n-spinup`.
 With the supplied environment curves, the most negative modeled value is -80.2 V, so the default
 fraction below -100 V is zero; use `--threshold-v -50` to map time below -50 V instead.
 

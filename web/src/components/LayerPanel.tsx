@@ -110,37 +110,37 @@ export function LayerPanel({
         </div>
       )}
 
-      <h2>Radiazioni</h2>
+      <h2>Radiation</h2>
       <div className="layer">
         <label className="layer-head">
           <input type="checkbox" checked={radiationVisible} disabled={!radiationMetadata} onChange={(e) => onRadiationVisible(e.target.checked)} />
-          Mostra layer
+          Show layer
         </label>
-        {radiationLoading && <p className="muted">Caricamento legenda…</p>}
+        {radiationLoading && <p className="muted">Loading legend...</p>}
         {radiationMetadata && (
           <>
             <label className="slider">
-              <span>Visualizzazione</span>
+              <span>Display</span>
               <select value={radiationMode} onChange={(e) => {
                 if (e.target.value === 'classes' || e.target.value === 'continuous') onRadiationMode(e.target.value)
               }}>
-                <option value="classes">Classi</option>
-                <option value="continuous">Dose continua</option>
+                <option value="classes">Classes</option>
+                <option value="continuous">Continuous dose</option>
               </select>
             </label>
             {radiationVisible && (
               <>
                 <label className="slider">
-                  <span>Opacità: {Math.round(radiationOpacity * 100)}%</span>
+                  <span>Opacity: {Math.round(radiationOpacity * 100)}%</span>
                   <input type="range" min={0} max={1} step={0.05} value={radiationOpacity}
                     onChange={(e) => onRadiationOpacity(Number(e.target.value))} />
                 </label>
                 {radiationMode === 'classes' ? (
                   <div className="radiation-legend">
-                    {radiationMetadata.legenda_classi.map((item, index) => (
-                      <div className="radiation-legend-item" key={`${item.etichetta}-${index}`}>
-                        <span className="radiation-swatch" style={{ backgroundColor: item.colore }} />
-                        <span>{item.etichetta}</span>
+                    {radiationMetadata.classLegend.map((item, index) => (
+                      <div className="radiation-legend-item" key={`${item.label}-${index}`}>
+                        <span className="radiation-swatch" style={{ backgroundColor: item.color }} />
+                        <span>{item.label}</span>
                       </div>
                     ))}
                   </div>
@@ -148,9 +148,9 @@ export function LayerPanel({
                   <div className="legend">
                     <div className="legend-bar" style={{ background: cssGradient('inferno') }} />
                     <div className="legend-labels">
-                      <span>{radiationMetadata.dose_min}</span>
-                      <span>{radiationMetadata.unita}</span>
-                      <span>{radiationMetadata.dose_max}</span>
+                      <span>{radiationMetadata.doseMin}</span>
+                      <span>{radiationMetadata.units}</span>
+                      <span>{radiationMetadata.doseMax}</span>
                     </div>
                   </div>
                 )}
