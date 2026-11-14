@@ -14,12 +14,13 @@ import {
   ScreenSpaceEventType,
   VerticalOrigin,
 } from 'cesium'
-import { createMoonScene, flyToSite, setSunDirection, setSunLighting, type MoonScene } from './cesium/createViewer'
+import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { loadBundle, type DataBundle, type Site } from './lib/data'
 import { hillshade } from './lib/raster'
 import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
+import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
@@ -37,7 +38,7 @@ export default function App() {
   const [bundle, setBundle] = useState<DataBundle | null>(null)
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, flat: 0.2, maxSlope: 10, opacity: 0.7 })
-  const [t, setT] = useState(() => Date.parse('2027-06-01T00:00:00Z'))
+  const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
@@ -45,6 +46,8 @@ export default function App() {
   const [windowDays, setWindowDays] = useState(30)
   const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
+  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
+  const [viewResM, setViewResM] = useState<number>()
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -56,7 +59,12 @@ export default function App() {
       setBundle(data)
       if (data.ephemeris) {
         const [a, b] = ephemerisRange(data.ephemeris)
-        setT((x) => Math.min(Math.max(x, a), b))
+        const t0 = Math.min(Math.max(Date.now(), a), b)
+        setT(t0)
+        // opening view: the full Moon disc as seen from Earth right now
+        viewFromEarth(scene.viewer, earthPosition(data.ephemeris, t0))
+      } else {
+        flyToSite(scene.viewer, -89.5, 0, 250_000, 0)
       }
       setReady(true)
     })
@@ -85,19 +93,42 @@ export default function App() {
     )
   }, [ready, bundle])
 
-  // ---- polar relief base layer for the Moon Trek fallback (its imagery smears near the pole) ----
+  // ---- photo basemap toggles (Moon Trek LOD stack) ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    for (const g of ['kaguya', 'nacPolar', 'nacSites'] as const) scene.photo[g].forEach((l) => (l.show = basemapState[g]))
+  }, [ready, basemapState])
+
+  // ---- LOLA relief shading south of 80S: above the WAC/Kaguya photos (which smear near the pole)
+  //      but below the sharper NAC mosaics, so it fills the gaps without hiding the best imagery ----
   useEffect(() => {
     const scene = sceneRef.current
     const dem = bundle?.fields.dem_south
-    if (!ready || !scene || !dem || scene.basemap !== 'trek') return
+    if (!ready || !scene || !dem || scene.basemap !== 'trek' || !basemapState.relief) return
     const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
       value: hillshade(dem), min: 0, max: 1, colormap: 'grey',
       boundsRad: dem.boundsRad(), maximumLevel: levelForResolution(dem.meta.resolutionM) + 1,
       credit: 'Relief: LOLA LDEM 80S',
-    })))
-    scene.overlays.add(layer, 1) // just above the basemap, below the heatmaps
+    })), { alpha: 0.75 })
+    scene.overlays.add(layer, scene.photo.wac.length + scene.photo.kaguya.length)
     return () => { scene.overlays.remove(layer, true) }
-  }, [ready, bundle])
+  }, [ready, bundle, basemapState.relief])
+
+  // ---- approximate ground resolution at the screen centre (for the basemap panel) ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const { camera, canvas } = scene.viewer.scene
+    camera.percentageChanged = 0.05
+    const update = () => {
+      const h = camera.positionCartographic.height
+      const fovy = (camera.frustum as { fovy?: number }).fovy ?? Math.PI / 3
+      setViewResM((2 * h * Math.tan(fovy / 2)) / Math.max(canvas.clientHeight, 1))
+    }
+    update()
+    return camera.changed.addEventListener(update)
+  }, [ready])
 
   // ---- raster overlays (one ImageryLayer per visible layer) ----
   useEffect(() => {
@@ -253,6 +284,9 @@ export default function App() {
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!scoreFields} />
+            {sceneRef.current && (
+              <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
+            )}
             {bundle.warnings.length > 0 && (
               <section className="panel warn">
                 <h2>Setup</h2>
