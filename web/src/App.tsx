@@ -46,6 +46,7 @@ const CALENDAR_RANGE: [number, number] = [
   Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
 ]
 const D2R = Math.PI / 180
+const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
 const FUTURE_SITE_GROUPS = new Set([
   'Artemis III candidate regions',
   'South pole (best-lit spot near feature)',
@@ -68,6 +69,24 @@ export default function App() {
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
+  const [savedSitesState, setSavedSitesState] = useState<{ sites: Site[]; error?: string }>(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_SITES_KEY)
+      if (!raw) return { sites: [] }
+      const parsed: unknown = JSON.parse(raw)
+      if (!Array.isArray(parsed) || parsed.some((site) =>
+        !site || typeof site.id !== 'string' || typeof site.name !== 'string' ||
+        typeof site.lat !== 'number' || typeof site.lon !== 'number' || site.group !== 'Saved',
+      )) {
+        throw new Error('Saved landing sites have an invalid format.')
+      }
+      return { sites: parsed as Site[] }
+    } catch (error) {
+      console.error('Could not load saved landing sites.', error)
+      return { sites: [], error: 'Saved landing sites could not be loaded from this browser.' }
+    }
+  })
+  const { sites: savedSites, error: savedSitesError } = savedSitesState
   const [ephemeris, setEphemeris] = useState<DataBundle['ephemeris']>(null)
   const [timeRange, setTimeRange] = useState<[number, number]>([DEFAULT_TIME_START, DEFAULT_TIME_END])
   const [ephemerisBusy, setEphemerisBusy] = useState(false)
@@ -94,6 +113,7 @@ export default function App() {
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
   const [viewResM, setViewResM] = useState<number>()
+  const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -141,12 +161,12 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  // ---- default overlay base: keep a readable, useful stack on first load ----
+  // ---- keep all data overlays off by default ----
   useEffect(() => {
     if (!bundle || Object.keys(layerState).length) return
     const defaults: Record<string, LayerState> = {}
     for (const meta of bundle.layers) {
-      defaults[meta.id] = { visible: meta.id === 'sun_avg', opacity: 0.65 }
+      defaults[meta.id] = { visible: false, opacity: 0.65 }
     }
     setLayerState(defaults)
   }, [bundle, layerState])
@@ -156,12 +176,14 @@ export default function App() {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
     markers.current.sites.forEach((e) => scene.viewer.entities.remove(e))
-    markers.current.sites = bundle.sites.map((s) =>
+    markers.current.sites = allSites.map((s) =>
       scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
         point: {
           pixelSize: 9,
-          color: FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
+          color: s.group === 'Saved'
+            ? Color.fromCssColorString('#32cd32')
+            : FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
           outlineColor: Color.BLACK,
           outlineWidth: 2,
           disableDepthTestDistance: 500_000,
@@ -173,13 +195,13 @@ export default function App() {
         },
       }),
     )
-  }, [ready, bundle])
+  }, [ready, bundle, allSites])
 
   useEffect(() => {
     markers.current.sites.forEach((marker) => {
       marker.show = showSiteMarkers
     })
-  }, [showSiteMarkers, ready, bundle])
+  }, [showSiteMarkers, ready, bundle, allSites])
 
   // ---- photo basemap toggles (Moon Trek LOD stack) ----
   useEffect(() => {
@@ -496,6 +518,40 @@ export default function App() {
     if (sceneRef.current) flyToSite(sceneRef.current.viewer, s.lat, s.lon)
   }
 
+  const saveSelectedSite = (name: string) => {
+    if (!selected || (selected.group !== 'Custom' && selected.group !== 'Saved')) return
+    const saved: Site = { ...selected, name: name.trim(), group: 'Saved' }
+    const nextSites = savedSites.some((site) => site.id === saved.id)
+      ? savedSites.map((site) => site.id === saved.id ? saved : site)
+      : [...savedSites, saved]
+    try {
+      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
+      if (markers.current.custom && sceneRef.current) {
+        sceneRef.current.viewer.entities.remove(markers.current.custom)
+        markers.current.custom = undefined
+      }
+      setSavedSitesState({ sites: nextSites })
+      setSelected(saved)
+    } catch (error) {
+      console.error('Could not save landing site.', error)
+      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be saved. Check browser storage settings and try again.' }))
+    }
+  }
+
+  const removeSelectedSite = () => {
+    if (!selected || selected.group !== 'Saved') return
+    const nextSites = savedSites.filter((site) => site.id !== selected.id)
+    try {
+      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
+      setSavedSitesState({ sites: nextSites })
+      setSelected(undefined)
+      setInspect(undefined)
+    } catch (error) {
+      console.error('Could not remove landing site.', error)
+      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be removed. Check browser storage settings and try again.' }))
+    }
+  }
+
   return (
     <div className="app">
       <div ref={containerRef} className="globe" />
@@ -506,11 +562,12 @@ export default function App() {
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
-            <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+            <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
               timeline={timeline} summary={summary}
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
+              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined} />
           </aside>
