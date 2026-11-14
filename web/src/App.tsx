@@ -16,6 +16,8 @@ import {
 } from 'cesium'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
+import { DemReliefProvider } from './cesium/DemReliefProvider'
+import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
@@ -53,6 +55,10 @@ const CALENDAR_RANGE: [number, number] = [
   Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
 ]
 const D2R = Math.PI / 180
+const MOON_RADIUS_M = 1737400
+const FOCUS_RADIUS_M = 15_000 // refined heatmaps around the selected site
+const RELIEF_EDGE_RAD = 80 * D2R // the relief basemap (LOLA LDEM 80S) ends here
+const RELIEF_FADE_RAD = 1 * D2R
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
 /**
  * Whole-Moon versions of every overlay layer, computed on the fly (lib/heatWorker.ts).
@@ -77,6 +83,17 @@ function radiationThresholds(m: RadiationOverlayMetadata): [number, number] {
   const nums = m.classLegend.map((c) => Number(/([\d.]+)/.exec(c.label)?.[1])).filter(Number.isFinite)
   return nums.length >= 2 ? [nums[0], nums[1]] : [12.0, 12.8]
 }
+/**
+ * Radiation classes = terrain shielding. The legend thresholds were set at the 2019 solar minimum
+ * (open flat terrain: 13.2 uGy/h), so they are scaled by the period's solar-cycle factor: the classes
+ * keep meaning "well shielded / partly shielded / open terrain" whatever the period (with fixed
+ * thresholds the whole Moon flipped class with the solar cycle). Returns the period's thresholds.
+ */
+function radiationClassThresholds(m: RadiationOverlayMetadata, gcr: number): [number, number] {
+  const [a, b] = radiationThresholds(m)
+  return [a * gcr, b * gcr]
+}
+const RAD_CLASS_NAMES = ['well shielded', 'partly shielded', 'open terrain']
 
 type PolarFields = Record<string, RasterField | undefined>
 const GLOBAL_LAYERS: Record<string, {
@@ -93,7 +110,7 @@ const GLOBAL_LAYERS: Record<string, {
   // shadowed through the whole selected period (LOLA's PSR map is "never lit", long-term)
   psr: {
     value: (v) => (v.sun < 0.002 ? 1 : NaN), polar: true, method: 'never lit during the selected period',
-    polarValue: { from: 'sun_avg', value: (f, lon, lat) => { const s = f.sun_avg?.sampleNearest(lon, lat) ?? NaN; return s !== s ? NaN : s < 0.002 ? 1 : -Infinity } },
+    polarValue: { from: 'sun_avg', value: (f, lon, lat) => { const s = f.sun_avg?.sampleBilinear(lon, lat) ?? NaN; return s !== s ? NaN : s < 0.002 ? 1 : -Infinity } },
   },
   slope: { value: (v) => v.slope, polar: true, method: 'LOLA global DEM gradient' },
   dem_south: { value: (v) => v.elev, polar: true, range: [-9000, 10000], method: 'LOLA global DEM' },
@@ -122,12 +139,54 @@ function formatScaleDistance(meters: number) {
   return `${Number((meters * 1000).toPrecision(2))} mm`
 }
 
+function fineDemBaseUrl() {
+  const env = import.meta.env.VITE_DEM_FINE_URL as string | undefined
+  const url = env === '' || env === 'none' ? null : env ?? (import.meta.env.DEV ? '/dem-fine' : null)
+  return url ? new URL(url, location.href).href.replace(/\/$/, '') : null
+}
+
+interface IceGeoJsonPoint {
+  lat: number
+  lon: number
+  color: Color
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function parseIceGeoJson(value: unknown): IceGeoJsonPoint[] {
+  if (!isRecord(value) || value.type !== 'FeatureCollection' || !Array.isArray(value.features)) {
+    throw new Error('Invalid ice GeoJSON FeatureCollection')
+  }
+
+  return value.features.map((feature: unknown, index: number) => {
+    if (!isRecord(feature) || !isRecord(feature.geometry) || !isRecord(feature.properties) ||
+        feature.geometry.type !== 'Point' || !Array.isArray(feature.geometry.coordinates)) {
+      throw new Error(`Invalid ice GeoJSON feature at index ${index}`)
+    }
+
+    const [lon, lat] = feature.geometry.coordinates
+    const colorValue = feature.properties.color
+    if (typeof lon !== 'number' || !Number.isFinite(lon) ||
+        typeof lat !== 'number' || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+        typeof colorValue !== 'string') {
+      throw new Error(`Invalid coordinates or color in ice GeoJSON feature ${index}`)
+    }
+    const color = Color.fromCssColorString(colorValue)
+    if (!color) throw new Error(`Invalid color in ice GeoJSON feature ${index}`)
+    return { lat, lon, color }
+  })
+}
+
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
   const radiationLayerRef = useRef<ImageryLayer | null>(null)
   const radiationOpacityRef = useRef(0.7)
+  const iceEntitiesRef = useRef<Entity[]>([])
+  const iceLoadedRef = useRef(false)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
@@ -172,9 +231,20 @@ export default function App() {
   const [radiationVisible, setRadiationVisible] = useState(false)
   const [radiationOpacity, setRadiationOpacity] = useState(0.7)
   const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
+  const [terrainViewActive, setTerrainViewActive] = useState(false)
+  const [terrainViewLoading, setTerrainViewLoading] = useState(false)
+  const [terrainViewError, setTerrainViewError] = useState<string>()
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const terrainCamera = useRef<{ position: Cartesian3; direction: Cartesian3; up: Cartesian3 } | null>(null)
+  const terrainSiteId = useRef<string | undefined>(undefined)
+  const terrainRequest = useRef(0)
+  const restoreElevationOnExit = useRef(false)
+  const [iceVisible, setIceVisible] = useState(false)
+  const [iceError, setIceError] = useState<string>()
 
   radiationOpacityRef.current = radiationOpacity
-  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
+  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
   const [viewResM, setViewResM] = useState<number>()
   const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
   const [mission, setMission] = useState<Mission>({})
@@ -188,6 +258,94 @@ export default function App() {
   const [siteEnv, setSiteEnv] = useState<{ key: string; env: SiteEnv | null }>()
   const heatRef = useRef<HeatEngine | null>(null)
   heatRef.current = heat
+
+  const stopTerrainView = useCallback((restoreCamera: boolean) => {
+    terrainRequest.current++
+    const pose = terrainCamera.current
+    const viewer = sceneRef.current?.viewer
+    viewer?.camera.cancelFlight()
+    if (restoreCamera && pose && viewer) {
+      viewer.camera.flyTo({
+        destination: pose.position,
+        orientation: { direction: pose.direction, up: pose.up },
+        duration: 1.2,
+      })
+    }
+    terrainCamera.current = null
+    terrainSiteId.current = undefined
+    setTerrainViewActive(false)
+    setTerrainViewLoading(false)
+    setTerrainViewError(undefined)
+    if (restoreElevationOnExit.current) {
+      setBasemapState((state) => ({ ...state, elevation: false }))
+      restoreElevationOnExit.current = false
+    }
+  }, [])
+
+  const toggleTerrainView = useCallback(async () => {
+    if (terrainCamera.current) {
+      stopTerrainView(true)
+      return
+    }
+    const site = selectedRef.current
+    const scene = sceneRef.current
+    if (!site || !scene) return
+
+    const viewer = scene.viewer
+    viewer.camera.cancelFlight()
+    terrainCamera.current = {
+      position: Cartesian3.clone(viewer.camera.positionWC, new Cartesian3()),
+      direction: Cartesian3.clone(viewer.camera.directionWC, new Cartesian3()),
+      up: Cartesian3.clone(viewer.camera.upWC, new Cartesian3()),
+    }
+    terrainSiteId.current = site.id
+    const requestId = ++terrainRequest.current
+    setTerrainViewLoading(true)
+    setTerrainViewError(undefined)
+
+    try {
+      let height = site.heightM
+      if (scene.basemap === 'trek' || height === undefined) {
+        const activeTerrain = viewer.scene.globe.terrainProvider
+        if (activeTerrain instanceof DemTerrainProvider) {
+          height = await activeTerrain.sampleHeight(site.lon * D2R, site.lat * D2R)
+        } else {
+          const terrain = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
+          try {
+            height = await terrain.sampleHeight(site.lon * D2R, site.lat * D2R)
+          } finally {
+            terrain.dispose()
+          }
+        }
+      }
+      if (requestId !== terrainRequest.current || selectedRef.current?.id !== site.id || sceneRef.current !== scene) return
+      if (height === undefined || !Number.isFinite(height)) throw new Error('Elevation data is unavailable for this point.')
+
+      restoreElevationOnExit.current = scene.basemap === 'trek' && !basemapState.elevation
+      if (restoreElevationOnExit.current) setBasemapState((state) => ({ ...state, elevation: true }))
+      viewer.camera.flyTo({
+        destination: Cartesian3.fromDegrees(site.lon, site.lat, height + 150, Ellipsoid.MOON),
+        orientation: { heading: 0, pitch: CMath.toRadians(-4), roll: 0 },
+        duration: 1.5,
+      })
+      setTerrainViewActive(true)
+    } catch (error) {
+      if (requestId !== terrainRequest.current) return
+      terrainCamera.current = null
+      terrainSiteId.current = undefined
+      if (restoreElevationOnExit.current) {
+        setBasemapState((state) => ({ ...state, elevation: false }))
+        restoreElevationOnExit.current = false
+      }
+      setTerrainViewError(`Could not open terrain view: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (requestId === terrainRequest.current) setTerrainViewLoading(false)
+    }
+  }, [basemapState.elevation, stopTerrainView])
+
+  useEffect(() => {
+    if (terrainSiteId.current && terrainSiteId.current !== selected?.id) stopTerrainView(true)
+  }, [selected?.id, stopTerrainView])
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -284,6 +442,31 @@ export default function App() {
     for (const g of ['kaguya', 'nacPolar', 'nacSites'] as const) scene.photo[g].forEach((l) => (l.show = basemapState[g]))
   }, [ready, basemapState])
 
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !basemapState.elevation) return
+    const provider = new DemReliefProvider(`${DATA_URL}/dem`)
+    const layer = new ImageryLayer(provider as unknown as import('cesium').ImageryProvider, { alpha: 0.38 })
+    const index = scene.basemap === 'trek'
+      ? scene.photo.wac.length + scene.photo.kaguya.length + scene.photo.nacPolar.length + scene.photo.nacSites.length
+      : undefined
+    scene.overlays.add(layer, index)
+    return () => removeLayer(scene, layer)
+  }, [ready, basemapState.elevation])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    const globe = scene?.viewer.scene.globe
+    if (!ready || !scene || scene.basemap !== 'trek' || !globe || !basemapState.elevation) return
+    const baseTerrain = globe.terrainProvider
+    const terrain = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
+    globe.terrainProvider = terrain
+    return () => {
+      if (globe.terrainProvider === terrain) globe.terrainProvider = baseTerrain
+      terrain.dispose()
+    }
+  }, [ready, basemapState.elevation])
+
   // ---- LOLA relief shading south of 80S: above the WAC/Kaguya photos (which smear near the pole)
   //      but below the sharper NAC mosaics, so it fills the gaps without hiding the best imagery ----
   useEffect(() => {
@@ -294,6 +477,8 @@ export default function App() {
       value: hillshade(dem), min: 0, max: 1, colormap: 'grey',
       boundsRad: dem.boundsRad(), maximumLevel: levelForResolution(dem.meta.resolutionM) + 1,
       credit: 'Relief: LOLA LDEM 80S',
+      // fade out over the last degree before its 80S edge, so the edge isn't a hard line on the map
+      alpha: (_lon, lat) => Math.min(1, Math.max(0, (-lat - RELIEF_EDGE_RAD) / RELIEF_FADE_RAD)),
     })), { alpha: 0.75 })
     scene.overlays.add(layer, scene.photo.wac.length + scene.photo.kaguya.length)
     return () => { scene.overlays.remove(layer, true) }
@@ -306,7 +491,9 @@ export default function App() {
     const { camera, canvas } = scene.viewer.scene
     camera.percentageChanged = 0.05
     const update = () => {
-      const h = camera.positionCartographic.height
+      const position = camera.positionCartographic
+      const groundHeight = scene.viewer.scene.globe.getHeight(position) ?? 0
+      const h = Math.max(0, position.height - groundHeight)
       const fovy = (camera.frustum as { fovy?: number }).fovy ?? Math.PI / 3
       setViewResM((2 * h * Math.tan(fovy / 2)) / Math.max(canvas.clientHeight, 1))
     }
@@ -395,17 +582,23 @@ export default function App() {
   }, [heat, heatVersion, selected])
   const siteEnvReady = siteEnv && siteEnv.key === siteEnvKey ? siteEnv : undefined
 
-  // refined area around the selected site: denser samples + finest elevation tiles there
+  // Refined area around the selected site (~15 km around it): every layer is computed there from the
+  // finest elevation tiles, sampled at their own resolution, once the view is close enough (map tile
+  // level >= 6, ~85 km tiles). Elsewhere the resolution follows the zoom level as usual.
+  const selLat = selected?.lat, selLon = selected?.lon
   const focus = useMemo<GlobalHeatOptions['focus']>(() => {
-    if (!selected || !heat) return undefined
-    const dLat = 0.3 * D2R, dLon = Math.min(Math.PI, dLat / Math.max(Math.cos(selected.lat * D2R), 0.02))
-    const lat = selected.lat * D2R, lon = selected.lon * D2R
+    if (selLat === undefined || selLon === undefined || !heat) return undefined
+    const dLat = FOCUS_RADIUS_M / MOON_RADIUS_M, dLon = Math.min(Math.PI, dLat / Math.max(Math.cos(selLat * D2R), 0.02))
+    const lat = selLat * D2R, lon = selLon * D2R
     return {
       boundsRad: [lon - dLon, Math.max(-Math.PI / 2, lat - dLat), lon + dLon, Math.min(Math.PI / 2, lat + dLat)],
-      samples: 33,
+      samples: 65,
       demLevel: heat.dem.fineMaxLevel,
+      minLevel: 6,
+      center: [lon, lat],
+      radiusM: FOCUS_RADIUS_M,
     }
-  }, [selected, heat])
+  }, [selLat, selLon, heat])
 
   // Fields actually displayed / scored / inspected: LOLA averages, or rescaled to the mission period.
   const fields = useMemo<Record<string, RasterField>>(() => {
@@ -420,6 +613,19 @@ export default function App() {
   fieldsRef.current = fields
 
   // layer metadata as displayed: global range + source when the layer is computed on the fly
+  // radiation legend as displayed: the global computation's dose range, and the class thresholds of
+  // the selected period (scaled by its solar-cycle factor, see radiationClassThresholds)
+  const radiationDisplayMeta = useMemo(() => {
+    if (!radiationMetadata || !heat || !heatVersion) return radiationMetadata
+    const [a, b] = radiationClassThresholds(radiationMetadata, heat.gcr)
+    const cut = [`≤ ${a.toFixed(1)}`, `≤ ${b.toFixed(1)}`, `> ${b.toFixed(1)}`]
+    return {
+      ...radiationMetadata,
+      doseMin: RAD_CONTINUOUS_RANGE[0], doseMax: RAD_CONTINUOUS_RANGE[1],
+      classLegend: radiationMetadata.classLegend.map((c, i) => ({ ...c, label: `${cut[i] ?? c.label} ${radiationMetadata.units} · ${RAD_CLASS_NAMES[i] ?? ''}` })),
+    }
+  }, [radiationMetadata, heat, heatVersion])
+
   const displayLayers = useMemo(() => (bundle?.layers ?? []).map((m) => {
     const g = heat && heatVersion ? GLOBAL_LAYERS[m.id] : undefined
     if (!g) return m
@@ -468,14 +674,14 @@ export default function App() {
         layer = new ImageryLayer(asProvider(g ? new GlobalHeatProvider({
           engine: heat!,
           value: g.value,
-          polar: usePolar ? (g.polarValue ? (lon, lat) => g.polarValue!.value(fields, lon, lat) : (lon, lat) => field!.sampleNearest(lon, lat)) : undefined,
+          polar: usePolar ? (g.polarValue ? (lon, lat) => g.polarValue!.value(fields, lon, lat) : (lon, lat) => field!.sampleBilinear(lon, lat)) : undefined,
           polarBelowLat: usePolar ? polarSrc.boundsRad()[3] : undefined,
           min: lo, max: hi, colormap: meta.colormap, contrast,
           thermal: g.thermal,
           credit: usePolar ? `${meta.source}; elsewhere ${g.method}` : `${meta.title}: ${g.method} (LOLA global DEM)`,
           focus,
         }) as unknown as FieldImageryProvider : new FieldImageryProvider({
-          value: (lon, lat) => field!.sampleNearest(lon, lat),
+          value: (lon, lat) => field!.sampleBilinear(lon, lat),
           min: meta.min, max: meta.max, colormap: meta.colormap,
           boundsRad: field!.boundsRad(),
           maximumLevel: levelForResolution(meta.resolutionM),
@@ -529,7 +735,7 @@ export default function App() {
         const sl = slope.sampleNearest(lon, lat)
         if (Number.isNaN(sl)) return NaN
         if (!(sl <= limit)) return FAIL
-        const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
+        const s = sun.sampleBilinear(lon, lat), e = earth.sampleBilinear(lon, lat)
         if (Number.isNaN(s) || Number.isNaN(e)) return NaN
         return (score.sun * s + score.earth * e) / wSum
       })
@@ -568,7 +774,7 @@ export default function App() {
     const meta = radiationLayerMeta(metadata, radiationMode)
     if (heat && heatVersion) {
       const gcr = heat.gcr
-      const [green, yellow] = radiationThresholds(metadata)
+      const [green, yellow] = radiationClassThresholds(metadata, gcr)
       const classes = radiationMode === 'classes'
       const [lo, hi] = classes ? [meta.min, meta.max] : RAD_CONTINUOUS_RANGE
       layer = new ImageryLayer(asProvider(new GlobalHeatProvider({
@@ -592,7 +798,7 @@ export default function App() {
     loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
       if (cancelled) return
       layer = new ImageryLayer(asProvider(new FieldImageryProvider({
-        value: (lon, lat) => field.sampleNearest(lon, lat),
+        value: (lon, lat) => field.sampleBilinear(lon, lat),
         min: meta.min,
         max: meta.max,
         colormap: meta.colormap,
@@ -618,6 +824,44 @@ export default function App() {
   useEffect(() => {
     if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
   }, [radiationOpacity])
+
+  useEffect(() => {
+    iceEntitiesRef.current.forEach((entity) => {
+      entity.show = iceVisible
+    })
+  }, [ready, iceVisible])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !iceVisible || iceLoadedRef.current) return
+
+    let cancelled = false
+    setIceError(undefined)
+    const loadIceLayer = async () => {
+      const url = `${DATA_URL}/mappa_ghiaccio.geojson`
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`Ice GeoJSON unavailable (${response.status} ${response.statusText})`)
+      const points = parseIceGeoJson(await response.json())
+      if (cancelled) return
+
+      iceEntitiesRef.current = points.map(({ lat, lon, color }) => scene.viewer.entities.add({
+        position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+        point: {
+          pixelSize: 7,
+          color,
+          outlineColor: Color.WHITE,
+          outlineWidth: 1,
+          disableDepthTestDistance: 500_000,
+        },
+      }))
+      iceLoadedRef.current = true
+    }
+    void loadIceLayer().catch((error: unknown) => {
+      if (!cancelled) setIceError(`Unable to load the ice layer: ${error instanceof Error ? error.message : String(error)}`)
+    })
+
+    return () => { cancelled = true }
+  }, [ready, iceVisible])
 
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
@@ -692,9 +936,9 @@ export default function App() {
       const x = Math.min(2 ** (z + 1) - 1, Math.floor((lonR + Math.PI) / step)), y = Math.min(2 ** z - 1, Math.floor((Math.PI / 2 - latR) / step))
       heat.tile(z, x, y, 17, heat.dem.fineMaxLevel, true).then((tile) => {
         if (!tile) return
-        const n = tile.n, k = n - 1
-        const fx = ((lonR - (-Math.PI + x * step)) / step) * k, fy = ((Math.PI / 2 - y * step - latR) / step) * k
-        const x0 = Math.min(Math.floor(fx), k - 1), y0 = Math.min(Math.floor(fy), k - 1), wx = fx - x0, wy = fy - y0
+        const n = tile.nx, kx = n - 1, ky = tile.ny - 1
+        const fx = ((lonR - (-Math.PI + x * step)) / step) * kx, fy = ((Math.PI / 2 - y * step - latR) / step) * ky
+        const x0 = Math.min(Math.floor(fx), kx - 1), y0 = Math.min(Math.floor(fy), ky - 1), wx = fx - x0, wy = fy - y0
         const at = (a: Float32Array) => {
           const i = y0 * n + x0
           return a[i] * (1 - wx) * (1 - wy) + a[i + 1] * wx * (1 - wy) + a[i + n] * (1 - wx) * wy + a[i + n + 1] * wx * wy
@@ -735,10 +979,11 @@ export default function App() {
   }, [bundle])
 
   const searchCoordinates = useCallback((lat: number, lon: number) => {
+    stopTerrainView(false)
     inspectCustomPoint(lat, lon)
     const scene = sceneRef.current
     if (scene) flyToSite(scene.viewer, lat, lon)
-  }, [inspectCustomPoint])
+  }, [inspectCustomPoint, stopTerrainView])
 
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
@@ -812,6 +1057,7 @@ export default function App() {
   }
 
   const selectSite = (s: Site) => {
+    stopTerrainView(false)
     setInspect(undefined)
     if (markers.current.custom && sceneRef.current) {
       sceneRef.current.viewer.entities.remove(markers.current.custom)
@@ -862,6 +1108,12 @@ export default function App() {
         <h1>ByteTheMoon</h1>
         <span className="muted">Lunar Landing Site Navigator{sceneRef.current && ` · basemap: ${sceneRef.current.basemap === 'ion' ? 'Cesium Moon 3D' : 'NASA Moon Trek'}`}</span>
       </header>
+      {terrainViewActive && (
+        <div className="terrain-view-controls" role="status">
+          <span>First-person terrain view</span>
+          <button type="button" onClick={() => stopTerrainView(true)}>Return to map</button>
+        </div>
+      )}
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
@@ -873,7 +1125,9 @@ export default function App() {
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
               env={siteEnvKey ? { env: siteEnvReady?.env ?? undefined, loading: !siteEnvReady } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
-              power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined} />
+              power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
+              terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
+              terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
           <aside className="side right">
             {bundle.ephemeris && (
@@ -882,11 +1136,12 @@ export default function App() {
             )}
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!scoreFields}
-              radiationMetadata={radiationMetadata && heat && heatVersion ? { ...radiationMetadata, doseMin: RAD_CONTINUOUS_RANGE[0], doseMax: RAD_CONTINUOUS_RANGE[1] } : radiationMetadata}
+              radiationMetadata={radiationDisplayMeta}
               radiationLoading={radiationLoading} radiationError={radiationError}
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
+              iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
               slopeExact={!!scoreFields?.exact} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />

@@ -2,7 +2,7 @@
  * Thermal and radiation environment at one point, from the same global computation that draws the
  * heatmaps (lib/heatWorker.ts): Hayne 2017 regolith temperature (min / max over the selected period,
  * last year of it for long windows) and the visible-sky fraction that drives the GCR + albedo dose.
- * Sampled from a z = 10 tile (17 x 17 samples, ~330 m spacing), bilinear, like the click inspector.
+ * Sampled from a z = 10 tile (nominally 17 x 17 samples), bilinear, exactly like the click inspector.
  */
 import type { HeatEngine } from './heatEngine'
 
@@ -21,9 +21,10 @@ export async function sampleSiteEnv(heat: HeatEngine, latDeg: number, lonDeg: nu
   const y = Math.min(2 ** z - 1, Math.floor((Math.PI / 2 - latR) / step))
   const tile = await heat.tile(z, x, y, 17, heat.dem.fineMaxLevel, true)
   if (!tile || !tile.tMin.length) return null
-  const n = tile.n, k = n - 1
-  const fx = ((lonR - (-Math.PI + x * step)) / step) * k, fy = ((Math.PI / 2 - y * step - latR) / step) * k
-  const x0 = Math.max(0, Math.min(Math.floor(fx), k - 1)), y0 = Math.max(0, Math.min(Math.floor(fy), k - 1))
+  // the sample grid is nx x ny (not square away from the equator, see lib/heatGrid.ts)
+  const n = tile.nx, kx = n - 1, ky = tile.ny - 1
+  const fx = ((lonR - (-Math.PI + x * step)) / step) * kx, fy = ((Math.PI / 2 - y * step - latR) / step) * ky
+  const x0 = Math.max(0, Math.min(Math.floor(fx), kx - 1)), y0 = Math.max(0, Math.min(Math.floor(fy), ky - 1))
   const wx = fx - x0, wy = fy - y0
   const at = (a: Float32Array) => {
     const i = y0 * n + x0

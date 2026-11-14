@@ -188,4 +188,5 @@ export class PeriodField extends RasterField {
 
   sample(lon: number, lat: number) { return this.scale(this.fine.sample(lon, lat), lon, lat) }
   sampleNearest(lon: number, lat: number) { return this.scale(this.fine.sampleNearest(lon, lat), lon, lat) }
+  sampleBilinear(lon: number, lat: number) { return this.scale(this.fine.sampleBilinear(lon, lat), lon, lat) }
 }

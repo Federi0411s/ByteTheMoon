@@ -102,6 +102,27 @@ export class RasterField {
     return this.data[(p[1] | 0) * this.meta.width + (p[0] | 0)]
   }
 
+  /** Smooth display sampling, ignoring nodata neighbours without turning valid edge pixels transparent. */
+  sampleBilinear(lon: number, lat: number): number {
+    const p = this.pixel(lon, lat)
+    if (!p) return NaN
+    const { width, height } = this.meta
+    const x = Math.min(Math.max(p[0] - 0.5, 0), width - 1)
+    const y = Math.min(Math.max(p[1] - 0.5, 0), height - 1)
+    const x0 = Math.floor(x), x1 = Math.min(x0 + 1, width - 1), fx = x - x0
+    const y0 = Math.floor(y), y1 = Math.min(y0 + 1, height - 1), fy = y - y0
+    let sum = 0, total = 0
+    const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy)
+    const w01 = (1 - fx) * fy, w11 = fx * fy
+    const v00 = this.data[y0 * width + x0], v10 = this.data[y0 * width + x1]
+    const v01 = this.data[y1 * width + x0], v11 = this.data[y1 * width + x1]
+    if (w00 > 0 && Number.isFinite(v00)) { sum += v00 * w00; total += w00 }
+    if (w10 > 0 && Number.isFinite(v10)) { sum += v10 * w10; total += w10 }
+    if (w01 > 0 && Number.isFinite(v01)) { sum += v01 * w01; total += w01 }
+    if (w11 > 0 && Number.isFinite(v11)) { sum += v11 * w11; total += w11 }
+    return total > 0 ? sum / total : NaN
+  }
+
   /** Bilinear sample (smooth; used for horizons and inspection). */
   sample(lon: number, lat: number): number {
     const p = this.pixel(lon, lat)

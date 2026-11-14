@@ -116,6 +116,13 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
   crispText(viewer) // device-pixel rendering + supersampled labels
   keepCreditsClear(viewer) // Cesium ion credits bottom-left, sliding right of the left panel when needed
   const scene = viewer.scene
+  // Cesium's default global-Z constraint becomes singular when orbiting directly over either pole.
+  scene.camera.constrainedAxis = undefined
+  const controls = scene.screenSpaceCameraController
+  controls.inertiaSpin = 0.82
+  controls.inertiaTranslate = 0.82
+  controls.inertiaZoom = 0.75
+  controls.maximumTiltAngle = Math.PI / 2
   if (scene.sun) scene.sun.show = false
   if (scene.moon) scene.moon.show = false
   scene.backgroundColor = Color.BLACK

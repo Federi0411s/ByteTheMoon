@@ -7,6 +7,7 @@ import { PowerPanel } from './PowerPanel'
 import { EnvPanel, type SiteEnv } from './EnvPanel'
 import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
+import { TerrainPreview } from './TerrainPreview'
 import { TimelineBars } from './TimelineBars'
 
 const fmtDur = (ms: number | null) => {
@@ -91,6 +92,10 @@ export function SitePanel({
   env,
   dsn,
   power,
+  terrainViewActive,
+  terrainViewLoading,
+  terrainViewError,
+  onToggleTerrainView,
 }: {
   sites: Site[]
   selected?: Site
@@ -113,6 +118,10 @@ export function SitePanel({
   dsn?: { now?: DsnSample }
   env?: { env?: SiteEnv; loading: boolean }
   power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
+  terrainViewActive: boolean
+  terrainViewLoading: boolean
+  terrainViewError?: string
+  onToggleTerrainView: () => void
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
@@ -163,6 +172,13 @@ export function SitePanel({
           <p className="muted">
             {selected.lat.toFixed(3)}°, {selected.lon.toFixed(3)}° · horizon: {selected.horizon ? selected.horizon.source : 'flat (no terrain data here)'}
           </p>
+          <TerrainPreview
+            mask={selected.horizon}
+            active={terrainViewActive}
+            loading={terrainViewLoading}
+            onClick={onToggleTerrainView}
+          />
+          {terrainViewError && <p className="terrain-view-error" role="alert">{terrainViewError}</p>}
           {now && (
             <div className="kv-grid">
               <div className="kv"><span>Elevation</span><b>{selected.heightM === undefined ? '—' : `${selected.heightM.toFixed(0)} m`}</b></div>
