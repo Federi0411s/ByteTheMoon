@@ -97,6 +97,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .marker-dot { width: 9px; height: 9px; border: 1px solid #000; border-radius: 50%; }
 .marker-dot.past { background: #ff0000; }
 .marker-dot.future { background: #1e90ff; }
+.marker-dot.saved { background: #32cd32; }
 .marker-dot.selected { background: #ffff00; }
 .panel h3 { margin: 12px 0 4px; font-size: 15px; }
 .panel.warn p { color: #ffc27a; font-size: 12px; margin: 4px 0; }
