@@ -119,20 +119,14 @@ function horizon(lon0: number, lat0: number, ray: Ray, demMax: number, out: Floa
   }
 }
 
-/** Fraction of the time window the body is above the horizon (partial disc, linear in height). */
-function visibleFraction(body: Float32Array, lon: number, lat: number, hz: Float32Array, off: number): number {
+/**
+ * Fraction of the time window the body is above the horizon (partial disc, linear in height).
+ * F: local frame of the point (frame()); hMin / hMax: range of its horizon (hzRange()).
+ */
+function visibleFraction(body: Float32Array, F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number): number {
   const T = body.length / 4
   if (!T) return NaN
-  const cl = Math.cos(lat), sl = Math.sin(lat), co = Math.cos(lon), so = Math.sin(lon)
-  const ux = cl * co, uy = cl * so, uz = sl // up
-  const ex = -so, ey = co // east (z = 0)
-  const nx = -sl * co, ny = -sl * so, nz = cl // north
-  let hMin = Infinity, hMax = -Infinity
-  for (let a = 0; a < NAZ; a++) {
-    const v = hz[off + a]
-    if (v < hMin) hMin = v
-    if (v > hMax) hMax = v
-  }
+  const { ux, uy, uz, ex, ey, nx, ny, nz } = F
   let acc = 0
   for (let j = 0; j < T; j++) {
     const o = j * 4
@@ -164,8 +158,9 @@ function interp(x: number, xs: number[], ys: number[]) {
   return ys[ys.length - 1]
 }
 
-/** Local frame + surface normal (from the terrain gradient, as in pipeline/charging.terrain_geometry). */
-function frame(lon: number, lat: number, gE: number, gN: number) {
+/** Local frame (up, east, north) + surface normal m (from the terrain gradient, as in pipeline/charging.terrain_geometry). */
+interface Frame { ux: number; uy: number; uz: number; ex: number; ey: number; nx: number; ny: number; nz: number; mx: number; my: number; mz: number }
+function frame(lon: number, lat: number, gE: number, gN: number): Frame {
   const cl = Math.cos(lat), sl = Math.sin(lat), co = Math.cos(lon), so = Math.sin(lon)
   const ux = cl * co, uy = cl * so, uz = sl
   const ex = -so, ey = co
@@ -196,22 +191,42 @@ function hzRange(hz: Float32Array, off: number): [number, number] {
   return [lo, hi]
 }
 
-function charging(lon: number, lat: number, hz: Float32Array, off: number, gE: number, gN: number): [number, number, number] {
+/** Results of sunAndCharging() for one point (reused object: no allocation per sample). */
+const sunOut = { frac: NaN, cMean: NaN, cMin: NaN, cBelow: NaN }
+
+/**
+ * One pass over the window's Sun positions for a point: the Sun's visible fraction (as
+ * visibleFraction) and the EQUIPOT surface charging statistics. Both need the Sun's elevation and,
+ * near the horizon, the horizon height toward the Sun, so each is computed once per time step.
+ * Same arithmetic as computing them separately (results are identical).
+ */
+function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number) {
   const T = sun.length / 4
-  if (!T || !eq) return [NaN, NaN, NaN]
-  const F = frame(lon, lat, gE, gN)
-  const [hMin, hMax] = hzRange(hz, off)
-  const cosTail = Math.cos(eq.tailHalfAngleDeg / R2D)
-  let sum = 0, min = Infinity, below = 0
+  if (!T) { sunOut.frac = sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN; return }
+  const cosTail = eq ? Math.cos(eq.tailHalfAngleDeg / R2D) : 0
+  let acc = 0, sum = 0, min = Infinity, below = 0
   for (let j = 0; j < T; j++) {
     const o = j * 4
-    const sx = sun[o], sy = sun[o + 1], sz = sun[o + 2]
-    const inTail = sx * earth[o] + sy * earth[o + 1] + sz * earth[o + 2] > cosTail
+    const sx = sun[o], sy = sun[o + 1], sz = sun[o + 2], r = sun[o + 3]
     const el = Math.asin(sx * F.ux + sy * F.uy + sz * F.uz) * R2D
+    let h = NaN // horizon height toward the Sun, looked up only when needed
+    // visible fraction (partial disc, linear in height)
+    if (el - hMax >= r) acc += 1
+    else if (!(el - hMin <= -r)) {
+      h = horizonToward(hz, off, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
+      const v = (el - h) / (2 * r) + 0.5
+      acc += v <= 0 ? 0 : v >= 1 ? 1 : v
+    }
+    if (!eq) continue
+    // surface charging
+    const inTail = sx * earth[o] + sy * earth[o + 1] + sz * earth[o + 2] > cosTail
     let above: boolean
     if (el > hMax - SUN_RADIUS_DEG) above = true
     else if (el <= hMin - SUN_RADIUS_DEG) above = false
-    else above = el > horizonToward(hz, off, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz) - SUN_RADIUS_DEG
+    else {
+      if (h !== h) h = horizonToward(hz, off, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
+      above = el > h - SUN_RADIUS_DEG
+    }
     const cosInc = sx * F.mx + sy * F.my + sz * F.mz
     const lit = above && cosInc > 0
     let V: number
@@ -224,7 +239,8 @@ function charging(lon: number, lat: number, hz: Float32Array, off: number, gE: n
     if (V < min) min = V
     if (V < chargeThreshold) below++
   }
-  return [sum / T, min, below / T]
+  sunOut.frac = acc / T
+  if (eq) { sunOut.cMean = sum / T; sunOut.cMin = min; sunOut.cBelow = below / T } else sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN
 }
 
 // ---- regolith temperature: Hayne et al. 2017 1D model (constants as in pipeline/lunar_thermal.py) ----
@@ -250,14 +266,19 @@ let thermalCount = new Uint8Array(0) // per step: 1 = counted in the statistics,
 let thermalDt = 21600
 const SPIN_UP_S = 3 * 29.53 * 86400
 
-function thermal(lon: number, lat: number, hz: Float32Array, off: number, gE: number, gN: number): [number, number, number] {
+// work buffers of thermal(), reused for every sample (no allocation per point)
+let qBuf = new Float64Array(0)
+const Tc = new Float64Array(NZ), Kn = new Float64Array(NZ)
+const alpha = new Float64Array(NZ), beta = new Float64Array(NZ), G = new Float64Array(NZ - 1), C = new Float64Array(NZ)
+
+function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number): [number, number, number] {
   const T = thermalSun.length / 4
   if (!T) return [NaN, NaN, NaN]
-  const F = frame(lon, lat, gE, gN)
-  const [hMin, hMax] = hzRange(hz, off)
   const r = SUN_RADIUS_DEG
   // absorbed flux per step (partial disc above the terrain horizon, incidence on the local slope)
-  const Q = new Float64Array(T)
+  if (qBuf.length < T) qBuf = new Float64Array(T)
+  const Q = qBuf
+  Q.fill(0, 0, T)
   let qMean = 0
   for (let j = 0; j < T; j++) {
     const o = j * 4
@@ -278,18 +299,17 @@ function thermal(lon: number, lat: number, hz: Float32Array, off: number, gE: nu
     qMean += Q[j] / T
   }
   // start near the long-term mean temperature (~0.74 x the mean-flux radiative equilibrium)
-  const Tc = new Float64Array(NZ).fill(Math.max(30, 0.74 * Math.pow(qMean / (EPS * SIGMA), 0.25)))
-  const alpha = new Float64Array(NZ), beta = new Float64Array(NZ), G = new Float64Array(NZ - 1), C = new Float64Array(NZ)
+  Tc.fill(Math.max(30, 0.74 * Math.pow(qMean / (EPS * SIGMA), 0.25)))
   const spin = Math.ceil(SPIN_UP_S / thermalDt)
   let sum = 0, min = Infinity, max = -Infinity, n = 0
   for (let s = -spin; s < T; s++) {
     const q = Q[((s % T) + T) % T] // initial spin-up cycles through the start of the series
     const h = thermalDt
-    for (let i = 0; i < NZ; i++) C[i] = (RHO[i] * cp(Tc[i]) * VOL[i]) / h
-    for (let i = 0; i < NZ - 1; i++) {
-      const ka = KC[i] * (1 + CHI * (Tc[i] / 350) ** 3), kb = KC[i + 1] * (1 + CHI * (Tc[i + 1] / 350) ** 3)
-      G[i] = (0.5 * (ka + kb)) / DZ[i]
+    for (let i = 0; i < NZ; i++) {
+      C[i] = (RHO[i] * cp(Tc[i]) * VOL[i]) / h
+      Kn[i] = KC[i] * (1 + CHI * (Tc[i] / 350) ** 3) // conductivity of node i (once per step)
     }
+    for (let i = 0; i < NZ - 1; i++) G[i] = (0.5 * (Kn[i] + Kn[i + 1])) / DZ[i]
     // bottom-up elimination: T'[i] = alpha[i] + beta[i] * T'[i-1]
     let D = C[NZ - 1] + G[NZ - 2]
     alpha[NZ - 1] = (C[NZ - 1] * Tc[NZ - 1] + Q_GEO) / D
@@ -405,13 +425,19 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
         if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
         continue
       }
-      s[c] = visibleFraction(sun, lon, lat, t.hz, c * NAZ)
-      e[c] = visibleFraction(earth, lon, lat, t.hz, c * NAZ)
-      ;[cMean[c], cMin[c], cBelow[c]] = charging(lon, lat, t.hz, c * NAZ, t.gE[c], t.gN[c])
+      const off = c * NAZ
+      const F = frame(lon, lat, t.gE[c], t.gN[c])
+      const [hMin, hMax] = hzRange(t.hz, off)
+      sunAndCharging(F, t.hz, off, hMin, hMax)
+      s[c] = sunOut.frac
+      cMean[c] = sunOut.cMean
+      cMin[c] = sunOut.cMin
+      cBelow[c] = sunOut.cBelow
+      e[c] = visibleFraction(earth, F, t.hz, off, hMin, hMax)
       let sky = 0
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
       fSky[c] = sky / NAZ / 2
-      if (m.thermal) [tMean[c], tMin[c], tMax[c]] = thermal(lon, lat, t.hz, c * NAZ, t.gE[c], t.gN[c])
+      if (m.thermal) [tMean[c], tMin[c], tMax[c]] = thermal(F, t.hz, off, hMin, hMax)
     }
   }
   const slope = t.slope.slice(), elev = t.elev.slice()
