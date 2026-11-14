@@ -267,6 +267,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .dsn-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
 .dsn-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 2px 4px; border-bottom: 1px solid var(--border); }
 .dsn-table td { padding: 4px; vertical-align: top; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.dsn-table td:first-child { white-space: nowrap; }
 .dsn-ok { color: #6ee7a8; }
 .dsn-no { color: #ff9a9a; }
 .power-wh { margin-top: 10px; }
