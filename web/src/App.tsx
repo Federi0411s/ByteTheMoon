@@ -179,7 +179,9 @@ export default function App() {
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
         point: {
           pixelSize: 9,
-          color: FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
+          color: s.group === 'Saved'
+            ? Color.fromCssColorString('#32cd32')
+            : FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
           outlineColor: Color.BLACK,
           outlineWidth: 2,
           disableDepthTestDistance: 500_000,
