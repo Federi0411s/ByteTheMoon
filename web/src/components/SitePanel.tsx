@@ -20,6 +20,8 @@ export function SitePanel({
   windowDays,
   onWindowDays,
   inspect,
+  expanded,
+  onToggleExpanded,
 }: {
   sites: Site[]
   selected?: Site
@@ -31,20 +33,29 @@ export function SitePanel({
   windowDays: number
   onWindowDays: (d: number) => void
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
+  expanded: boolean
+  onToggleExpanded: () => void
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
-    <section className="panel">
-      <h2>Landing sites</h2>
+    <section className="panel" id="landing-sites-panel">
+      <div className="site-panel-heading">
+        <h2>Landing sites</h2>
+        <button className="site-panel-expand" onClick={onToggleExpanded} aria-expanded={expanded} aria-controls="landing-sites-panel"
+          aria-label={expanded ? 'Collapse landing sites panel' : 'Expand landing sites panel'}>
+          {expanded ? 'Collapse' : 'Expand'}
+        </button>
+      </div>
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
+        {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}
         {groups.map((g) => (
           <optgroup key={g} label={g}>
             {sites.filter((s) => s.group === g).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </optgroup>
         ))}
       </select>
-      <p className="muted">Tip: click the map to inspect a point, double-click to analyse it as a custom site.</p>
+      <p className="muted">Click the map to inspect and analyse a point as a custom landing site.</p>
 
       {inspect && (
         <div className="inspect">
@@ -61,6 +72,7 @@ export function SitePanel({
           </p>
           {now && (
             <div className="kv-grid">
+              <div className="kv"><span>Elevation</span><b>{selected.heightM === undefined ? '—' : `${selected.heightM.toFixed(0)} m`}</b></div>
               <div className="kv"><span>Sun elevation</span><b>{now.sunEl.toFixed(1)}°</b></div>
               <div className="kv"><span>Sun disc visible</span><b>{(now.sunVisibleFrac * 100).toFixed(0)}%</b></div>
               <div className="kv"><span>Earth elevation</span><b>{now.earthEl.toFixed(1)}°</b></div>
@@ -70,7 +82,7 @@ export function SitePanel({
           <Panorama mask={selected.horizon} timeline={timeline} now={now} />
           <div className="row">
             <span className="muted">Window</span>
-            {[7, 30, 90, 365].map((d) => (
+            {[1, 3, 7, 30, 90, 365].map((d) => (
               <button key={d} className={d === windowDays ? 'on' : ''} onClick={() => onWindowDays(d)}>{d} d</button>
             ))}
           </div>
