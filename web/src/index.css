@@ -16,25 +16,94 @@
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 
-.app { position: relative; height: 100%; }
+/* UI chrome is not selectable (no accidental highlighting while dragging sliders / the globe);
+   only the data readouts below opt back in so values can be copied. */
+.app { position: relative; height: 100%; user-select: none; -webkit-user-select: none; }
+.kv-grid, .kv, .inspect, .source, .panel h3, .panel p {
+  user-select: text; -webkit-user-select: text; cursor: text;
+}
 .globe { position: absolute; inset: 0; }
-.cesium-viewer-bottom { display: none; } /* credits are listed in the About/README; re-enable for the final build if required */
+/* Cesium credits + ion logo: required on screen when using Cesium ion assets, so keep them visible,
+   unaltered and legible, just compact. Placed in the gap right of the left panel and above the time
+   bar so no UI ever covers them. `.app` prefix beats widgets.css, which loads after this file. */
+.app .cesium-viewer-bottom {
+  /* !important: the Viewer writes inline left/bottom/right on every resize */
+  left: 384px !important; /* .side.left: 12px + 360px + 12px gap */
+  bottom: 68px !important; /* timebar is 12px + ~51px tall; leave a small gap above it */
+  right: auto !important;
+  max-width: calc(100% - 384px - 324px); /* stop before the right panel (300px + 2*12px) */
+  padding: 0;
+  font-size: 9px;
+  line-height: 1.3;
+  z-index: 1;
+}
+.app .cesium-viewer .cesium-widget-credits { font-size: 9px; }
+.app .cesium-credit-logoContainer img { height: 16px; width: auto; vertical-align: middle; }
+.app .cesium-credit-expand-link { margin-left: 4px; }
+/* "Data attribution" popup: ~50 Moon Trek credits make it taller than the screen, and Cesium centres
+   it vertically, so it overflowed both edges. Cap its height and scroll the list. */
+.app .cesium-credit-lightbox-overlay { z-index: 10; }
+.app .cesium-credit-lightbox.cesium-credit-lightbox-expanded {
+  display: flex; flex-direction: column;
+  max-height: calc(100% - 48px);
+  margin: 24px auto !important;
+  top: 0 !important;
+  user-select: text; -webkit-user-select: text;
+}
+.app .cesium-credit-lightbox ul { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 
 .brand { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; pointer-events: none; }
 .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0.04em; }
 
-.side { position: absolute; top: 64px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.side { position: absolute; top: 12px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
-.side.right { right: 12px; width: 300px; }
+.side.left.expanded { width: 50vw; }
+.side.right { right: 12px; bottom: 118px; width: 300px; }
+
+.map-scale {
+  position: absolute;
+  right: 12px;
+  bottom: 68px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.map-scale-ruler { position: relative; width: 1cm; height: 8px; border-bottom: 1px solid var(--text); }
+.map-scale-ruler i { position: absolute; bottom: 0; width: 1px; height: 7px; background: var(--text); }
+.map-scale-ruler i:first-child { left: 0; }
+.map-scale-ruler i:nth-child(2) { left: 50%; height: 4px; }
+.map-scale-ruler i:last-child { right: 0; }
 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
 .panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.site-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.site-panel-heading h2 { margin: 4px 0 10px; }
+.site-panel-expand { margin-bottom: 6px; }
+.site-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 8px; color: var(--muted); font-size: 11px; }
+.site-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.coordinate-search { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.coordinate-search-row { display: flex; gap: 6px; }
+.coordinate-search-row input[type='text'] { flex: 1; min-width: 0; }
+.coordinate-error { margin: 0; color: #ffc27a; font-size: 11px; }
+.marker-dot { width: 9px; height: 9px; border: 1px solid #000; border-radius: 50%; }
+.marker-dot.past { background: #ff0000; }
+.marker-dot.future { background: #1e90ff; }
+.marker-dot.selected { background: #ffff00; }
 .panel h3 { margin: 12px 0 4px; font-size: 15px; }
 .panel.warn p { color: #ffc27a; font-size: 12px; margin: 4px 0; }
 .muted { color: var(--muted); font-size: 12px; }
 .source { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 
-select, button, input[type='datetime-local'] {
+select, button, input[type='datetime-local'], input[type='text'] {
   background: #141a2b; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px;
 }
 select { width: 100%; }
@@ -44,7 +113,16 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 .layer { padding: 8px 0; border-top: 1px solid var(--border); }
 .layer-head { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.panel-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; background: none; border: none; text-align: left; }
+.panel-toggle h2 { margin: 4px 0; }
+.panel-toggle .muted { margin-left: auto; }
+.panel-toggle .chevron { color: var(--muted); width: 12px; }
+.panel-toggle + * { margin-top: 10px; }
+.basemap-row { padding: 4px 0; flex-wrap: wrap; }
+.basemap-row .muted { margin-left: auto; font-size: 11px; }
 .slider { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.slider-label { display: flex; justify-content: space-between; gap: 8px; }
+.slider-value { color: var(--text); font-variant-numeric: tabular-nums; }
 .legend { margin-top: 4px; }
 .legend-bar { height: 8px; border-radius: 4px; }
 .legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
@@ -83,4 +161,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
+  .site-panel-expand { display: none; }
+  .map-scale { position: relative; right: auto; bottom: auto; width: max-content; margin: 8px 12px 76px auto; }
+  /* panels stack in normal flow here, so credits just sit above the time bar */
+  .app .cesium-viewer-bottom { left: 12px !important; max-width: calc(100% - 24px); }
 }

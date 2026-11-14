@@ -40,6 +40,7 @@ class Layer:
     transparent_below: float | None = None  # values below -> nodata (e.g. PSR mask keeps only shadowed pixels)
     display: bool = True
     nodata_dn: int | None = None  # extra raw value meaning 'no data' (LDSM uses 0 for gaps between LOLA tracks)
+    resample_max: bool = False  # downsample with max instead of average (conservative, e.g. for slope limits)
 
 
 LAYERS = [
@@ -59,6 +60,12 @@ LAYERS = [
           "Surface slope from LOLA topography. Landers typically need < 8–15°.",
           "LOLA LDSM 85S 40 m (PDS)", "ldsm_85s_40m",
           0, 45, 0, 30, "°", "slope", 100, nodata_dn=0),
+    # Data-only layer for the landing-suitability heatmap: each 100 m cell holds the STEEPEST 40 m slope
+    # inside it; the browser then takes the max over the user's landing footprint (web/src/lib/raster.ts).
+    Layer("slope_max", "Max slope per 100 m cell",
+          "Steepest 40 m LOLA slope inside each 100 m cell.",
+          "LOLA LDSM 85S 40 m (PDS), max-resampled to 100 m", "ldsm_85s_40m",
+          0, 45, 0, 30, "°", "slope", 100, nodata_dn=0, display=False, resample_max=True),
     Layer("dem_south", "Elevation",
           "Height above the 1737.4 km reference sphere. Also used in the browser to compute horizons for custom sites.",
           "LOLA LDEM 80S 80 m (PDS), resampled to 240 m", "ldem_80s_80m",
@@ -87,7 +94,8 @@ def build(layer: Layer) -> dict | None:
             val, dst,
             src_transform=src.transform, src_crs=src.crs, src_nodata=np.nan,
             dst_transform=rasterio.transform.from_origin(-half, half, res, res), dst_crs=SOUTH_STERE, dst_nodata=np.nan,
-            resampling=Resampling.average if res > abs(src.transform.a) * 1.5 else Resampling.bilinear,
+            resampling=(Resampling.max if layer.resample_max else Resampling.average) if res > abs(src.transform.a) * 1.5
+            else Resampling.bilinear,
         )
 
     if layer.transparent_below is not None:

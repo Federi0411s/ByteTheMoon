@@ -61,5 +61,5 @@ KERNEL_FILES = {
     "moon_pa_de440_200625.bpc": f"{NAIF}/pck/moon_pa_de440_200625.bpc",
     "moon_de440_250416.tf": f"{NAIF}/fk/satellites/moon_de440_250416.tf",
     "moon_assoc_me.tf": f"{NAIF}/fk/satellites/moon_assoc_me.tf",
-    "de440s.bsp": f"{NAIF}/spk/planets/de440s.bsp",
+    "de440.bsp": f"{NAIF}/spk/planets/de440.bsp",
 }

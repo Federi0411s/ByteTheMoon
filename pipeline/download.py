@@ -1,7 +1,8 @@
 """Download the raw inputs (PDS LOLA products + NAIF SPICE kernels). Resumable: just re-run it.
 
-    python pipeline/download.py            # ~400 MB: everything the default pipeline needs
-    python pipeline/download.py --all      # + optional hi-res DEM and 75S illumination (~700 MB more)
+    python pipeline/download.py                 # data products + full DE440 SPICE kernels
+    python pipeline/download.py --kernels-only   # SPICE kernels only
+    python pipeline/download.py --all            # + optional hi-res DEM and 75S illumination
 
 Uses only HTTPS (NASA blocks FTP) and the standard library.
 """
@@ -44,13 +45,15 @@ def fetch(url: str, dest: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true", help="also download optional products")
+    ap.add_argument("--kernels-only", action="store_true", help="download only SPICE kernels")
     args = ap.parse_args()
 
-    products = dict(PRODUCTS, **(OPTIONAL_PRODUCTS if args.all else {}))
-    print(f"PDS products -> {RAW}")
-    for name, base in products.items():
-        for ext in (".lbl", ".img"):
-            fetch(base + ext, RAW / (name + ext))
+    if not args.kernels_only:
+        products = dict(PRODUCTS, **(OPTIONAL_PRODUCTS if args.all else {}))
+        print(f"PDS products -> {RAW}")
+        for name, base in products.items():
+            for ext in (".lbl", ".img"):
+                fetch(base + ext, RAW / (name + ext))
     print(f"SPICE kernels -> {KERNELS}")
     for name, url in KERNEL_FILES.items():
         fetch(url, KERNELS / name)

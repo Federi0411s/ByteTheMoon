@@ -35,7 +35,7 @@ IAU names + LOLA ─────────────────────
 | `psr` | Permanently shadowed regions | LOLA LPSR 60 m |
 | `slope` | Surface slope | LOLA LDSM 40 m |
 | `dem_south` | Elevation, 80°S–90°S, 240 m (also used for custom-site horizons) | LOLA LDEM 80 m |
-| (derived) landing score | `w_sun·sun + w_earth·earth + w_flat·(1 − slope/max)`, transparent where slope > max | computed live |
+| (derived) landing score | `(w_sun·sun + w_earth·earth) / (w_sun + w_earth)`, transparent where the max slope inside the landing footprint > limit (≤ 10°) | computed live |
 
 Adding a layer means adding one entry to `LAYERS` in `pipeline/overlays.py` and running it again. The UI picks it up automatically.
 
@@ -43,6 +43,7 @@ Adding a layer means adding one entry to `LAYERS` in `pipeline/overlays.py` and 
 
 Done (scaffold):
 - [x] Cesium Moon viewer with a Moon Trek fallback, site markers, fly-to
+- [x] Moon Trek fallback streams a photo LOD stack: WAC ~100 m/px global, Kaguya ~21 m/px (60S-60N), NAC ~5 m/px polar caps, ~50 NAC site mosaics at 0.5-1.5 m/px
 - [x] Interactive heatmaps (toggle, opacity, legend) and a live landing-score layer with weight sliders
 - [x] Click to inspect all layer values; double-click to analyse a custom site (horizon computed in the browser)
 - [x] Time slider and play: the Sun lights the scene from its real direction; Sun/Earth markers

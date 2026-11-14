@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Cartesian2,
   Cartesian3,
@@ -14,19 +14,47 @@ import {
   ScreenSpaceEventType,
   VerticalOrigin,
 } from 'cesium'
-import { createMoonScene, flyToSite, setSunDirection, setSunLighting, type MoonScene } from './cesium/createViewer'
+import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
-import { loadBundle, type DataBundle, type Site } from './lib/data'
-import { hillshade, loadRaster } from './lib/raster'
-import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
+import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
+import { footprintMax, hillshade, loadRaster } from './lib/raster'
+import { DEFAULT_FOOTPRINT, footprintAxes, SLOPE_MAX_DEG } from './lib/requirements'
+import {
+  earthPosition,
+  ephemerisRange,
+  EPHEMERIS_LAST_SELECTABLE_YEAR,
+  EPHEMERIS_START_YEAR,
+  EPHEMERIS_WINDOW_YEARS,
+  loadEphemerisWindow,
+  sunPosition,
+} from './lib/ephemeris'
 import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
+import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
+const CSS_PIXELS_PER_CM = 96 / 2.54
+const DEFAULT_TIME_START = Date.UTC(EPHEMERIS_START_YEAR, 0, 1)
+const DEFAULT_TIME_END = Date.UTC(EPHEMERIS_START_YEAR + EPHEMERIS_WINDOW_YEARS, 0, 1)
+const CALENDAR_RANGE: [number, number] = [
+  DEFAULT_TIME_START,
+  Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
+]
 const D2R = Math.PI / 180
+const FUTURE_SITE_GROUPS = new Set([
+  'Artemis III candidate regions',
+  'South pole (best-lit spot near feature)',
+])
+
+function formatScaleDistance(meters: number) {
+  if (meters >= 1000) return `${Number((meters / 1000).toPrecision(2))} km`
+  if (meters >= 1) return `${Number(meters.toPrecision(2))} m`
+  if (meters >= 0.01) return `${Number((meters * 100).toPrecision(2))} cm`
+  return `${Number((meters * 1000).toPrecision(2))} mm`
+}
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -34,18 +62,24 @@ export default function App() {
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
   const radiationLayerRef = useRef<ImageryLayer | null>(null)
   const radiationOpacityRef = useRef(0.7)
-  const markers = useRef<{ sun?: Entity; earth?: Entity; sites: Entity[] }>({ sites: [] })
+  const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
+  const [ephemeris, setEphemeris] = useState<DataBundle['ephemeris']>(null)
+  const [timeRange, setTimeRange] = useState<[number, number]>([DEFAULT_TIME_START, DEFAULT_TIME_END])
+  const [ephemerisBusy, setEphemerisBusy] = useState(false)
+  const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
-  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, flat: 0.2, maxSlope: 10, opacity: 0.7 })
-  const [t, setT] = useState(() => Date.parse('2027-06-01T00:00:00Z'))
+  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
+  const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
   const [selected, setSelected] = useState<Site>()
+  const [showSiteMarkers, setShowSiteMarkers] = useState(true)
   const [windowDays, setWindowDays] = useState(30)
+  const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
   const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
   const [radiationLoading, setRadiationLoading] = useState(true)
@@ -55,6 +89,8 @@ export default function App() {
   const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
 
   radiationOpacityRef.current = radiationOpacity
+  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
+  const [viewResM, setViewResM] = useState<number>()
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -65,8 +101,15 @@ export default function App() {
       ;(window as unknown as { moon: MoonScene }).moon = scene // handy in the browser console: moon.viewer
       setBundle(data)
       if (data.ephemeris) {
+        setEphemeris(data.ephemeris)
         const [a, b] = ephemerisRange(data.ephemeris)
-        setT((x) => Math.min(Math.max(x, a), b))
+        setTimeRange([a, b])
+        const t0 = Math.min(Math.max(Date.now(), a), b)
+        setT(t0)
+        // opening view: the full Moon disc as seen from Earth right now
+        viewFromEarth(scene.viewer, earthPosition(data.ephemeris, t0))
+      } else {
+        flyToSite(scene.viewer, -89.5, 0, 250_000, 0)
       }
       setReady(true)
     })
@@ -95,6 +138,16 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
+  // ---- default overlay base: keep a readable, useful stack on first load ----
+  useEffect(() => {
+    if (!bundle || Object.keys(layerState).length) return
+    const defaults: Record<string, LayerState> = {}
+    for (const meta of bundle.layers) {
+      defaults[meta.id] = { visible: meta.id === 'sun_avg', opacity: 0.65 }
+    }
+    setLayerState(defaults)
+  }, [bundle, layerState])
+
   // ---- site markers ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -103,7 +156,13 @@ export default function App() {
     markers.current.sites = bundle.sites.map((s) =>
       scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
-        point: { pixelSize: 9, color: Color.fromCssColorString('#ff8a3d'), outlineColor: Color.BLACK, outlineWidth: 2, disableDepthTestDistance: 500_000 },
+        point: {
+          pixelSize: 9,
+          color: FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
+          outlineColor: Color.BLACK,
+          outlineWidth: 2,
+          disableDepthTestDistance: 500_000,
+        },
         label: {
           text: s.name, font: '13px system-ui', style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3,
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
@@ -113,52 +172,97 @@ export default function App() {
     )
   }, [ready, bundle])
 
-  // ---- polar relief base layer for the Moon Trek fallback (its imagery smears near the pole) ----
+  useEffect(() => {
+    markers.current.sites.forEach((marker) => {
+      marker.show = showSiteMarkers
+    })
+  }, [showSiteMarkers, ready, bundle])
+
+  // ---- photo basemap toggles (Moon Trek LOD stack) ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    for (const g of ['kaguya', 'nacPolar', 'nacSites'] as const) scene.photo[g].forEach((l) => (l.show = basemapState[g]))
+  }, [ready, basemapState])
+
+  // ---- LOLA relief shading south of 80S: above the WAC/Kaguya photos (which smear near the pole)
+  //      but below the sharper NAC mosaics, so it fills the gaps without hiding the best imagery ----
   useEffect(() => {
     const scene = sceneRef.current
     const dem = bundle?.fields.dem_south
-    if (!ready || !scene || !dem || scene.basemap !== 'trek') return
+    if (!ready || !scene || !dem || scene.basemap !== 'trek' || !basemapState.relief) return
     const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
       value: hillshade(dem), min: 0, max: 1, colormap: 'grey',
       boundsRad: dem.boundsRad(), maximumLevel: levelForResolution(dem.meta.resolutionM) + 1,
       credit: 'Relief: LOLA LDEM 80S',
-    })))
-    scene.overlays.add(layer, 1) // just above the basemap, below the heatmaps
+    })), { alpha: 0.75 })
+    scene.overlays.add(layer, scene.photo.wac.length + scene.photo.kaguya.length)
     return () => { scene.overlays.remove(layer, true) }
-  }, [ready, bundle])
+  }, [ready, bundle, basemapState.relief])
+
+  // ---- approximate ground resolution at the screen centre (for the basemap panel) ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const { camera, canvas } = scene.viewer.scene
+    camera.percentageChanged = 0.05
+    const update = () => {
+      const h = camera.positionCartographic.height
+      const fovy = (camera.frustum as { fovy?: number }).fovy ?? Math.PI / 3
+      setViewResM((2 * h * Math.tan(fovy / 2)) / Math.max(canvas.clientHeight, 1))
+    }
+    update()
+    return camera.changed.addEventListener(update)
+  }, [ready])
 
   // ---- raster overlays (one ImageryLayer per visible layer) ----
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
-    for (const meta of bundle.layers) {
+    bundle.layers.forEach((meta) => {
       const field = bundle.fields[meta.id]
       const st = layerState[meta.id]
       let layer = layerRefs.current[meta.id]
       if (!field || !st?.visible) {
         if (layer) layer.show = false
-        continue
+        return
       }
       if (!layer) {
+        const contrast = meta.id.includes('sun') || meta.id.includes('earth') ? 1.25 : meta.id.includes('slope') ? 1.4 : 1.15
         layer = new ImageryLayer(asProvider(new FieldImageryProvider({
           value: (lon, lat) => field.sampleNearest(lon, lat),
           min: meta.min, max: meta.max, colormap: meta.colormap,
           boundsRad: field.boundsRad(),
           maximumLevel: levelForResolution(meta.resolutionM),
           credit: meta.source,
+          contrast,
         })))
         scene.overlays.add(layer)
         layerRefs.current[meta.id] = layer
       }
       layer.show = true
       layer.alpha = st.opacity
-    }
+    })
   }, [ready, bundle, layerState])
 
   // ---- derived "landing suitability" heatmap, rebuilt when weights change ----
-  const scoreFields = bundle && bundle.fields.sun_avg && bundle.fields.earth_avg && bundle.fields.slope
-    ? { sun: bundle.fields.sun_avg, earth: bundle.fields.earth_avg, slope: bundle.fields.slope }
-    : null
+  // Slope used here = MAX slope inside the chosen landing footprint (circle / ellipse) centred on each
+  // point (see lib/requirements.ts). Base raster: the pipeline layer slope_max (each 100 m pixel = max of
+  // the 40 m LDSM inside it); fallback: the 100 m slope layer (averaged, so steep spots are underestimated).
+  // Recomputed (debounced) when the footprint changes.
+  const [fpA, fpB, fpAz] = footprintAxes(score.footprint)
+  const [fpKey, setFpKey] = useState(`${fpA},${fpB},${fpAz}`)
+  useEffect(() => {
+    const id = setTimeout(() => setFpKey(`${fpA},${fpB},${fpAz}`), 400) // wait for typing to stop
+    return () => clearTimeout(id)
+  }, [fpA, fpB, fpAz])
+  const scoreFields = useMemo(() => {
+    const f = bundle?.fields
+    const base = f?.slope_max ?? f?.slope
+    if (!f?.sun_avg || !f.earth_avg || !base) return null
+    const [a, b, az] = fpKey.split(',').map(Number)
+    return { sun: f.sun_avg, earth: f.earth_avg, slope: footprintMax(base, a, b, az), exact: !!f.slope_max }
+  }, [bundle, fpKey])
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !scoreFields) return
@@ -167,14 +271,15 @@ export default function App() {
     if (!score.enabled) return
     const handle = setTimeout(() => {
       const { sun, earth, slope } = scoreFields
-      const wSum = score.sun + score.earth + score.flat || 1
+      const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
+      const wSum = score.sun + score.earth || 1
       const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
         value: (lon, lat) => {
           const sl = slope.sampleNearest(lon, lat)
-          if (!(sl <= score.maxSlope)) return NaN // too steep or no data -> transparent
+          if (!(sl <= limit)) return NaN // fails the slope requirement or no data -> transparent
           const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
           if (Number.isNaN(s) || Number.isNaN(e)) return NaN
-          return (score.sun * s + score.earth * e + score.flat * (1 - sl / score.maxSlope)) / wSum
+          return (score.sun * s + score.earth * e) / wSum
         },
         min: 0, max: 1, colormap: 'viridis',
         boundsRad: sun.boundsRad(),
@@ -184,8 +289,7 @@ export default function App() {
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, scoreFields !== null, score])
+  }, [ready, scoreFields, score])
 
   // ---- polar raster radiation overlay ----
   useEffect(() => {
@@ -230,7 +334,7 @@ export default function App() {
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
     const scene = sceneRef.current
-    const eph = bundle?.ephemeris
+    const eph = ephemeris
     if (!ready || !scene || !eph) return
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
@@ -245,20 +349,70 @@ export default function App() {
     }
     m.sun.position = new ConstantPositionProperty(sunShown)
     m.earth!.position = new ConstantPositionProperty(new Cartesian3(...earth))
-  }, [ready, bundle, t])
+  }, [ready, ephemeris, t])
 
   useEffect(() => {
     if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting)
   }, [ready, lighting])
 
   useEffect(() => {
-    if (!playing || !bundle?.ephemeris) return
-    const [, end] = ephemerisRange(bundle.ephemeris)
+    if (!playing || !ephemeris) return
+    const end = timeRange[1]
     const id = setInterval(() => setT((x) => (x + stepMs > end ? x : x + stepMs)), 80)
     return () => clearInterval(id)
-  }, [playing, stepMs, bundle])
+  }, [playing, stepMs, ephemeris, timeRange])
 
-  // ---- click to inspect, double-click to analyse a custom site ----
+  const inspectCustomPoint = useCallback((lat: number, lon: number) => {
+    const scene = sceneRef.current
+    if (!scene || !bundle) return
+    const viewer = scene.viewer
+    const p = { lat, lon }
+    const dem = bundle.fields.dem_south
+    const elevation = dem?.sample(lon * D2R, lat * D2R)
+    const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
+    const horizon = dem && heightM !== undefined ? computeHorizon(dem, lat, lon) : undefined
+    const values = bundle.layers.map((m) => {
+      const v = bundle.fields[m.id]?.sample(lon * D2R, lat * D2R)
+      return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+    })
+    if (markers.current.custom) viewer.entities.remove(markers.current.custom)
+    markers.current.custom = viewer.entities.add({
+      position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+      point: {
+        pixelSize: 13,
+        color: Color.YELLOW,
+        outlineColor: Color.BLACK,
+        outlineWidth: 3,
+        disableDepthTestDistance: 500_000,
+      },
+      label: {
+        text: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+        font: '13px system-ui',
+        style: LabelStyle.FILL_AND_OUTLINE,
+        outlineWidth: 3,
+        verticalOrigin: VerticalOrigin.BOTTOM,
+        pixelOffset: new Cartesian2(0, -16),
+        disableDepthTestDistance: 500_000,
+      },
+    })
+    setInspect({ ...p, values })
+    setSelected({
+      id: `custom-${Date.now()}`,
+      name: `Custom ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
+      group: 'Custom',
+      ...p,
+      heightM,
+      horizon,
+    })
+  }, [bundle])
+
+  const searchCoordinates = useCallback((lat: number, lon: number) => {
+    inspectCustomPoint(lat, lon)
+    const scene = sceneRef.current
+    if (scene) flyToSite(scene.viewer, lat, lon)
+  }, [inspectCustomPoint])
+
+  // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
@@ -273,33 +427,59 @@ export default function App() {
     handler.setInputAction((e: { position: Cartesian2 }) => {
       const p = pick(e.position)
       if (!p) return
-      const values = bundle.layers.map((m) => {
-        const v = bundle.fields[m.id]?.sample(p.lon * D2R, p.lat * D2R)
-        return { title: m.title, value: v === undefined || Number.isNaN(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
-      })
-      setInspect({ ...p, values })
+      inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
-    handler.setInputAction((e: { position: Cartesian2 }) => {
-      const p = pick(e.position)
-      if (!p) return
-      const dem = bundle.fields.dem_south
-      const horizon = dem && !Number.isNaN(dem.sample(p.lon * D2R, p.lat * D2R)) ? computeHorizon(dem, p.lat, p.lon) : undefined
-      setSelected({ id: `custom-${Date.now()}`, name: `Custom ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`, group: 'Custom', ...p, horizon })
-    }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
     return () => handler.destroy()
-  }, [ready, bundle])
+  }, [ready, bundle, inspectCustomPoint])
 
   // ---- site analysis ----
   const dayStart = Math.floor(t / DAY) * DAY
   const timeline = useMemo(() => {
-    if (!selected || !bundle?.ephemeris) return []
+    if (!selected || !ephemeris) return []
     const step = windowDays > 90 ? 6 * 3600_000 : 3600_000
-    return computeTimeline(bundle.ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
-  }, [selected, bundle, dayStart, windowDays])
+    return computeTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
+  }, [selected, ephemeris, dayStart, windowDays])
   const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
-  const now = useMemo(() => (selected && bundle?.ephemeris ? computeTimeline(bundle.ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, bundle, t])
+  const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
+
+  const selectCalendarDate = async (nextTime: number) => {
+    const year = new Date(nextTime).getUTCFullYear()
+    if (year < EPHEMERIS_START_YEAR || year > EPHEMERIS_LAST_SELECTABLE_YEAR) return
+    if (year === new Date(timeRange[0]).getUTCFullYear()) {
+      setT(nextTime)
+      return
+    }
+
+    setPlaying(false)
+    setEphemerisBusy(true)
+    setEphemerisError(undefined)
+    try {
+      const nextEphemeris = await loadEphemerisWindow(DATA_URL, year)
+      setEphemeris(nextEphemeris)
+      setTimeRange([Date.UTC(year, 0, 1), Date.UTC(year + EPHEMERIS_WINDOW_YEARS, 0, 1)])
+      setT(nextTime)
+    } catch (error) {
+      setEphemerisError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setEphemerisBusy(false)
+    }
+  }
+
+  const resetTimeline = () => {
+    if (!bundle?.ephemeris) return
+    setPlaying(false)
+    setEphemeris(bundle.ephemeris)
+    setTimeRange([DEFAULT_TIME_START, DEFAULT_TIME_END])
+    setT(DEFAULT_TIME_START)
+    setEphemerisError(undefined)
+  }
 
   const selectSite = (s: Site) => {
+    setInspect(undefined)
+    if (markers.current.custom && sceneRef.current) {
+      sceneRef.current.viewer.entities.remove(markers.current.custom)
+      markers.current.custom = undefined
+    }
     setSelected(s)
     if (sceneRef.current) flyToSite(sceneRef.current.viewer, s.lat, s.lon)
   }
@@ -313,9 +493,12 @@ export default function App() {
       </header>
       {bundle && (
         <>
-          <aside className="side left">
-            <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} timeline={timeline} summary={summary}
-              now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect} />
+          <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
+            <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              timeline={timeline} summary={summary}
+              now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
+              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
+              showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
@@ -323,7 +506,11 @@ export default function App() {
               radiationMetadata={radiationMetadata} radiationLoading={radiationLoading} radiationError={radiationError}
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
-              radiationMode={radiationMode} onRadiationMode={setRadiationMode} />
+              radiationMode={radiationMode} onRadiationMode={setRadiationMode}
+              slopeExact={!!scoreFields?.exact} />
+            {sceneRef.current && (
+              <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
+            )}
             {bundle.warnings.length > 0 && (
               <section className="panel warn">
                 <h2>Setup</h2>
@@ -331,8 +518,23 @@ export default function App() {
               </section>
             )}
           </aside>
-          {bundle.ephemeris && (
-            <TimeBar t={t} range={ephemerisRange(bundle.ephemeris)} onChange={setT} playing={playing} onPlay={setPlaying} stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting} />
+          {bundle.ephemeris && ephemeris && (
+            <TimeBar t={t} range={timeRange} calendarRange={CALENDAR_RANGE} onChange={setT}
+              onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
+              stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
+              busy={ephemerisBusy} error={ephemerisError} />
+          )}
+          {viewResM !== undefined && Number.isFinite(viewResM) && viewResM > 0 && (
+            <div className="map-scale" role="img"
+              aria-label={`1 cm on screen corresponds to about ${formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon`}
+              title="Estimate at the map center; 1 cm uses the standard CSS scale.">
+              <span>≈ {formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon</span>
+              <div className="map-scale-ruler" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </div>
+            </div>
           )}
         </>
       )}

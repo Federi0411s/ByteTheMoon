@@ -31,6 +31,8 @@ export interface FieldImageryOptions {
   credit?: string
   /** optional: values for which the pixel is drawn transparent (besides NaN) */
   transparentIf?: (v: number) => boolean
+  /** global contrast enhancement, applied before colormap lookup */
+  contrast?: number
 }
 
 const TILE = 256
@@ -77,9 +79,8 @@ export class FieldImageryProvider {
     const ctx = canvas.getContext('2d')!
     const img = ctx.createImageData(TILE, TILE)
     const px = img.data
-    const { value, min, max, transparentIf } = this.opts
+    const { value, min, max, transparentIf, contrast = 1 } = this.opts
     const lut = this.lut
-    const inv = 255 / (max - min || 1)
     const dLon = (r.east - r.west) / TILE
     const dLat = (r.north - r.south) / TILE
 
@@ -89,7 +90,11 @@ export class FieldImageryProvider {
         const v = value(r.west + (i + 0.5) * dLon, lat)
         const o = (j * TILE + i) * 4
         if (Number.isNaN(v) || (transparentIf && transparentIf(v))) continue // alpha stays 0
-        const k = Math.max(0, Math.min(255, ((v - min) * inv) | 0)) * 3
+
+        const normalized = (v - min) / (max - min || 1)
+        const contrasted = Math.max(0, Math.min(1, 0.5 + (normalized - 0.5) * contrast))
+        const k = Math.max(0, Math.min(255, Math.round(contrasted * 255))) * 3
+
         px[o] = lut[k]
         px[o + 1] = lut[k + 1]
         px[o + 2] = lut[k + 2]
