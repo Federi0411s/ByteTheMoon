@@ -1,0 +1,24 @@
+# EQUIPOT (SPENVIS) - potenziale di equilibrio superficie lunare (patch isolato = regolite)
+# Sun angle misurato dalla normale alla superficie (fotocorrente ~ cos(angle))
+# Materiale regolite: eps_r=3, spessore=0.01 m, sigma=1e-12 S/m (luce) / 1e-14 S/m (ombra),
+#   Z=11, fotocorrente=4.5e-6 A/m2, SEE max=1.5 @ 0.4 keV, SEE protoni 0.455 @ 140 keV (Katz)
+# Ambienti (user defined, high altitude / thick sheath, isotropic):
+#   SW   = vento solare      e- 5 cm-3 10 eV   | ioni 5 cm-3 10 eV 1 amu
+#   WAKE = scia/ombra estesa e- 5 cm-3 15 eV   | ioni 0.1 cm-3 10 eV 1 amu
+#   PS   = plasma sheet      e- 0.3 cm-3 1 keV | ioni 0.3 cm-3 4 keV 1 amu
+#   WC   = ECSS worst case (SCATHA) - solo riferimento, non usato nella mappa temporale
+env,condition,angle_deg,V
+SW,sun,60,7.06
+SW,sun,75,4.34
+SW,sun,80,2.79
+SW,sun,85,0.374
+SW,sun,88,-7.19
+SW,eclipse,,-23.6
+WAKE,eclipse,,-80.2
+PS,sun,60,16.3
+PS,sun,75,12.9
+PS,sun,80,10.9
+PS,sun,85,8.15
+PS,sun,88,5.72
+PS,eclipse,,3.56
+WC,eclipse,,-10900

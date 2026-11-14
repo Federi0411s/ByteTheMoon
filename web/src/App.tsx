@@ -18,7 +18,7 @@ import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEa
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
-import { footprintMax, hillshade } from './lib/raster'
+import { footprintMax, hillshade, loadRaster } from './lib/raster'
 import { DEFAULT_FOOTPRINT, footprintAxes, SLOPE_MAX_DEG } from './lib/requirements'
 import {
   earthPosition,
@@ -29,6 +29,7 @@ import {
   loadEphemerisWindow,
   sunPosition,
 } from './lib/ephemeris'
+import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
@@ -60,6 +61,8 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
+  const radiationLayerRef = useRef<ImageryLayer | null>(null)
+  const radiationOpacityRef = useRef(0.7)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
@@ -79,6 +82,14 @@ export default function App() {
   const [windowDays, setWindowDays] = useState(30)
   const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
+  const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
+  const [radiationLoading, setRadiationLoading] = useState(true)
+  const [radiationError, setRadiationError] = useState<string>()
+  const [radiationVisible, setRadiationVisible] = useState(false)
+  const [radiationOpacity, setRadiationOpacity] = useState(0.7)
+  const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
+
+  radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
   const [viewResM, setViewResM] = useState<number>()
 
@@ -108,6 +119,24 @@ export default function App() {
       sceneRef.current?.viewer.destroy()
       sceneRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    loadRadiationMetadata(`${import.meta.env.BASE_URL}radiation/radiation_overlay.json`)
+      .then((metadata) => {
+        if (!cancelled) {
+          setRadiationMetadata(metadata)
+          setRadiationError(undefined)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRadiationError(`Radiation: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        if (!cancelled) setRadiationLoading(false)
+      })
+    return () => { cancelled = true }
   }, [])
 
   // ---- default overlay base: keep a readable, useful stack on first load ----
@@ -262,6 +291,46 @@ export default function App() {
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
   }, [ready, scoreFields, score])
+
+  // ---- polar raster radiation overlay ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    const metadata = radiationMetadata
+    if (!ready || !scene || !metadata || !radiationVisible) return
+
+    let cancelled = false
+    let layer: ImageryLayer | null = null
+    setRadiationError(undefined)
+    const meta = radiationLayerMeta(metadata, radiationMode)
+    loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
+      if (cancelled) return
+      layer = new ImageryLayer(asProvider(new FieldImageryProvider({
+        value: (lon, lat) => field.sampleNearest(lon, lat),
+        min: meta.min,
+        max: meta.max,
+        colormap: meta.colormap,
+        boundsRad: field.boundsRad(),
+        maximumLevel: levelForResolution(meta.resolutionM),
+        credit: meta.source,
+      })), { alpha: radiationOpacityRef.current })
+      scene.overlays.add(layer)
+      radiationLayerRef.current = layer
+    }).catch((error: unknown) => {
+      if (!cancelled) setRadiationError(`Unable to load the radiation layer: ${error instanceof Error ? error.message : String(error)}`)
+    })
+
+    return () => {
+      cancelled = true
+      if (layer) {
+        scene.overlays.remove(layer, true)
+        if (radiationLayerRef.current === layer) radiationLayerRef.current = null
+      }
+    }
+  }, [ready, radiationMetadata, radiationMode, radiationVisible])
+
+  useEffect(() => {
+    if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
+  }, [radiationOpacity])
 
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
@@ -437,7 +506,12 @@ export default function App() {
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields} slopeExact={!!scoreFields?.exact} />
+              score={score} onScore={setScore} scoreAvailable={!!scoreFields}
+              radiationMetadata={radiationMetadata} radiationLoading={radiationLoading} radiationError={radiationError}
+              radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
+              radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
+              radiationMode={radiationMode} onRadiationMode={setRadiationMode}
+              slopeExact={!!scoreFields?.exact} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}
