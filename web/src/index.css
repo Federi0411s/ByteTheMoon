@@ -48,6 +48,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .legend { margin-top: 4px; }
 .legend-bar { height: 8px; border-radius: 4px; }
 .legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.radiation-legend { display: grid; gap: 5px; margin-top: 8px; }
+.radiation-legend-item { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.radiation-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
 
 .row { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; }
 .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 8px 0; }

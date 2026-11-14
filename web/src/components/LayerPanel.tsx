@@ -1,5 +1,6 @@
 import { cssGradient } from '../lib/colormaps'
 import type { LayerMeta } from '../lib/raster'
+import type { RadiationOverlayMetadata } from '../lib/radiation'
 
 export interface LayerState {
   visible: boolean
@@ -35,6 +36,15 @@ export function LayerPanel({
   score,
   onScore,
   scoreAvailable,
+  radiationMetadata,
+  radiationLoading,
+  radiationError,
+  radiationVisible,
+  onRadiationVisible,
+  radiationOpacity,
+  onRadiationOpacity,
+  radiationMode,
+  onRadiationMode,
 }: {
   layers: LayerMeta[]
   state: Record<string, LayerState>
@@ -42,6 +52,15 @@ export function LayerPanel({
   score: ScoreWeights
   onScore: (s: ScoreWeights) => void
   scoreAvailable: boolean
+  radiationMetadata: RadiationOverlayMetadata | null
+  radiationLoading: boolean
+  radiationError?: string
+  radiationVisible: boolean
+  onRadiationVisible: (visible: boolean) => void
+  radiationOpacity: number
+  onRadiationOpacity: (opacity: number) => void
+  radiationMode: 'classes' | 'continuous'
+  onRadiationMode: (mode: 'classes' | 'continuous') => void
 }) {
   const shown = layers.filter((l) => l.display !== false)
   return (
@@ -90,6 +109,58 @@ export function LayerPanel({
           {score.enabled && <Legend colormap="viridis" min={0} max={1} units="score" />}
         </div>
       )}
+
+      <h2>Radiazioni</h2>
+      <div className="layer">
+        <label className="layer-head">
+          <input type="checkbox" checked={radiationVisible} disabled={!radiationMetadata} onChange={(e) => onRadiationVisible(e.target.checked)} />
+          Mostra layer
+        </label>
+        {radiationLoading && <p className="muted">Caricamento legenda…</p>}
+        {radiationMetadata && (
+          <>
+            <label className="slider">
+              <span>Visualizzazione</span>
+              <select value={radiationMode} onChange={(e) => {
+                if (e.target.value === 'classes' || e.target.value === 'continuous') onRadiationMode(e.target.value)
+              }}>
+                <option value="classes">Classi</option>
+                <option value="continuous">Dose continua</option>
+              </select>
+            </label>
+            {radiationVisible && (
+              <>
+                <label className="slider">
+                  <span>Opacità: {Math.round(radiationOpacity * 100)}%</span>
+                  <input type="range" min={0} max={1} step={0.05} value={radiationOpacity}
+                    onChange={(e) => onRadiationOpacity(Number(e.target.value))} />
+                </label>
+                {radiationMode === 'classes' ? (
+                  <div className="radiation-legend">
+                    {radiationMetadata.legenda_classi.map((item, index) => (
+                      <div className="radiation-legend-item" key={`${item.etichetta}-${index}`}>
+                        <span className="radiation-swatch" style={{ backgroundColor: item.colore }} />
+                        <span>{item.etichetta}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="legend">
+                    <div className="legend-bar" style={{ background: cssGradient('inferno') }} />
+                    <div className="legend-labels">
+                      <span>{radiationMetadata.dose_min}</span>
+                      <span>{radiationMetadata.unita}</span>
+                      <span>{radiationMetadata.dose_max}</span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+        {radiationError && <p className="muted">{radiationError}</p>}
+      </div>
+
     </section>
   )
 }

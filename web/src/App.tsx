@@ -10,8 +10,10 @@ import {
   ImageryLayer,
   LabelStyle,
   Math as CMath,
+  Rectangle,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
+  SingleTileImageryProvider,
   VerticalOrigin,
 } from 'cesium'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, type MoonScene } from './cesium/createViewer'
@@ -20,6 +22,7 @@ import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { loadBundle, type DataBundle, type Site } from './lib/data'
 import { hillshade } from './lib/raster'
 import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
+import { loadRadiationMetadata, type RadiationOverlayMetadata } from './lib/radiation'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
@@ -31,6 +34,8 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
+  const radiationLayerRef = useRef<ImageryLayer | null>(null)
+  const radiationOpacityRef = useRef(0.7)
   const markers = useRef<{ sun?: Entity; earth?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
@@ -44,6 +49,14 @@ export default function App() {
   const [selected, setSelected] = useState<Site>()
   const [windowDays, setWindowDays] = useState(30)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
+  const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
+  const [radiationLoading, setRadiationLoading] = useState(true)
+  const [radiationError, setRadiationError] = useState<string>()
+  const [radiationVisible, setRadiationVisible] = useState(false)
+  const [radiationOpacity, setRadiationOpacity] = useState(0.7)
+  const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
+
+  radiationOpacityRef.current = radiationOpacity
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -64,6 +77,24 @@ export default function App() {
       sceneRef.current?.viewer.destroy()
       sceneRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    loadRadiationMetadata(`${import.meta.env.BASE_URL}radiazioni/radiazioni_overlay.json`)
+      .then((metadata) => {
+        if (!cancelled) {
+          setRadiationMetadata(metadata)
+          setRadiationError(undefined)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setRadiationError(`Radiazioni: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        if (!cancelled) setRadiationLoading(false)
+      })
+    return () => { cancelled = true }
   }, [])
 
   // ---- site markers ----
@@ -158,6 +189,42 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, scoreFields !== null, score])
 
+  // ---- single-tile radiation overlay ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    const metadata = radiationMetadata
+    if (!ready || !scene || !metadata || !radiationVisible) return
+
+    let cancelled = false
+    let layer: ImageryLayer | null = null
+    setRadiationError(undefined)
+    const imageName = radiationMode === 'classes' ? 'radiazioni_classi.png' : 'radiazioni_continua.png'
+    const imageUrl = `${import.meta.env.BASE_URL}radiazioni/${imageName}`
+    SingleTileImageryProvider.fromUrl(imageUrl, {
+      rectangle: Rectangle.fromDegrees(metadata.west, metadata.south, metadata.east, metadata.north),
+      ellipsoid: Ellipsoid.MOON,
+    }).then((provider) => {
+      if (cancelled) return
+      layer = new ImageryLayer(provider, { alpha: radiationOpacityRef.current })
+      scene.overlays.add(layer)
+      radiationLayerRef.current = layer
+    }).catch((error: unknown) => {
+      if (!cancelled) setRadiationError(`Impossibile caricare ${imageName}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+
+    return () => {
+      cancelled = true
+      if (layer) {
+        scene.overlays.remove(layer, true)
+        if (radiationLayerRef.current === layer) radiationLayerRef.current = null
+      }
+    }
+  }, [ready, radiationMetadata, radiationMode, radiationVisible])
+
+  useEffect(() => {
+    if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
+  }, [radiationOpacity])
+
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -250,7 +317,11 @@ export default function App() {
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields} />
+              score={score} onScore={setScore} scoreAvailable={!!scoreFields}
+              radiationMetadata={radiationMetadata} radiationLoading={radiationLoading} radiationError={radiationError}
+              radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
+              radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
+              radiationMode={radiationMode} onRadiationMode={setRadiationMode} />
             {bundle.warnings.length > 0 && (
               <section className="panel warn">
                 <h2>Setup</h2>

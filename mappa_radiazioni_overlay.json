@@ -1,0 +1,23 @@
+{
+  "west": -180.0,
+  "east": 180.0,
+  "south": -90.0,
+  "north": -80.0,
+  "unita": "uGy/h (Si)",
+  "dose_min": 10.183453519250307,
+  "dose_max": 13.433770141771527,
+  "legenda_classi": [
+    {
+      "colore": "#2ca02c",
+      "etichetta": "<= 12.0"
+    },
+    {
+      "colore": "#ffcc00",
+      "etichetta": "<= 12.8"
+    },
+    {
+      "colore": "#d62728",
+      "etichetta": "> 12.8"
+    }
+  ]
+}
