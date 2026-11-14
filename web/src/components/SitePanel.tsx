@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
+import type { DsnSample } from '../lib/dsn'
+import { DsnPanel } from './DsnPanel'
 import { Panorama } from './Panorama'
 import { TimelineBars } from './TimelineBars'
 
@@ -66,6 +68,7 @@ export function SitePanel({
   onToggleExpanded,
   showSiteMarkers,
   onShowSiteMarkersChange,
+  dsn,
 }: {
   sites: Site[]
   selected?: Site
@@ -82,6 +85,7 @@ export function SitePanel({
   onToggleExpanded: () => void
   showSiteMarkers: boolean
   onShowSiteMarkersChange: (show: boolean) => void
+  dsn?: { now?: DsnSample }
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
@@ -154,6 +158,7 @@ export function SitePanel({
               <div className="kv"><span>Time to Earthset</span><b>{fmtDur(summary.nextEarthsetMs)}</b></div>
             </div>
           )}
+          {dsn && <DsnPanel now={dsn.now} />}
         </>
       )}
     </section>

@@ -32,6 +32,7 @@ import {
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
+import { dsnAt } from './lib/dsn'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
@@ -372,6 +373,8 @@ export default function App() {
   }, [selected, ephemeris, dayStart, windowDays])
   const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
   const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
+  // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
+  const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
 
   const selectCalendarDate = async (nextTime: number) => {
     const year = new Date(nextTime).getUTCFullYear()
@@ -429,7 +432,8 @@ export default function App() {
               timeline={timeline} summary={summary}
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
-              showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers} />
+              showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
+              dsn={ephemeris ? { now: dsnNow } : undefined} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
