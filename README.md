@@ -113,12 +113,19 @@ The optional M3 surface-ice point file, if available, is `pipeline/data/li2018_s
 The ice layer uses the `lat` and `lon` point grid in `web/public/data/charging_points.csv`.
 The PRP columns are indexed from zero (`tri_clat` 10, `tri_clon` 9, `temp_max` 13,
 `ice_depth` 14); depth is in meters, `-999` means no stable ice and `-1` (surface-stable
-ice, T max < ~101 K) is read as 0 m. The optional M3 file can be omitted. The command writes
-`mappa_ghiaccio.csv`, `mappa_ghiaccio.geojson`, and `mappa_ghiaccio.png`, plus
-`distanza_ghiaccio.csv` with distances in kilometers:
+ice, T max < ~101 K) is read as 0 m. The optional M3 file can be omitted.
+
+Each grid point stands for its 4 km cell and is classified from the area fraction of the ~128 PRP
+elements inside it: class 2 (cold trap) when at least 25% of the cell has T max < 110 K, class 1
+when at least 50% has ice thermally stable within 0.5 m, class 3 for M3 detections. Class 1 is
+thermal stability, not a detection, and covers about a third of the map, so by default the web
+GeoJSON only contains classes 2 and 3; `--include-subsurface` adds class 1. The command writes
+`mappa_ghiaccio.csv` (all points, with `cold_trap_frac` and `subsurface_frac`),
+`mappa_ghiaccio.geojson`, and `mappa_ghiaccio.png`, plus `distanza_ghiaccio.csv` (distance to the
+nearest cold trap, in kilometers):
 
 ```powershell
-python pipeline/ice.py
+python pipeline/ice.py [--include-subsurface]
 ```
 
 To regenerate the five-year timeline data through 2205, download only the SPICE kernels and create

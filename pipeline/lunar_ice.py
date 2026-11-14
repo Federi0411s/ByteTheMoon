@@ -7,10 +7,17 @@ Fonti:
     temperatura massima annua e profondita' del permafrost di ghiaccio per elementi di mesh.
   - Li et al. 2018 (PNAS): posizioni dei pixel M3 (~280 m) con ghiaccio esposto in superficie.
 
+Ogni punto della griglia rappresenta una CELLA (Voronoi dei punti, 4 km x 4 km per la griglia
+di charging_points.csv): si usano tutti gli elementi PRP (~0.5 km) che cadono nella cella e si
+classifica in base alla FRAZIONE D'AREA, non al singolo elemento piu' vicino (che bastava a
+marcare un'intera cella per una piccola sacca fredda).
+
 Classi in uscita (ice_class):
   0 = nessun ghiaccio
-  1 = ghiaccio stabile SOTTO la superficie (profondita' permafrost <= depth_max)
-  2 = ghiaccio stabile IN superficie (T max annua < 110 K)
+  1 = ghiaccio stabile SOTTO la superficie (profondita' <= depth_max) su >= sub_frac_min della cella.
+      E' STABILITA' termica (il ghiaccio sopravvivrebbe se presente), non una rilevazione:
+      copre ~1/3 della mappa, quindi di default non va nel GeoJSON per la web app.
+  2 = trappola fredda: T max annua < 110 K su >= surf_frac_min della cella
   3 = ghiaccio OSSERVATO in superficie (pixel M3)
 
 Uso:
@@ -29,6 +36,8 @@ from scipy.spatial import cKDTree
 R_MOON = 1737400.0
 T_SURFACE_ICE = 110.0     # K: sotto questa T max annua il ghiaccio superficiale e' stabile
 DEPTH_MAX = 0.5           # m: ghiaccio sotterraneo considerato "accessibile"
+SURF_FRAC_MIN = 0.25      # classe 2 se almeno 1/4 della cella e' trappola fredda
+SUB_FRAC_MIN = 0.5        # classe 1 se almeno meta' della cella ha ghiaccio stabile entro DEPTH_MAX
 
 
 def latlon_to_xy(lat, lon, R=R_MOON):
@@ -92,46 +101,68 @@ def load_m3_points(path, lat_col="lat", lon_col="lon"):
 # ------------------------------------------------------------------ classificazione
 def ice_layer(lat_grid, lon_grid, prp, m3=None,
               t_surface=T_SURFACE_ICE, depth_max=DEPTH_MAX,
-              prp_max_dist=1000.0, m3_radius=200.0):
+              surf_frac_min=SURF_FRAC_MIN, sub_frac_min=SUB_FRAC_MIN, m3_radius=200.0):
     """
-    lat_grid, lon_grid : array (qualsiasi forma) dei punti della TUA mappa [deg]
+    lat_grid, lon_grid : array (qualsiasi forma) dei punti della TUA mappa [deg], griglia ~regolare
     prp                : DataFrame da load_prp
     m3                 : DataFrame da load_m3_points (o None)
-    prp_max_dist       : distanza max [m] dall'elemento PRP piu' vicino (oltre -> nessun dato)
+    surf_frac_min      : frazione minima della cella con T max < t_surface per la classe 2
+    sub_frac_min       : frazione minima della cella con ghiaccio entro depth_max per la classe 1
     m3_radius          : raggio [m] attorno a ogni pixel M3 (~ meta' pixel da 280 m)
-    ritorna dict con ice_class, tmax, depth, lat, lon (stessa forma della griglia)
+    ritorna dict con ice_class, cold_trap_frac, subsurface_frac, tmax (minima nella cella),
+    depth (minima nella cella), lat, lon (stessa forma della griglia)
     """
     shape = np.shape(lat_grid)
     lat = np.asarray(lat_grid, float).ravel()
     lon = np.asarray(lon_grid, float).ravel() % 360
     gx, gy = latlon_to_xy(lat, lon)
+    tree = cKDTree(np.c_[gx, gy])
+    spacing = np.median(tree.query(np.c_[gx, gy], k=2)[0][:, 1])
 
-    # Diviner PRP -> griglia (elemento piu' vicino)
+    # ogni elemento PRP va alla cella (punto di griglia) piu' vicina, se ci cade dentro
     px, py = latlon_to_xy(prp.lat.values, prp.lon.values)
-    dist, idx = cKDTree(np.c_[px, py]).query(np.c_[gx, gy])
-    tmax = prp.tmax.values[idx]
-    depth = prp.depth.values[idx]
-    far = dist > prp_max_dist
-    tmax[far] = np.nan
-    depth[far] = np.nan
+    dist, idx = tree.query(np.c_[px, py])
+    inside = dist <= spacing * np.sqrt(0.5) * 1.01
+    idx = idx[inside]
+    t = np.nan_to_num(prp.tmax.values[inside], nan=np.inf)
+    d = np.nan_to_num(prp.depth.values[inside], nan=np.inf)
+    n = lat.size
+    count = np.bincount(idx, minlength=n)
+    has = count > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        surf = np.bincount(idx, weights=t < t_surface, minlength=n) / count
+        sub = np.bincount(idx, weights=d <= depth_max, minlength=n) / count
+    tmin = np.full(n, np.inf)
+    np.minimum.at(tmin, idx, t)
+    dmin = np.full(n, np.inf)
+    np.minimum.at(dmin, idx, d)
+    tmin[~np.isfinite(tmin)] = np.nan
+    dmin[~np.isfinite(dmin)] = np.nan
+    surf[~has] = np.nan
+    sub[~has] = np.nan
 
-    cls = np.zeros(lat.size, dtype=np.int8)
-    cls[np.nan_to_num(depth, nan=np.inf) <= depth_max] = 1
-    cls[np.nan_to_num(tmax, nan=np.inf) < t_surface] = 2
+    cls = np.zeros(n, dtype=np.int8)
+    cls[np.nan_to_num(sub) >= sub_frac_min] = 1
+    cls[np.nan_to_num(surf) >= surf_frac_min] = 2
 
     # M3: ghiaccio osservato
     if m3 is not None and len(m3):
         mx, my = latlon_to_xy(m3.lat.values, m3.lon.values)
         d_m3, _ = cKDTree(np.c_[mx, my]).query(np.c_[gx, gy])
-        cls[d_m3 <= m3_radius] = 3
+        cls[d_m3 <= max(m3_radius, spacing * np.sqrt(0.5))] = 3
 
-    names = {0: "nessuno", 1: "stabile sotto superficie", 2: "stabile in superficie", 3: "osservato (M3)"}
+    print(f"  celle {spacing / 1e3:.1f} km, {np.median(count[has]):.0f} elementi PRP per cella; "
+          f"{(~has).sum()} celle senza dati")
+    print(f"  trappole fredde: {100 * np.nanmean(surf):.1f}% dell'area, "
+          f"ghiaccio stabile entro {depth_max:g} m: {100 * np.nanmean(sub):.1f}%")
+    names = {0: "nessuno", 1: "stabile sotto superficie", 2: "trappola fredda", 3: "osservato (M3)"}
     for k, v in names.items():
         print(f"  classe {k} ({v}): {np.sum(cls == k)} punti")
 
-    return {"lat": lat.reshape(shape), "lon": lon.reshape(shape),
-            "ice_class": cls.reshape(shape), "tmax": tmax.reshape(shape),
-            "depth": depth.reshape(shape)}
+    def r(a):
+        return a.reshape(shape)
+    return {"lat": r(lat), "lon": r(lon), "ice_class": r(cls), "cold_trap_frac": r(surf),
+            "subsurface_frac": r(sub), "tmax": r(tmin), "depth": r(dmin)}
 
 
 def distance_to_ice(lat_grid, lon_grid, layer, min_class=2):
@@ -148,29 +179,33 @@ def distance_to_ice(lat_grid, lon_grid, layer, min_class=2):
 COLORS = {1: "#7fb3ff", 2: "#1f6fff", 3: "#00e5ff"}   # azzurro chiaro -> blu -> ciano
 
 
-def export_layer(layer, basename="mappa_ghiaccio"):
+def export_layer(layer, basename="mappa_ghiaccio", geojson_min_class=2):
     """
     Salva:
-      basename.csv     tutti i punti (lat, lon, ice_class, tmax, depth)
-      basename.geojson SOLO i punti con ghiaccio (classe > 0), con colore, per Cesium
-      basename.png     anteprima
+      basename.csv     tutti i punti (lat, lon, ice_class, frazioni, tmax e depth minime della cella)
+      basename.geojson SOLO i punti con ice_class >= geojson_min_class, con colore, per Cesium
+                       (default 2: trappole fredde e M3; 1 per includere la stabilita' sotterranea)
+      basename.png     anteprima (tutte le classi)
     """
     lat = np.ravel(layer["lat"]); lon = np.ravel(layer["lon"])
     cls = np.ravel(layer["ice_class"])
     tmax = np.ravel(layer["tmax"]); depth = np.ravel(layer["depth"])
+    surf = np.ravel(layer["cold_trap_frac"]); sub = np.ravel(layer["subsurface_frac"])
 
-    pd.DataFrame({"lat": lat, "lon": lon, "ice_class": cls, "tmax_K": tmax,
-                  "ice_depth_m": depth}).to_csv(f"{basename}.csv", index=False)
+    pd.DataFrame({"lat": lat, "lon": lon, "ice_class": cls,
+                  "cold_trap_frac": np.round(surf, 3), "subsurface_frac": np.round(sub, 3),
+                  "tmax_min_K": tmax, "ice_depth_min_m": depth}).to_csv(f"{basename}.csv", index=False)
 
     feats = []
-    for i in np.flatnonzero(cls > 0):
+    for i in np.flatnonzero(cls >= geojson_min_class):
         lon180 = ((lon[i] + 180) % 360) - 180
         feats.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [round(float(lon180), 6), round(float(lat[i]), 6)]},
             "properties": {"ice_class": int(cls[i]), "color": COLORS[int(cls[i])],
-                           "tmax_K": None if np.isnan(tmax[i]) else round(float(tmax[i]), 1),
-                           "ice_depth_m": None if np.isnan(depth[i]) else round(float(depth[i]), 3)},
+                           "cold_trap_frac": None if np.isnan(surf[i]) else round(float(surf[i]), 3),
+                           "tmax_min_K": None if np.isnan(tmax[i]) else round(float(tmax[i]), 1),
+                           "ice_depth_min_m": None if np.isnan(depth[i]) else round(float(depth[i]), 3)},
         })
     with open(f"{basename}.geojson", "w") as f:
         json.dump({"type": "FeatureCollection", "features": feats}, f)
@@ -181,11 +216,12 @@ def export_layer(layer, basename="mappa_ghiaccio"):
     from matplotlib.colors import ListedColormap
     x, y = latlon_to_xy(lat, lon)
     fig, ax = plt.subplots(figsize=(7, 7))
-    ax.scatter(x[cls == 0] / 1e3, y[cls == 0] / 1e3, s=1, c="0.85")
+    shown = cls >= geojson_min_class          # come nella web app
+    ax.scatter(x[~shown] / 1e3, y[~shown] / 1e3, s=1, c="0.85")
     cmap = ListedColormap([COLORS[1], COLORS[2], COLORS[3]])
-    sc = ax.scatter(x[cls > 0] / 1e3, y[cls > 0] / 1e3, s=2, c=cls[cls > 0], cmap=cmap, vmin=0.5, vmax=3.5)
+    sc = ax.scatter(x[shown] / 1e3, y[shown] / 1e3, s=2, c=cls[shown], cmap=cmap, vmin=0.5, vmax=3.5)
     cb = fig.colorbar(sc, ax=ax, ticks=[1, 2, 3], shrink=0.7)
-    cb.ax.set_yticklabels(["sotto superficie", "stabile in sup.", "osservato M3"])
+    cb.ax.set_yticklabels(["stabile sotto sup.", "trappola fredda", "osservato M3"])
     ax.set_aspect("equal"); ax.set_xlabel("x [km]"); ax.set_ylabel("y [km]")
     ax.set_title("Ghiaccio d'acqua - polo Sud")
     fig.savefig(f"{basename}.png", dpi=200, bbox_inches="tight")

@@ -1,5 +1,6 @@
 """Generate lunar south-pole ice layers from the Diviner PRP and M3 data."""
 
+import argparse
 import re
 from pathlib import Path
 
@@ -40,6 +41,11 @@ def _validate_prp_label() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--include-subsurface", action="store_true",
+                        help="also put class 1 (ice thermally stable within 0.5 m) in the web GeoJSON")
+    args = parser.parse_args()
+
     _require_file(PRP_TAB)
     _require_file(PRP_LABEL)
     _require_file(GRID_CSV)
@@ -51,7 +57,7 @@ def main() -> None:
     if not np.isfinite(lat_grid).all() or not np.isfinite(lon_grid).all():
         raise ValueError(f"{GRID_CSV} contains non-finite latitude or longitude values")
 
-        prp = load_prp(PRP_TAB, col_lat=COL_LAT, col_lon=COL_LON,
+    prp = load_prp(PRP_TAB, col_lat=COL_LAT, col_lon=COL_LON,
                    col_tmax=COL_TMAX, col_depth=COL_DEPTH, depth_scale=DEPTH_SCALE)
     m3 = load_m3_points(M3_CSV) if M3_CSV.is_file() else None
     if m3 is None:
@@ -61,7 +67,7 @@ def main() -> None:
     distance_km = distance_to_ice(lat_grid, lon_grid, layer, min_class=2) / 1000.0
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    export_layer(layer, OUTPUT_DIR / "mappa_ghiaccio")
+    export_layer(layer, OUTPUT_DIR / "mappa_ghiaccio", geojson_min_class=1 if args.include_subsurface else 2)
     pd.DataFrame({
         "lat": lat_grid,
         "lon": lon_grid,
