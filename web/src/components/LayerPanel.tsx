@@ -49,7 +49,7 @@ export function LayerPanel({
       <h2>Map layers</h2>
       {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
       {shown.map((l) => {
-        const s = state[l.id] ?? { visible: false, opacity: 0.75 }
+        const s = state[l.id] ?? { visible: false, opacity: 0.55 }
         return (
           <div key={l.id} className="layer">
             <label className="layer-head" title={l.description}>
@@ -79,14 +79,21 @@ export function LayerPanel({
           </label>
           {(['sun', 'earth', 'flat'] as const).map((k) => (
             <label key={k} className="slider">
-              <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)', flat: 'Flat terrain' }[k]}</span>
+              <span className="slider-label">
+                <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)', flat: 'Flat terrain' }[k]}</span>
+                <span className="slider-value">{Math.round(score[k] * 100)}%</span>
+              </span>
               <input type="range" min={0} max={1} step={0.05} value={score[k]} onChange={(e) => onScore({ ...score, [k]: Number(e.target.value) })} />
             </label>
           ))}
           <label className="slider">
-            <span>Max slope: {score.maxSlope}°</span>
+            <span className="slider-label">
+              <span>Max slope</span>
+              <span className="slider-value">{score.maxSlope}°</span>
+            </span>
             <input type="range" min={2} max={30} step={1} value={score.maxSlope} onChange={(e) => onScore({ ...score, maxSlope: Number(e.target.value) })} />
           </label>
+          <p className="muted">The weights are relative and are normalized when calculating the score.</p>
           {score.enabled && <Legend colormap="viridis" min={0} max={1} units="score" />}
         </div>
       )}

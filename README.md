@@ -16,7 +16,7 @@ See [docs/PLAN.md](docs/PLAN.md) for the architecture, the team split and next s
 cd web
 copy .env.example .env.local   # then paste your Cesium ion token
 npm install
-npm run dev                    # http://localhost:5173
+npm run dev                   # http://localhost:5173
 ```
 
 Without a token, or if Cesium ion fails, the app falls back to the NASA Moon Trek basemap. Overlays work the same either way.

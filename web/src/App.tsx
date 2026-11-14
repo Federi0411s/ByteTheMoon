@@ -31,7 +31,7 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
-  const markers = useRef<{ sun?: Entity; earth?: Entity; sites: Entity[] }>({ sites: [] })
+  const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
@@ -65,6 +65,16 @@ export default function App() {
       sceneRef.current = null
     }
   }, [])
+
+  // ---- default overlay base: keep a readable, useful stack on first load ----
+  useEffect(() => {
+    if (!bundle || Object.keys(layerState).length) return
+    const defaults: Record<string, LayerState> = {}
+    for (const meta of bundle.layers) {
+      defaults[meta.id] = { visible: meta.id === 'sun_avg', opacity: 0.65 }
+    }
+    setLayerState(defaults)
+  }, [bundle, layerState])
 
   // ---- site markers ----
   useEffect(() => {
@@ -102,28 +112,30 @@ export default function App() {
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
-    for (const meta of bundle.layers) {
+    bundle.layers.forEach((meta) => {
       const field = bundle.fields[meta.id]
       const st = layerState[meta.id]
       let layer = layerRefs.current[meta.id]
       if (!field || !st?.visible) {
         if (layer) layer.show = false
-        continue
+        return
       }
       if (!layer) {
+        const contrast = meta.id.includes('sun') || meta.id.includes('earth') ? 1.25 : meta.id.includes('slope') ? 1.4 : 1.15
         layer = new ImageryLayer(asProvider(new FieldImageryProvider({
           value: (lon, lat) => field.sampleNearest(lon, lat),
           min: meta.min, max: meta.max, colormap: meta.colormap,
           boundsRad: field.boundsRad(),
           maximumLevel: levelForResolution(meta.resolutionM),
           credit: meta.source,
+          contrast,
         })))
         scene.overlays.add(layer)
         layerRefs.current[meta.id] = layer
       }
       layer.show = true
       layer.alpha = st.opacity
-    }
+    })
   }, [ready, bundle, layerState])
 
   // ---- derived "landing suitability" heatmap, rebuilt when weights change ----
@@ -189,7 +201,7 @@ export default function App() {
     return () => clearInterval(id)
   }, [playing, stepMs, bundle])
 
-  // ---- click to inspect, double-click to analyse a custom site ----
+  // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
@@ -204,19 +216,44 @@ export default function App() {
     handler.setInputAction((e: { position: Cartesian2 }) => {
       const p = pick(e.position)
       if (!p) return
+      const dem = bundle.fields.dem_south
+      const elevation = dem?.sample(p.lon * D2R, p.lat * D2R)
+      const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
+      const horizon = dem && heightM !== undefined ? computeHorizon(dem, p.lat, p.lon) : undefined
       const values = bundle.layers.map((m) => {
         const v = bundle.fields[m.id]?.sample(p.lon * D2R, p.lat * D2R)
-        return { title: m.title, value: v === undefined || Number.isNaN(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+        return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+      })
+      if (markers.current.custom) viewer.entities.remove(markers.current.custom)
+      markers.current.custom = viewer.entities.add({
+        position: Cartesian3.fromDegrees(p.lon, p.lat, 0, Ellipsoid.MOON),
+        point: {
+          pixelSize: 13,
+          color: Color.CYAN,
+          outlineColor: Color.BLACK,
+          outlineWidth: 3,
+          disableDepthTestDistance: 500_000,
+        },
+        label: {
+          text: `${p.lat.toFixed(4)}°, ${p.lon.toFixed(4)}°`,
+          font: '13px system-ui',
+          style: LabelStyle.FILL_AND_OUTLINE,
+          outlineWidth: 3,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          pixelOffset: new Cartesian2(0, -16),
+          disableDepthTestDistance: 500_000,
+        },
       })
       setInspect({ ...p, values })
+      setSelected({
+        id: `custom-${Date.now()}`,
+        name: `Custom ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`,
+        group: 'Custom',
+        ...p,
+        heightM,
+        horizon,
+      })
     }, ScreenSpaceEventType.LEFT_CLICK)
-    handler.setInputAction((e: { position: Cartesian2 }) => {
-      const p = pick(e.position)
-      if (!p) return
-      const dem = bundle.fields.dem_south
-      const horizon = dem && !Number.isNaN(dem.sample(p.lon * D2R, p.lat * D2R)) ? computeHorizon(dem, p.lat, p.lon) : undefined
-      setSelected({ id: `custom-${Date.now()}`, name: `Custom ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`, group: 'Custom', ...p, horizon })
-    }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
     return () => handler.destroy()
   }, [ready, bundle])
 
@@ -231,6 +268,11 @@ export default function App() {
   const now = useMemo(() => (selected && bundle?.ephemeris ? computeTimeline(bundle.ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, bundle, t])
 
   const selectSite = (s: Site) => {
+    setInspect(undefined)
+    if (markers.current.custom && sceneRef.current) {
+      sceneRef.current.viewer.entities.remove(markers.current.custom)
+      markers.current.custom = undefined
+    }
     setSelected(s)
     if (sceneRef.current) flyToSite(sceneRef.current.viewer, s.lat, s.lon)
   }
