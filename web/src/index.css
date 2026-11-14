@@ -215,10 +215,14 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .terrain-view-controls span { color: var(--muted); font-size: 11px; }
 
 .panorama, .timeline { width: 100%; display: block; background: #0a0e1a; border-radius: 6px; margin-top: 8px; }
-.panorama { height: 140px; }
+.panorama { height: 160px; }
 .timeline { height: 52px; }
 .panorama .terrain { fill: #3a3f4d; stroke: #9aa3b5; stroke-width: 1; }
 .panorama .grid { stroke: rgba(255, 255, 255, 0.08); }
+.panorama .grid.zero { stroke: rgba(255, 255, 255, 0.22); }
+/* drawn at real pixel size (Panorama.tsx), so the labels can be small yet sharp */
+.panorama .tick { fill: #b4bccc; font-size: 11px; font-variant-numeric: tabular-nums; }
+.panorama .body { stroke: #0a0e1a; stroke-width: 1.5; }
 .tick { fill: var(--muted); font-size: 10px; }
 .track { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .track.sun, .body.sun { stroke: var(--sun); }

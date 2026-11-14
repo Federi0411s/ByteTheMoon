@@ -1,9 +1,37 @@
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import type { HorizonMask, TimelineSample } from '../lib/analysis'
 
 /**
  * 360° horizon panorama: terrain skyline (grey), Sun path (yellow) and Earth path (blue) over the
  * analysis window, with the current Sun/Earth positions highlighted. Azimuth 0 = north.
+ *
+ * Drawn at the element's real pixel size (no stretched viewBox, so the text keeps its shape at any
+ * panel width), with an elevation range fitted to the skyline and to the Sun/Earth paths near it.
  */
+const PAD = { left: 30, right: 8, top: 8, bottom: 18 }
+const AZ_LABELS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+const STEPS = [1, 2, 5, 10, 15, 20, 30, 45]
+
+/** Elevation range (deg) and tick step that fit the skyline and the parts of the paths that matter. */
+function fitRange(mask: HorizonMask | undefined, timeline: TimelineSample[], now?: TimelineSample) {
+  let tMin = 0, tMax = 0
+  if (mask) for (const e of mask.elevDeg) { if (e < tMin) tMin = e; if (e > tMax) tMax = e }
+  // Sun/Earth paths count up to a cap above the skyline: a body crossing the horizon matters, its
+  // high noon arc does not (an equatorial Sun at 80° would flatten the skyline into a line)
+  const cap = Math.max(tMax + 6, tMax * 1.8, 5)
+  let bMax = -Infinity, bMin = Infinity
+  const add = (el: number) => {
+    if (el > bMax) bMax = el
+    if (el < bMin) bMin = el
+  }
+  for (const s of timeline) { add(s.sunEl); add(s.earthEl) }
+  if (now) { add(now.sunEl); add(now.earthEl) }
+  const hi0 = Math.max(tMax + 1.5, Math.min(cap, bMax + 1), 3)
+  const lo0 = Math.min(tMin - 1, Math.max(bMin - 1, tMin - 3), -1)
+  const step = STEPS.find((s) => (hi0 - lo0) / s <= 6) ?? 90
+  return { lo: Math.floor(lo0 / step) * step, hi: Math.ceil(hi0 / step) * step, step }
+}
+
 export function Panorama({
   mask,
   timeline,
@@ -13,14 +41,32 @@ export function Panorama({
   timeline: TimelineSample[]
   now?: TimelineSample
 }) {
-  const W = 720, H = 200
-  const elMin = -5, elMax = 15
-  const x = (az: number) => (az / 360) * W
-  const y = (el: number) => H - ((el - elMin) / (elMax - elMin)) * H
+  const ref = useRef<SVGSVGElement>(null)
+  const clipId = `panorama-plot-${useId().replace(/:/g, '')}`
+  const [size, setSize] = useState({ w: 360, h: 140 })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = () => {
+      const r = el.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) setSize((s) => (Math.abs(s.w - r.width) < 0.5 && Math.abs(s.h - r.height) < 0.5 ? s : { w: r.width, h: r.height }))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const { w: W, h: H } = size
+  const pw = Math.max(1, W - PAD.left - PAD.right), ph = Math.max(1, H - PAD.top - PAD.bottom)
+  const { lo, hi, step } = fitRange(mask, timeline, now)
+  const x = (az: number) => PAD.left + (az / 360) * pw
+  const y = (el: number) => PAD.top + ((hi - el) / (hi - lo)) * ph
+  const bottom = PAD.top + ph
 
   const terrain = mask
-    ? 'M0,' + H + ' ' + mask.elevDeg.map((e, i) => `L${x(i * mask.azStepDeg)},${y(e)}`).join(' ') + ` L${W},${y(mask.elevDeg[0])} L${W},${H} Z`
-    : `M0,${y(0)} L${W},${y(0)} L${W},${H} L0,${H} Z`
+    ? `M${x(0)},${bottom} ` + mask.elevDeg.map((e, i) => `L${x(i * mask.azStepDeg).toFixed(1)},${y(e).toFixed(1)}`).join(' ') + ` L${x(360)},${y(mask.elevDeg[0]).toFixed(1)} L${x(360)},${bottom} Z`
+    : `M${x(0)},${y(0)} L${x(360)},${y(0)} L${x(360)},${bottom} L${x(0)},${bottom} Z`
 
   // split paths where azimuth wraps around 360 -> 0
   const track = (key: 'sun' | 'earth') => {
@@ -35,24 +81,48 @@ export function Panorama({
     return d
   }
 
+  const elTicks: number[] = []
+  for (let e = lo; e <= hi + 1e-9; e += step) elTicks.push(e)
+  const azStep = pw >= 320 ? 45 : 90 // eight compass points when there is room, else four
+  const azTicks: number[] = []
+  for (let a = 0; a <= 360; a += azStep) azTicks.push(a)
+  // a body above the plotted range is drawn on the top edge as a small triangle pointing up
+  const body = (az: number, el: number, r: number, cls: string) => {
+    const cx = x(az)
+    if (el <= hi) return <circle cx={cx} cy={y(el)} r={r} className={`body ${cls}`} />
+    const t = PAD.top
+    return <path d={`M${cx},${t} l${r},${r * 1.6} l${-2 * r},0 Z`} className={`body ${cls}`} />
+  }
+
   return (
-    <svg className="panorama" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Horizon panorama">
-      {[0, 5, 10].map((e) => (
+    <svg ref={ref} className="panorama" viewBox={`0 0 ${W} ${H}`} role="img"
+      aria-label={`Horizon panorama, elevation ${lo}° to ${hi}°`}>
+      <defs>
+        <clipPath id={clipId}><rect x={PAD.left} y={PAD.top} width={pw} height={ph} /></clipPath>
+      </defs>
+      {elTicks.map((e) => (
         <g key={e}>
-          <line x1={0} x2={W} y1={y(e)} y2={y(e)} className="grid" />
-          <text x={4} y={y(e) - 3} className="tick">{e}°</text>
+          <line x1={PAD.left} x2={PAD.left + pw} y1={y(e)} y2={y(e)} className={e === 0 ? 'grid zero' : 'grid'} />
+          <text x={PAD.left - 4} y={y(e)} className="tick" textAnchor="end" dominantBaseline="middle">{e}°</text>
         </g>
       ))}
-      {['N', 'E', 'S', 'W'].map((l, i) => (
-        <text key={l} x={x(i * 90) + 4} y={14} className="tick">{l}</text>
+      {azTicks.map((a) => (
+        <g key={a}>
+          {a > 0 && a < 360 && <line x1={x(a)} x2={x(a)} y1={PAD.top} y2={bottom} className="grid" />}
+          <text x={x(a)} y={H - 4} className="tick" textAnchor={a === 0 ? 'start' : a === 360 ? 'end' : 'middle'}>
+            {AZ_LABELS[(a / 45) % 8] ?? ''}
+          </text>
+        </g>
       ))}
-      <path d={track('sun')} className="track sun" />
-      <path d={track('earth')} className="track earth" />
-      <path d={terrain} className="terrain" />
+      <g clipPath={`url(#${clipId})`}>
+        <path d={track('sun')} className="track sun" />
+        <path d={track('earth')} className="track earth" />
+        <path d={terrain} className="terrain" />
+      </g>
       {now && (
         <>
-          <circle cx={x(now.sunAz)} cy={y(now.sunEl)} r={6} className="body sun" />
-          <circle cx={x(now.earthAz)} cy={y(now.earthEl)} r={5} className="body earth" />
+          {body(now.sunAz, now.sunEl, 5, 'sun')}
+          {body(now.earthAz, now.earthEl, 4.5, 'earth')}
         </>
       )}
     </svg>
