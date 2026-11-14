@@ -34,6 +34,7 @@ import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { dsnAt } from './lib/dsn'
+import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
@@ -73,6 +74,7 @@ export default function App() {
   const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
+  const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
   const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
@@ -443,6 +445,13 @@ export default function App() {
   const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
   const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
+  // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
+  const powerTl = useMemo(() => {
+    if (!selected || !ephemeris) return []
+    const step = windowDays <= 90 ? 3600_000 : 3 * 3600_000
+    return powerTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step, panel)
+  }, [selected, ephemeris, dayStart, windowDays, panel])
+  const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= t)), [powerTl, t])
   const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
 
   const selectCalendarDate = async (nextTime: number) => {
@@ -502,7 +511,8 @@ export default function App() {
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
-              dsn={ephemeris ? { now: dsnNow } : undefined} />
+              dsn={ephemeris ? { now: dsnNow } : undefined}
+              power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}

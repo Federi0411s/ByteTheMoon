@@ -89,7 +89,7 @@ export interface TimelineSample {
 }
 
 /** Fraction of a disc of angular radius r (deg) centred at height dh (deg) above the horizon line. */
-function discFraction(dh: number, r: number): number {
+export function discFraction(dh: number, r: number): number {
   if (dh >= r) return 1
   if (dh <= -r) return 0
   const x = dh / r // area of circular segment, exact

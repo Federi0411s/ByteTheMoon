@@ -174,3 +174,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .dsn-table td { padding: 4px; vertical-align: top; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .dsn-ok { color: #6ee7a8; }
 .dsn-no { color: #ff9a9a; }
+.power-wh { margin-top: 10px; }
+.power-now { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; font-size: 13px; color: var(--muted); }
+.power-now b { font-size: 20px; color: var(--sun); font-variant-numeric: tabular-nums; }
+.num-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.num-field > span:first-child { flex: 1; }
+.num-field input { width: 72px; background: #141a2b; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; }
+.num-field > span:last-child { width: 22px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.num-field input.invalid { border-color: #ff6b6b; color: #ff9a9a; }

@@ -3,6 +3,8 @@ import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
+import { PowerPanel } from './PowerPanel'
+import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
 import { TimelineBars } from './TimelineBars'
 
@@ -69,6 +71,7 @@ export function SitePanel({
   showSiteMarkers,
   onShowSiteMarkersChange,
   dsn,
+  power,
 }: {
   sites: Site[]
   selected?: Site
@@ -86,6 +89,7 @@ export function SitePanel({
   showSiteMarkers: boolean
   onShowSiteMarkersChange: (show: boolean) => void
   dsn?: { now?: DsnSample }
+  power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
@@ -159,6 +163,7 @@ export function SitePanel({
             </div>
           )}
           {dsn && <DsnPanel now={dsn.now} />}
+          {power && <PowerPanel {...power} />}
         </>
       )}
     </section>

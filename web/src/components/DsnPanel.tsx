@@ -19,7 +19,7 @@ export function DsnPanel({ now }: { now?: DsnSample }) {
               const l = now.st[s.id]
               return (
                 <tr key={s.id}>
-                  <td><span className="sat-swatch" style={{ background: s.color, display: 'inline-block', marginRight: 6 }} />{s.name}</td>
+                  <td><span className="swatch" style={{ background: s.color }} />{s.name}</td>
                   <td className={l.link ? 'dsn-ok' : 'dsn-no'}>{l.link ? '✓ In link' : '✕ Not in link'}</td>
                   <td className="muted">{REASON[l.block]}</td>
                 </tr>
