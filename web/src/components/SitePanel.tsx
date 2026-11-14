@@ -4,6 +4,7 @@ import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
 import { PowerPanel } from './PowerPanel'
+import { EnvPanel, type SiteEnv } from './EnvPanel'
 import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
 import { TerrainPreview } from './TerrainPreview'
@@ -90,6 +91,7 @@ export function SitePanel({
   savedSitesError,
   showSiteMarkers,
   onShowSiteMarkersChange,
+  env,
   dsn,
   power,
   terrainViewActive,
@@ -118,6 +120,7 @@ export function SitePanel({
   showSiteMarkers: boolean
   onShowSiteMarkersChange: (show: boolean) => void
   dsn?: { now?: DsnSample }
+  env?: { env?: SiteEnv; loading: boolean }
   power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
   terrainViewActive: boolean
   terrainViewLoading: boolean
@@ -211,6 +214,7 @@ export function SitePanel({
               <div className="kv"><span>Time to Earthset</span><b>{fmtDur(summary.nextEarthsetMs)}</b></div>
             </div>
           )}
+          {env && <EnvPanel {...env} />}
           {dsn && <DsnPanel now={dsn.now} />}
           {power && <PowerPanel {...power} />}
         </>

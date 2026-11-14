@@ -20,6 +20,8 @@ import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
+import { sampleSiteEnv } from './lib/siteEnv'
+import type { SiteEnv } from './components/EnvPanel'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade, loadRaster } from './lib/raster'
@@ -255,6 +257,8 @@ export default function App() {
   // whole-Moon heatmaps computed on the fly from the global elevation tiles (null: tiles not generated)
   const [heat, setHeat] = useState<HeatEngine | null>(null)
   const [heatVersion, setHeatVersion] = useState(0)
+  /** temperature range + radiation dose at the selected site, tagged with what it was computed for */
+  const [siteEnv, setSiteEnv] = useState<{ key: string; env: SiteEnv | null }>()
   const heatRef = useRef<HeatEngine | null>(null)
   heatRef.current = heat
 
@@ -710,6 +714,21 @@ export default function App() {
     })
     return () => { cancelled = true }
   }, [heat, selected])
+
+  // ---- temperature range + radiation at the selected site (same global model as the heatmaps) ----
+  const siteEnvKey = selected && heat && heatVersion ? `${heatVersion}|${selected.lat}|${selected.lon}` : ''
+  useEffect(() => {
+    if (!heat || !heatVersion || !selected) return
+    let cancelled = false
+    const key = `${heatVersion}|${selected.lat}|${selected.lon}`
+    sampleSiteEnv(heat, selected.lat, selected.lon).then((v) => {
+      if (cancelled) return
+      const ok = v && Number.isFinite(v.tMin) && Number.isFinite(v.tMax) && Number.isFinite(v.fSky)
+      setSiteEnv({ key, env: ok ? { tMinK: v.tMin, tMaxK: v.tMax, doseUGyH: radiationDose(v.fSky, heat.gcr) } : null })
+    }).catch(() => { if (!cancelled) setSiteEnv({ key, env: null }) })
+    return () => { cancelled = true }
+  }, [heat, heatVersion, selected])
+  const siteEnvReady = siteEnv && siteEnv.key === siteEnvKey ? siteEnv : undefined
 
   // Refined area around the selected site (~15 km around it): every layer is computed there from the
   // finest elevation tiles, sampled at their own resolution, once the view is close enough (map tile
@@ -1285,6 +1304,7 @@ export default function App() {
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
+              env={siteEnvKey ? { env: siteEnvReady?.env ?? undefined, loading: !siteEnvReady } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
