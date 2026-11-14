@@ -1,0 +1,30 @@
+# Node / Vite
+node_modules/
+dist/
+*.local
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Raw data never goes in git (lives in MOON_DATA, default ../data)
+*.tif
+*.img
+*.lbl
+*.bsp
+*.bpc
+*.zip
+*.part
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log

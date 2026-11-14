@@ -1,0 +1,83 @@
+:root {
+  --bg: #05070d;
+  --panel: rgba(12, 16, 28, 0.86);
+  --border: rgba(255, 255, 255, 0.1);
+  --text: #e8ecf4;
+  --muted: #8a93a8;
+  --accent: #ff8a3d;
+  --sun: #ffd23f;
+  --earth: #3fa7ff;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; overflow: hidden; }
+
+.app { position: relative; height: 100%; }
+.globe { position: absolute; inset: 0; }
+.cesium-viewer-bottom { display: none; } /* credits are listed in the About/README; re-enable for the final build if required */
+
+.brand { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; pointer-events: none; }
+.brand h1 { margin: 0; font-size: 20px; letter-spacing: 0.04em; }
+
+.side { position: absolute; top: 64px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.side.left { left: 12px; }
+.side.right { right: 12px; width: 300px; }
+
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
+.panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.panel h3 { margin: 12px 0 4px; font-size: 15px; }
+.panel.warn p { color: #ffc27a; font-size: 12px; margin: 4px 0; }
+.muted { color: var(--muted); font-size: 12px; }
+.source { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
+
+select, button, input[type='datetime-local'] {
+  background: #141a2b; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px;
+}
+select { width: 100%; }
+button { cursor: pointer; }
+button.on { border-color: var(--accent); color: var(--accent); }
+input[type='range'] { width: 100%; accent-color: var(--accent); }
+
+.layer { padding: 8px 0; border-top: 1px solid var(--border); }
+.layer-head { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.slider { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend { margin-top: 4px; }
+.legend-bar { height: 8px; border-radius: 4px; }
+.legend-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+
+.row { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; }
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 8px 0; }
+.kv { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.kv b { color: var(--text); font-weight: 600; }
+.inspect { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--border); }
+
+.panorama, .timeline { width: 100%; display: block; background: #0a0e1a; border-radius: 6px; margin-top: 8px; }
+.panorama { height: 140px; }
+.timeline { height: 52px; }
+.panorama .terrain { fill: #3a3f4d; stroke: #9aa3b5; stroke-width: 1; }
+.panorama .grid { stroke: rgba(255, 255, 255, 0.08); }
+.tick { fill: var(--muted); font-size: 10px; }
+.track { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.track.sun, .body.sun { stroke: var(--sun); }
+.track.earth, .body.earth { stroke: var(--earth); }
+.body.sun { fill: var(--sun); }
+.body.earth { fill: var(--earth); }
+.bar.sun { fill: var(--sun); }
+.bar.earth { fill: var(--earth); }
+.timeline .now { stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+
+.timebar { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
+.timebar input[type='range'] { flex: 1; }
+.timebar select { width: auto; }
+.toggle { display: flex; gap: 6px; align-items: center; font-size: 13px; white-space: nowrap; }
+
+.loading { position: absolute; inset: 0; display: grid; place-items: center; font-size: 18px; color: var(--muted); pointer-events: none; }
+
+@media (max-width: 900px) {
+  .side { position: static; width: auto !important; max-height: none; }
+  .app { overflow-y: auto; }
+}
