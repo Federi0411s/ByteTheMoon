@@ -3,7 +3,7 @@
 NASA Space Apps 2026. An interactive 3D Moon for comparing landing sites by **sunlight** (power) and **Earth visibility** (communications). It takes the real terrain horizon from NASA LOLA data into account.
 
 - Streaming 3D Moon (Cesium Moon 3D Tiles), with a NASA Moon Trek fallback
-- Heatmaps draped on the 3D surface: average sunlight, Earth visibility, permanent shadow, slope, elevation, and a live **landing-suitability score** with adjustable weights
+- **Global heatmaps** draped on the 3D surface, computed in the browser for the selected period (the mission period, or else the loaded 5-year window): sunlight, Earth visibility, permanent shadow, slope, elevation, surface charging, regolith temperature, radiation dose, and a live **landing-suitability score** with adjustable weights
 - Time controls to step backward or forward by 1 minute, 30 minutes, 1 hour, 6 hours, 12 hours, or 1 day, plus a slider to set the date; Moon lighting uses the Sun's real position (NASA SPICE)
 - Landing-site panel expands to half the screen for easier browsing of analysis windows from 1 day to 1 year
 - Click a point on the Moon to inspect it, then save it with a custom name; saved sites persist in the browser and can be renamed or removed
@@ -23,9 +23,36 @@ npm run dev                   # http://localhost:5173
 
 Without a token, or if Cesium ion fails, the app falls back to the NASA Moon Trek basemap. Overlays work the same either way.
 
-The optional radiation layer expects `radiation_overlay.json`, `radiation_classes.png`, and
-`radiation_continuous.png` in `web/public/radiation`. Its controls appear in the map-layer panel when
-the metadata JSON is available.
+### Global heatmaps and the fine elevation tiles
+
+Heatmaps are computed in the browser from a global LOLA elevation pyramid (see [How the heatmaps are computed](#how-the-heatmaps-are-computed)):
+
+- **Levels 0–5** (666 m/px and coarser, 134 MB) ship with the app in `web/public/data/dem`.
+- **Levels 6–7** (333 and 167 m/px, 1.67 GB) are too large for git. `pipeline/dem_tiles.py` writes them to `$MOON_DATA/dem_fine`, and `npm run dev` serves them at `/dem-fine` automatically.
+- **In production**, upload `dem_fine/` to a static bucket that allows cross-origin requests (e.g. Cloudflare R2 with CORS open). Set its base URL in `VITE_DEM_FINE_URL`; tiles are fetched as `{z}/{x}/{y}.webp`. If it is not set, the app falls back to the 666 m tiles everywhere.
+
+The older radiation layer reads `radiation_overlay.json`, `radiation_classes.png` and
+`radiation_continuous.png` from `web/public/radiation`. Its controls appear in the map-layer panel only when
+that metadata JSON exists.
+
+### How the heatmaps are computed
+
+Each heatmap tile is computed in a Web Worker (`web/src/lib/heatWorker.ts`) for the selected period:
+
+| Layer | Method |
+|---|---|
+| Horizons | 32 azimuths × 40 steps out to 200 km per point. Coarser DEM levels are used further away, and lunar curvature is included |
+| Sunlight / Earth visibility | Fraction of the window with the Sun / Earth above that horizon (SPICE ephemeris) |
+| Permanent shadow (PSR) | Never lit during the selected period |
+| Slope, elevation | From the same DEM tiles |
+| Surface charging | EQUIPOT model, reading `pipeline/equipot_results.csv` directly, with the terrain horizon instead of a flat one |
+| Regolith temperature | Hayne et al. 2017 1-D model, implicit solver in 6 h steps. A window over 1 year is sampled as 12 lunations spread across it, each after a 1-lunation warm-up |
+| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky)) × GCR factor`, where f_sky is the visible-sky fraction. The GCR factor is **approximate**: a cosine 11-year solar cycle, minimum Dec 2019, 30 % lower at solar maximum |
+
+South of 85°S, the 60 m LOLA polar maps (sunlight, Earth visibility, PSR, slope, elevation) replace the
+computed values. Sunlight and Earth visibility are rescaled to the selected period (`web/src/lib/mission.ts`,
+from the 1 km horizon grid). The global computation supersedes the 4 km polar charging, thermal and
+radiation rasters made by the pipeline.
 
 ## Rebuild the data (Python, optional)
 
@@ -39,13 +66,22 @@ python pipeline/lunar_radiation.py  # -> web/public/radiation (LOLA, about 2 min
 python pipeline/ephemeris.py     # -> web/public/data/ephemeris.json
 python pipeline/build_sites.py   # -> web/public/data/sites.json (with horizon masks)
 python pipeline/charging.py --csv pipeline/equipot_results.csv  # -> charging + thermal layers and CSVs
+python pipeline/horizon_grid.py  # -> web/public/data/horizons (1 km horizon grid for mission-period averages, ~10 min)
+python pipeline/dem_tiles.py     # -> web/public/data/dem (levels 0-5) + $MOON_DATA/dem_fine (levels 6-7), ~15-30 min
 ```
+
+`dem_tiles.py` reads the LOLA LDEM 118 m global map and writes 256 px geographic WebP tiles. Height is
+encoded as a 16-bit value `R·256 + G`, in metres `= 0.5·value − 10000`, and `B = 255` marks valid pixels.
+Run `python pipeline/dem_tiles.py --test` to encode a few tiles and report sizes without writing anything.
 
 Set `MOON_DATA` to keep raw data somewhere other than `..\data`.
 
 The radiation pipeline uses the raw LOLA LDEM 80S when available, otherwise the generated
 `dem_south.png` overlay; it computes horizons on a 500 m polar grid and writes the two Cesium PNGs
 plus their metadata under `web/public/radiation`.
+
+The pipeline's charging, thermal and radiation rasters below (south pole, 4 km) are kept for the
+CSV site summaries. The map layers now come from the global computation in the browser.
 
 The charging pipeline samples the SPICE ephemeris every 12 hours by default, derives surface normals
 from the LOLA DEM, and generates low-resolution mean-potential, minimum-potential, and below-threshold
@@ -72,6 +108,8 @@ python pipeline/ephemeris.py --start 2026-01-01 --end 2206-01-01 --step-hours 2 
 ## Data sources
 
 - LRO LOLA topography, slope, average illumination, Earth visibility and PSR maps: NASA PDS Geosciences Node (Mazarico et al. 2011; LOLA Science Team)
+- Global elevation: LOLA LDEM 118 m (`Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014`)
+- Regolith thermal model: Hayne et al. 2017, *JGR Planets* 122; surface charging: EQUIPOT results (`pipeline/equipot_results.csv`)
 - Ephemerides: NASA NAIF SPICE (DE440, Moon PA/ME frames)
 - Feature names: IAU / USGS Gazetteer of Planetary Nomenclature
 - 3D Moon: Cesium Moon Terrain (Cesium ion) · fallback imagery: NASA Moon Trek (LRO WAC global, Kaguya TC ortho, LROC NAC polar and site mosaics; list built by `pipeline/trek_catalog.py`)

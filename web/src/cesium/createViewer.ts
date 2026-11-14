@@ -19,6 +19,7 @@ import {
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import trekLayers from './trekLayers.json'
+import { crispText, keepCreditsClear } from './screenPolish'
 
 // All coordinates, cameras and terrain are on the Moon (must be set before creating the Viewer).
 Ellipsoid.default = Ellipsoid.MOON
@@ -74,9 +75,15 @@ function addTrekPhotoLayers(collection: ImageryLayerCollection): Record<PhotoGro
     })
     const group = photoGroup(l)
     const layer = new ImageryLayer(provider, {
-      minimumTerrainLevel: l.minLevel || undefined,
+      // Zoom gating only where a coarser layer underneath is just as good from afar (Kaguya over
+      // WAC, NAC site mosaics). The NAC polar caps are NOT gated: Moon Trek serves them from level 0,
+      // and the WAC/Kaguya equirectangular mosaics smear radially near the poles, so gating them
+      // made oblique polar views a patchwork (sharp NAC wedge close by, smeared WAC further out).
+      minimumTerrainLevel: group === 'nacPolar' ? undefined : l.minLevel || undefined,
       // Kaguya TC is darker and flatter than the photometrically normalised WAC mosaic
       ...(group === 'kaguya' ? { brightness: 1.9, contrast: 1.25 } : {}),
+      // the NAC polar AvgMosaic averages many low-Sun images and is much darker than WAC/Kaguya
+      ...(group === 'nacPolar' ? { brightness: 1.6, contrast: 1.1, gamma: 0.85 } : {}),
     })
     collection.add(layer)
     groups[group].push(layer)
@@ -106,6 +113,8 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
     skyAtmosphere: false,
     shadows: false,
   })
+  crispText(viewer) // device-pixel rendering + supersampled labels
+  keepCreditsClear(viewer) // Cesium ion credits bottom-left, sliding right of the left panel when needed
   const scene = viewer.scene
   if (scene.sun) scene.sun.show = false
   if (scene.moon) scene.moon.show = false

@@ -1,3 +1,4 @@
+import { fmtDate } from '../lib/time'
 import type { TimelineSample } from '../lib/analysis'
 
 /** Two stacked bars over the analysis window: sunlight (yellow) and Earth visibility (blue). */
@@ -18,7 +19,7 @@ export function TimelineBars({ timeline, nowMs }: { timeline: TimelineSample[]; 
         </g>
       ))}
       {nowMs >= t0 && nowMs <= t1 && <line x1={x(nowMs)} x2={x(nowMs)} y1={0} y2={row * 2} className="now" />}
-      <text x={2} y={row * 2 + 12} className="tick">{new Date(t0).toISOString().slice(0, 10)}</text>
+      <text x={2} y={row * 2 + 12} className="tick">{fmtDate(t0)}</text>
       <text x={W - 2} y={row * 2 + 12} className="tick" textAnchor="end">+{days} d</text>
     </svg>
   )

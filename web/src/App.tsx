@@ -16,6 +16,8 @@ import {
 } from 'cesium'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
+import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
+import { HeatEngine } from './lib/heatEngine'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade, loadRaster } from './lib/raster'
@@ -36,6 +38,9 @@ import { SitePanel } from './components/SitePanel'
 import { dsnAt } from './lib/dsn'
 import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
+import { MissionPanel, type Mission } from './components/MissionPanel'
+import { MissionEngine, PeriodField, type MissionResult } from './lib/mission'
+import type { RasterField } from './lib/raster'
 
 const DAY = 86400_000
 const CSS_PIXELS_PER_CM = 96 / 2.54
@@ -47,6 +52,62 @@ const CALENDAR_RANGE: [number, number] = [
 ]
 const D2R = Math.PI / 180
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
+/**
+ * Whole-Moon versions of every overlay layer, computed on the fly (lib/heatWorker.ts).
+ *  - polar: the precomputed polar raster overrides inside its bounds. True for the 60 m LOLA products
+ *    (sharper than anything computed here); false for the 4 km charging/thermal rasters, which the
+ *    global computation supersedes (terrain horizon instead of a flat one, finer terrain, and the full
+ *    regolith model everywhere instead of the no-inertia equilibrium estimate with a 40 K night floor).
+ *  - thermal: needs the regolith temperature model (only run while such a layer is shown).
+ *  - range: display range when global (the polar-only ranges would saturate at the equator).
+ */
+/**
+ * Radiation (GCR + albedo), same model as pipeline/lunar_radiation.py, computed everywhere from the
+ * terrain horizons: D = PRIMARY * f_sky + ALBEDO * (1 - f_sky), f_sky = mean(1 - sin H) / 2, scaled by
+ * the solar-cycle GCR factor of the selected period (lib/heatEngine.gcrFactor; 1 = 2019 minimum).
+ */
+const RAD_PRIMARY_UGY_H = 20.2 // free-space GCR, Si (Chang'e 4, 2019 solar minimum)
+const RAD_ALBEDO_UGY_H = 6.2 // neutral secondaries per unit soil fraction
+const RAD_CONTINUOUS_RANGE: [number, number] = [8, 14.5] // covers solar minimum to maximum
+const radiationDose = (fSky: number, gcr: number) => (RAD_PRIMARY_UGY_H * fSky + RAD_ALBEDO_UGY_H * (1 - fSky)) * gcr
+/** class thresholds from the overlay legend ("<= 12.0", "<= 12.8", "> 12.8"); pipeline defaults otherwise */
+function radiationThresholds(m: RadiationOverlayMetadata): [number, number] {
+  const nums = m.classLegend.map((c) => Number(/([\d.]+)/.exec(c.label)?.[1])).filter(Number.isFinite)
+  return nums.length >= 2 ? [nums[0], nums[1]] : [12.0, 12.8]
+}
+
+type PolarFields = Record<string, RasterField | undefined>
+const GLOBAL_LAYERS: Record<string, {
+  value: (v: HeatValues) => number
+  polar: boolean
+  /** polar override computed from other fields instead of this layer's own raster */
+  polarValue?: { from: string; value: (f: PolarFields, lon: number, lat: number) => number }
+  thermal?: boolean
+  range?: [number, number]
+  method: string
+}> = {
+  sun_avg: { value: (v) => v.sun, polar: true, method: 'terrain horizons + SPICE Sun' },
+  earth_avg: { value: (v) => v.earth, polar: true, method: 'terrain horizons + SPICE Earth' },
+  // shadowed through the whole selected period (LOLA's PSR map is "never lit", long-term)
+  psr: {
+    value: (v) => (v.sun < 0.002 ? 1 : NaN), polar: true, method: 'never lit during the selected period',
+    polarValue: { from: 'sun_avg', value: (f, lon, lat) => { const s = f.sun_avg?.sampleNearest(lon, lat) ?? NaN; return s !== s ? NaN : s < 0.002 ? 1 : -Infinity } },
+  },
+  slope: { value: (v) => v.slope, polar: true, method: 'LOLA global DEM gradient' },
+  dem_south: { value: (v) => v.elev, polar: true, range: [-9000, 10000], method: 'LOLA global DEM' },
+  charging_mean: { value: (v) => v.cMean, polar: false, method: 'EQUIPOT model + terrain horizon' },
+  charging_min: { value: (v) => v.cMin, polar: false, method: 'EQUIPOT model + terrain horizon' },
+  charging_frac_below: { value: (v) => v.cBelow, polar: false, method: 'EQUIPOT model + terrain horizon' },
+  thermal_mean: { value: (v) => v.tMean, polar: false, thermal: true, range: [40, 260], method: 'Hayne 2017 regolith model, last year of the window' },
+  thermal_min: { value: (v) => v.tMin, polar: false, thermal: true, range: [20, 130], method: 'Hayne 2017 regolith model, last year of the window' },
+  thermal_max: { value: (v) => v.tMax, polar: false, thermal: true, range: [80, 400], method: 'Hayne 2017 regolith model, last year of the window' },
+}
+/** Remove an imagery layer; computed (GlobalHeatProvider) layers also drop their queued tile requests. */
+function removeLayer(scene: MoonScene, layer: ImageryLayer) {
+  ;(layer.imageryProvider as unknown as { dispose?: () => void }).dispose?.()
+  scene.overlays.remove(layer, true)
+}
+
 const FUTURE_SITE_GROUPS = new Set([
   'Artemis III candidate regions',
   'South pole (best-lit spot near feature)',
@@ -94,7 +155,7 @@ export default function App() {
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
-  const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
+  const [t, setT] = useState(() => Math.floor(Date.now() / 1000) * 1000) // current UTC time, whole seconds (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
@@ -114,6 +175,15 @@ export default function App() {
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
   const [viewResM, setViewResM] = useState<number>()
   const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
+  const [mission, setMission] = useState<Mission>({})
+  const [missionResult, setMissionResult] = useState<MissionResult | null>(null)
+  const [missionState, setMissionState] = useState<'idle' | 'loading' | 'computing' | 'ready' | 'unavailable' | 'outside'>('idle')
+  const engineRef = useRef<Promise<MissionEngine | null> | null>(null)
+  // whole-Moon heatmaps computed on the fly from the global elevation tiles (null: tiles not generated)
+  const [heat, setHeat] = useState<HeatEngine | null>(null)
+  const [heatVersion, setHeatVersion] = useState(0)
+  const heatRef = useRef<HeatEngine | null>(null)
+  heatRef.current = heat
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -127,7 +197,7 @@ export default function App() {
         setEphemeris(data.ephemeris)
         const [a, b] = ephemerisRange(data.ephemeris)
         setTimeRange([a, b])
-        const t0 = Math.min(Math.max(Date.now(), a), b)
+        const t0 = Math.min(Math.max(Math.floor(Date.now() / 1000) * 1000, a), b)
         setT(t0)
         // opening view: the full Moon disc as seen from Earth right now
         viewFromEarth(scene.viewer, earthPosition(data.ephemeris, t0))
@@ -240,24 +310,155 @@ export default function App() {
     return camera.changed.addEventListener(update)
   }, [ready])
 
-  // ---- raster overlays (one ImageryLayer per visible layer) ----
+  // ---- mission period: recompute sunlight / Earth averages over [start, end] (debounced) ----
+  const missionValid = mission.start !== undefined && mission.end !== undefined && mission.end > mission.start
+  // the period must lie inside the loaded 5-year ephemeris window (interpolation clamps at its edges)
+  const missionInWindow = missionValid && mission.start! >= timeRange[0] && mission.end! <= timeRange[1]
+  // The polar 60 m maps are always rescaled to the selected period: the mission period when one is set
+  // (and inside the loaded window), otherwise the whole loaded 5-year window, so every heatmap refers
+  // to the same timeframe. The panel status only reports on an actual mission period.
+  useEffect(() => {
+    const eph = ephemeris ?? bundle?.ephemeris // the active 5-year window, so the mission period is covered
+    if (!eph) { setMissionResult(null); setMissionState('idle'); return }
+    const [a, b] = missionInWindow ? [mission.start!, mission.end!] : timeRange
+    const status = (s: typeof missionState) => setMissionState(!missionValid ? 'idle' : !missionInWindow ? 'outside' : s)
+    status('idle')
+    let cancelled = false
+    const id = setTimeout(async () => {
+      if (!engineRef.current) {
+        status('loading')
+        engineRef.current = MissionEngine.load().catch((e) => { console.warn('horizon grid unavailable:', e); return null })
+      }
+      const engine = await engineRef.current
+      if (cancelled) return
+      if (!engine) return status('unavailable')
+      status('computing')
+      const r = await engine.compute(eph, a, b)
+      if (cancelled || !r) return
+      setMissionResult(r)
+      status('ready')
+      ;(window as unknown as { moonMission: MissionResult }).moonMission = r // console debugging, like window.moon
+    }, 200)
+    return () => { cancelled = true; clearTimeout(id) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundle, ephemeris, missionValid, missionInWindow, mission.start, mission.end, timeRange])
+  useEffect(() => () => { engineRef.current?.then((e) => e?.dispose()) }, [])
+
+  // ---- global heatmap engine + its averaging window (mission period, else the whole loaded window) ----
+  useEffect(() => {
+    if (!ready) return
+    let engine: HeatEngine | null = null
+    let disposed = false
+    HeatEngine.load().then((e) => {
+      if (disposed) return e?.dispose()
+      engine = e
+      setHeat(e)
+      ;(window as unknown as { moonHeat: HeatEngine | null }).moonHeat = e // console debugging, like window.moon
+      if (!e) console.info('Global heatmaps off: run pipeline/dem_tiles.py to generate web/public/data/dem')
+    })
+    return () => { disposed = true; engine?.dispose() }
+  }, [ready])
+  useEffect(() => {
+    if (!heat || !ephemeris) return
+    const [a, b] = missionInWindow ? [mission.start!, mission.end!] : timeRange
+    const id = setTimeout(() => { heat.setWindow(ephemeris, a, b); setHeatVersion(heat.version) }, 200)
+    return () => clearTimeout(id)
+  }, [heat, ephemeris, timeRange, missionInWindow, mission.start, mission.end])
+
+  useEffect(() => {
+    if (!heat || !selected || selected.horizon) return
+    let cancelled = false
+    const id = selected.id
+    heat.horizon(selected.lat, selected.lon).then((horizon) => {
+      if (cancelled || !horizon) return
+      setSelected((s) => (s && s.id === id ? { ...s, horizon } : s))
+    })
+    return () => { cancelled = true }
+  }, [heat, selected])
+
+  // refined area around the selected site: denser samples + finest elevation tiles there
+  const focus = useMemo<GlobalHeatOptions['focus']>(() => {
+    if (!selected || !heat) return undefined
+    const dLat = 0.3 * D2R, dLon = Math.min(Math.PI, dLat / Math.max(Math.cos(selected.lat * D2R), 0.02))
+    const lat = selected.lat * D2R, lon = selected.lon * D2R
+    return {
+      boundsRad: [lon - dLon, Math.max(-Math.PI / 2, lat - dLat), lon + dLon, Math.min(Math.PI / 2, lat + dLat)],
+      samples: 33,
+      demLevel: heat.dem.fineMaxLevel,
+    }
+  }, [selected, heat])
+
+  // Fields actually displayed / scored / inspected: LOLA averages, or rescaled to the mission period.
+  const fields = useMemo<Record<string, RasterField>>(() => {
+    const f = bundle?.fields ?? {}
+    if (!missionResult) return f
+    const out = { ...f }
+    if (f.sun_avg) out.sun_avg = new PeriodField(f.sun_avg, missionResult.sun, missionResult.baseSun)
+    if (f.earth_avg) out.earth_avg = new PeriodField(f.earth_avg, missionResult.earth, missionResult.baseEarth)
+    return out
+  }, [bundle, missionResult])
+  const fieldsRef = useRef(fields)
+  fieldsRef.current = fields
+
+  // layer metadata as displayed: global range + source when the layer is computed on the fly
+  const displayLayers = useMemo(() => (bundle?.layers ?? []).map((m) => {
+    const g = heat && heatVersion ? GLOBAL_LAYERS[m.id] : undefined
+    if (!g) return m
+    const [min, max] = g.range ?? [m.min, m.max]
+    return { ...m, min, max, source: g.polar ? `${m.source}; elsewhere ${g.method}` : g.method }
+  }), [bundle, heat, heatVersion])
+
+  // ---- raster overlays (one ImageryLayer per visible layer; rebuilt when its field changes) ----
+  const layerFields = useRef<Record<string, RasterField | undefined>>({})
+  const layerKeys = useRef<Record<string, string>>({})
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
     bundle.layers.forEach((meta) => {
-      const field = bundle.fields[meta.id]
+      const field = fields[meta.id]
+      // the field actually drawn near the pole (PSR: derived from the period-rescaled sunlight)
+      const pv = GLOBAL_LAYERS[meta.id]?.polarValue
+      const drawn = pv && heat ? fields[pv.from] : field
       const st = layerState[meta.id]
       let layer = layerRefs.current[meta.id]
-      if (!field || !st?.visible) {
-        if (layer) layer.show = false
+      const key = `${heatVersion}|${focus?.boundsRad.join(',') ?? ''}`
+      if (layer && (layerFields.current[meta.id] !== drawn || layerKeys.current[meta.id] !== key)) {
+        // field changed (mission period): keep the old heatmap visible while the new tiles render
+        const old = layer
+        setTimeout(() => removeLayer(scene, old), 2500)
+        delete layerRefs.current[meta.id]
+        layer = undefined as unknown as ImageryLayer
+      }
+      const g = heat && heatVersion ? GLOBAL_LAYERS[meta.id] : undefined
+      if ((!field && !g) || !st?.visible) {
+        if (layer && g) {
+          // computed layers: drop the hidden layer so its tiles and textures are freed (the computed
+          // values stay in the engine cache, so turning it back on is quick)
+          removeLayer(scene, layer)
+          delete layerRefs.current[meta.id]
+        } else if (layer) layer.show = false
         return
       }
       if (!layer) {
+        layerFields.current[meta.id] = drawn
+        layerKeys.current[meta.id] = key
         const contrast = meta.id.includes('sun') || meta.id.includes('earth') ? 1.25 : meta.id.includes('slope') ? 1.4 : 1.15
-        layer = new ImageryLayer(asProvider(new FieldImageryProvider({
-          value: (lon, lat) => field.sampleNearest(lon, lat),
+        const polarSrc = g?.polarValue ? fields[g.polarValue.from] : field
+        const usePolar = g?.polar && polarSrc
+        const [lo, hi] = g?.range ?? [meta.min, meta.max]
+        layer = new ImageryLayer(asProvider(g ? new GlobalHeatProvider({
+          engine: heat!,
+          value: g.value,
+          polar: usePolar ? (g.polarValue ? (lon, lat) => g.polarValue!.value(fields, lon, lat) : (lon, lat) => field!.sampleNearest(lon, lat)) : undefined,
+          polarBelowLat: usePolar ? polarSrc.boundsRad()[3] : undefined,
+          min: lo, max: hi, colormap: meta.colormap, contrast,
+          thermal: g.thermal,
+          credit: usePolar ? `${meta.source}; elsewhere ${g.method}` : `${meta.title}: ${g.method} (LOLA global DEM)`,
+          focus,
+        }) as unknown as FieldImageryProvider : new FieldImageryProvider({
+          value: (lon, lat) => field!.sampleNearest(lon, lat),
           min: meta.min, max: meta.max, colormap: meta.colormap,
-          boundsRad: field.boundsRad(),
+          boundsRad: field!.boundsRad(),
           maximumLevel: levelForResolution(meta.resolutionM),
           credit: meta.source,
           contrast,
@@ -268,7 +469,7 @@ export default function App() {
       layer.show = true
       layer.alpha = st.opacity
     })
-  }, [ready, bundle, layerState])
+  }, [ready, bundle, layerState, fields, heat, heatVersion, focus])
 
   // ---- derived "landing suitability" heatmap, rebuilt when weights change ----
   // Slope used here = MAX slope inside the chosen landing footprint (circle / ellipse) centred on each
@@ -281,40 +482,60 @@ export default function App() {
     const id = setTimeout(() => setFpKey(`${fpA},${fpB},${fpAz}`), 400) // wait for typing to stop
     return () => clearTimeout(id)
   }, [fpA, fpB, fpAz])
-  const scoreFields = useMemo(() => {
-    const f = bundle?.fields
-    const base = f?.slope_max ?? f?.slope
-    if (!f?.sun_avg || !f.earth_avg || !base) return null
+  // footprint slope is expensive: depends only on the slope raster + footprint, not on the mission period
+  const footprintSlope = useMemo(() => {
+    const base = bundle?.fields.slope_max ?? bundle?.fields.slope
+    if (!base) return null
     const [a, b, az] = fpKey.split(',').map(Number)
-    return { sun: f.sun_avg, earth: f.earth_avg, slope: footprintMax(base, a, b, az), exact: !!f.slope_max }
+    return footprintMax(base, a, b, az)
   }, [bundle, fpKey])
+  const scoreFields = useMemo(() => {
+    if (!fields.sun_avg || !fields.earth_avg || !footprintSlope) return null
+    return { sun: fields.sun_avg, earth: fields.earth_avg, slope: footprintSlope, exact: !!fields.slope_max }
+  }, [fields, footprintSlope])
   useEffect(() => {
     const scene = sceneRef.current
-    if (!ready || !scene || !scoreFields) return
+    if (!ready || !scene || (!scoreFields && !(heat && heatVersion))) return
     const old = layerRefs.current.__score
-    if (old) { scene.overlays.remove(old, true); delete layerRefs.current.__score }
+    if (old) { removeLayer(scene, old); delete layerRefs.current.__score }
     if (!score.enabled) return
     const handle = setTimeout(() => {
-      const { sun, earth, slope } = scoreFields
       const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
       const wSum = score.sun + score.earth || 1
-      const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
-        value: (lon, lat) => {
-          const sl = slope.sampleNearest(lon, lat)
-          if (!(sl <= limit)) return NaN // fails the slope requirement or no data -> transparent
-          const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
-          if (Number.isNaN(s) || Number.isNaN(e)) return NaN
-          return (score.sun * s + score.earth * e) / wSum
-        },
-        min: 0, max: 1, colormap: 'viridis',
-        boundsRad: sun.boundsRad(),
-        maximumLevel: levelForResolution(Math.max(sun.meta.resolutionM, slope.meta.resolutionM)),
-      })), { alpha: score.opacity })
+      // polar: 60 m LOLA maps + max slope inside the landing footprint.
+      // Returns NaN outside the polar maps (-> global estimate) and FAIL where the slope is too steep.
+      const FAIL = -1e9
+      const polarScore = scoreFields && ((lon: number, lat: number) => {
+        const { sun, earth, slope } = scoreFields
+        const sl = slope.sampleNearest(lon, lat)
+        if (Number.isNaN(sl)) return NaN
+        if (!(sl <= limit)) return FAIL
+        const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
+        if (Number.isNaN(s) || Number.isNaN(e)) return NaN
+        return (score.sun * s + score.earth * e) / wSum
+      })
+      const provider = heat && heatVersion
+        ? new GlobalHeatProvider({
+          engine: heat,
+          // elsewhere: computed sun/Earth; slope at the tile's sample spacing (coarse when zoomed out)
+          value: (v) => (v.slope <= limit ? (score.sun * v.sun + score.earth * v.earth) / wSum : NaN),
+          polar: polarScore ? (lon, lat) => { const v = polarScore(lon, lat); return v === FAIL ? -Infinity : v } : undefined,
+          polarBelowLat: scoreFields?.sun.boundsRad()[3],
+          min: 0, max: 1, colormap: 'viridis', focus,
+          credit: 'Landing score: LOLA polar maps; elsewhere from the LOLA global DEM',
+        }) as unknown as FieldImageryProvider
+        : new FieldImageryProvider({
+          value: (lon, lat) => { const v = polarScore!(lon, lat); return v === FAIL ? NaN : v },
+          min: 0, max: 1, colormap: 'viridis',
+          boundsRad: scoreFields!.sun.boundsRad(),
+          maximumLevel: levelForResolution(Math.max(scoreFields!.sun.meta.resolutionM, scoreFields!.slope.meta.resolutionM)),
+        })
+      const layer = new ImageryLayer(asProvider(provider), { alpha: score.opacity })
       scene.overlays.add(layer)
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, scoreFields, score])
+  }, [ready, scoreFields, score, heat, heatVersion, focus])
 
   // ---- polar raster radiation overlay ----
   useEffect(() => {
@@ -326,6 +547,29 @@ export default function App() {
     let layer: ImageryLayer | null = null
     setRadiationError(undefined)
     const meta = radiationLayerMeta(metadata, radiationMode)
+    if (heat && heatVersion) {
+      const gcr = heat.gcr
+      const [green, yellow] = radiationThresholds(metadata)
+      const classes = radiationMode === 'classes'
+      const [lo, hi] = classes ? [meta.min, meta.max] : RAD_CONTINUOUS_RANGE
+      layer = new ImageryLayer(asProvider(new GlobalHeatProvider({
+        engine: heat,
+        value: (v) => {
+          const d = radiationDose(v.fSky, gcr)
+          return classes ? (d <= green ? 0 : d <= yellow ? 1 : 2) : d
+        },
+        min: lo, max: hi, colormap: meta.colormap, focus,
+        credit: `Radiation: GCR + albedo model (pipeline/lunar_radiation.py) on the LOLA global DEM, solar-cycle factor ${gcr.toFixed(2)}`,
+      }) as unknown as FieldImageryProvider), { alpha: radiationOpacityRef.current })
+      scene.overlays.add(layer)
+      radiationLayerRef.current = layer
+      return () => {
+        if (layer) {
+          removeLayer(scene, layer)
+          if (radiationLayerRef.current === layer) radiationLayerRef.current = null
+        }
+      }
+    }
     loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
       if (cancelled) return
       layer = new ImageryLayer(asProvider(new FieldImageryProvider({
@@ -350,7 +594,7 @@ export default function App() {
         if (radiationLayerRef.current === layer) radiationLayerRef.current = null
       }
     }
-  }, [ready, radiationMetadata, radiationMode, radiationVisible])
+  }, [ready, radiationMetadata, radiationMode, radiationVisible, heat, heatVersion, focus])
 
   useEffect(() => {
     if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
@@ -395,9 +639,9 @@ export default function App() {
     const dem = bundle.fields.dem_south
     const elevation = dem?.sample(lon * D2R, lat * D2R)
     const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
-    const horizon = dem && heightM !== undefined ? computeHorizon(dem, lat, lon) : undefined
+    const horizon = !heatRef.current && dem && heightM !== undefined ? computeHorizon(dem, lat, lon) : undefined
     const values = bundle.layers.map((m) => {
-      const v = bundle.fields[m.id]?.sample(lon * D2R, lat * D2R)
+      const v = fieldsRef.current[m.id]?.sample(lon * D2R, lat * D2R)
       return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
     })
     if (markers.current.custom) viewer.entities.remove(markers.current.custom)
@@ -421,6 +665,46 @@ export default function App() {
       },
     })
     setInspect({ ...p, values })
+    const heat = heatRef.current
+    if (heat && heat.version) {
+      // value at the point from a z = 10 tile (~10 km) of the global computation
+      const z = 10, step = Math.PI / 2 ** z
+      const lonR = lon * D2R, latR = lat * D2R
+      const x = Math.min(2 ** (z + 1) - 1, Math.floor((lonR + Math.PI) / step)), y = Math.min(2 ** z - 1, Math.floor((Math.PI / 2 - latR) / step))
+      heat.tile(z, x, y, 17, heat.dem.fineMaxLevel, true).then((tile) => {
+        if (!tile) return
+        const n = tile.n, k = n - 1
+        const fx = ((lonR - (-Math.PI + x * step)) / step) * k, fy = ((Math.PI / 2 - y * step - latR) / step) * k
+        const x0 = Math.min(Math.floor(fx), k - 1), y0 = Math.min(Math.floor(fy), k - 1), wx = fx - x0, wy = fy - y0
+        const at = (a: Float32Array) => {
+          const i = y0 * n + x0
+          return a[i] * (1 - wx) * (1 - wy) + a[i + 1] * wx * (1 - wy) + a[i + n] * (1 - wx) * wy + a[i + n + 1] * wx * wy
+        }
+        const g: Record<string, number> = {
+          sun_avg: at(tile.sun), earth_avg: at(tile.earth), slope: at(tile.slope), dem_south: at(tile.elev),
+          psr: at(tile.sun) < 0.002 ? 1 : 0,
+            charging_mean: at(tile.cMean), charging_min: at(tile.cMin), charging_frac_below: at(tile.cBelow),
+            ...(tile.tMean.length ? { thermal_mean: at(tile.tMean), thermal_min: at(tile.tMin), thermal_max: at(tile.tMax) } : {}),
+        }
+        setInspect((cur) => {
+          if (!cur || cur.lat !== lat || cur.lon !== lon) return cur
+          return {
+            ...cur,
+            values: cur.values.map((v, i) => {
+              const m = bundle.layers[i]
+              const gv = g[m.id]
+              // fill gaps; for layers the global computation supersedes, prefer it everywhere
+              if ((v.value !== '—' && GLOBAL_LAYERS[m.id]?.polar !== false) || gv === undefined || !Number.isFinite(gv)) return v
+              return { title: `${m.title} (global est.)`, value: `${gv.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+            }),
+          }
+        })
+        if (!Number.isFinite(heightM ?? NaN)) {
+          const h = at(tile.elev)
+          setSelected((s) => (s && s.lat === lat && s.lon === lon && s.heightM === undefined && Number.isFinite(h) ? { ...s, heightM: h } : s))
+        }
+      })
+    }
     setSelected({
       id: `custom-${Date.now()}`,
       name: `Custom ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
@@ -572,9 +856,14 @@ export default function App() {
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined} />
           </aside>
           <aside className="side right">
-            <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
+            {bundle.ephemeris && (
+              <MissionPanel mission={mission} onChange={setMission} range={timeRange}
+                status={{ state: missionState, detail: missionResult ? `${missionResult.samples} time steps, ${Math.round(missionResult.ms)} ms` : undefined }} />
+            )}
+            <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!scoreFields}
-              radiationMetadata={radiationMetadata} radiationLoading={radiationLoading} radiationError={radiationError}
+              radiationMetadata={radiationMetadata && heat && heatVersion ? { ...radiationMetadata, doseMin: RAD_CONTINUOUS_RANGE[0], doseMax: RAD_CONTINUOUS_RANGE[1] } : radiationMetadata}
+              radiationLoading={radiationLoading} radiationError={radiationError}
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
@@ -593,7 +882,8 @@ export default function App() {
             <TimeBar t={t} range={timeRange} calendarRange={CALENDAR_RANGE} onChange={setT}
               onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
               stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
-              busy={ephemerisBusy} error={ephemerisError} />
+              busy={ephemerisBusy} error={ephemerisError} mission={mission} onMission={setMission} />
+
           )}
           {viewResM !== undefined && Number.isFinite(viewResM) && viewResM > 0 && (
             <div className="map-scale" role="img"

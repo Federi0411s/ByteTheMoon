@@ -28,10 +28,13 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
    bar so no UI ever covers them. `.app` prefix beats widgets.css, which loads after this file. */
 .app .cesium-viewer-bottom {
   /* !important: the Viewer writes inline left/bottom/right on every resize */
-  left: 384px !important; /* .side.left: 12px + 360px + 12px gap */
-  bottom: 68px !important; /* timebar is 12px + ~51px tall; leave a small gap above it */
+  /* --credits-left is set by cesium/screenPolish.ts: 12px, or just right of the left panel when its
+     content reaches down to the credits (e.g. expanded) */
+  left: var(--credits-left, 12px) !important;
+  bottom: 86px !important; /* timebar is 12px + ~69px tall (slider + mission track); small gap above it */
   right: auto !important;
-  max-width: calc(100% - 384px - 324px); /* stop before the right panel (300px + 2*12px) */
+  max-width: calc(100% - var(--credits-left, 12px) - 324px); /* stop before the right panel (300px + 2*12px) */
+  transition: left 0.2s ease;
   padding: 0;
   font-size: 9px;
   line-height: 1.3;
@@ -55,7 +58,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .brand { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; pointer-events: none; }
 .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0.04em; }
 
-.side { position: absolute; top: 12px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.side { position: absolute; top: 12px; bottom: 82px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
 .side.left.expanded { width: 50vw; }
 .side.right { right: 12px; bottom: 118px; width: 300px; }
@@ -104,7 +107,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .muted { color: var(--muted); font-size: 12px; }
 .source { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 
-select, button, input[type='datetime-local'], input[type='text'] {
+select, button, input[type='datetime-local'], input[type='text'], input.iso-input {
   background: #141a2b; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px;
 }
 select { width: 100%; }
@@ -183,7 +186,24 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .timebar select { width: auto; }
 .toggle { display: flex; gap: 6px; align-items: center; font-size: 13px; white-space: nowrap; }
 
-.loading { position: absolute; inset: 0; display: grid; place-items: center; font-size: 18px; color: var(--muted); pointer-events: none; }
+.loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0; color: var(--muted); pointer-events: none; }
+/* Shown text is "Loading..." with animated dots, whatever the markup says (the markup's text stays
+   for screen readers). The dots are revealed one by one; their box keeps a fixed width so
+   "Loading" doesn't shift. */
+.loading::before { content: 'Loading'; font-size: 18px; }
+.loading::after, .dots::after {
+  content: '...';
+  display: inline-block; /* width = exactly the three dots, so each step reveals one more */
+  animation: loading-dots 1.2s steps(4, jump-none) infinite;
+}
+.loading::after { font-size: 18px; }
+@keyframes loading-dots {
+  0% { clip-path: inset(0 100% 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading::after, .dots::after { animation: none; }
+}
 
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
@@ -210,3 +230,32 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .num-field > span:last-child { width: 22px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .num-field input.invalid { border-color: #ff6b6b; color: #ff9a9a; }
+
+/* ---- mission period: panel (top right) + blue track with pins under the time slider ---- */
+.time-col { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.time-col input[type='range'] { width: 100%; margin: 0; }
+.mission-track { position: relative; height: 14px; margin: 0 8px; border-radius: 7px; background: rgba(63, 167, 255, 0.10); cursor: crosshair; touch-action: none; }
+.mission-track:hover { background: rgba(63, 167, 255, 0.18); }
+.mission-hint { position: absolute; inset: 0; display: grid; place-items: center; font-size: 10px; color: var(--muted); pointer-events: none; letter-spacing: 0.03em; }
+.mission-bar { position: absolute; top: 3px; bottom: 3px; min-width: 2px; border-radius: 4px; background: var(--earth); box-shadow: 0 0 8px rgba(63, 167, 255, 0.6); cursor: grab; }
+.mission-pin { position: absolute; top: 50%; width: 18px; height: 24px; cursor: ew-resize; touch-action: none; z-index: 1; }
+/* bracket handles sit OUTSIDE the period (start to the left, end to the right) so they never overlap */
+.mission-pin.start { transform: translate(-100%, -50%); }
+.mission-pin.end { transform: translate(0, -50%); }
+.mission-pin::before { content: ''; position: absolute; top: 3px; bottom: 3px; width: 11px; background: #fff; border: 2px solid var(--earth); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6); }
+.mission-pin.start::before { right: 0; border-radius: 9px 2px 2px 9px; }
+.mission-pin.end::before { left: 0; border-radius: 2px 9px 9px 2px; }
+.mission-pin::after { content: ''; position: absolute; top: 8px; bottom: 8px; width: 2px; background: var(--earth); border-radius: 1px; }
+.mission-pin.start::after { right: 6px; }
+.mission-pin.end::after { left: 6px; }
+.mission-pin:hover::before, .mission-pin:active::before { background: #dff0ff; }
+.mission-inputs { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.mission-inputs label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.mission-inputs input { min-width: 0; font-size: 13px; padding: 5px 6px; }
+.mission-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; }
+.mission-status b { color: var(--earth); }
+
+/* ISO 8601 date/time text fields (locale-independent replacement for datetime-local) */
+.iso-input { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; max-width: 100%; }
+.iso-input::placeholder { color: var(--muted); opacity: 0.8; }
+.iso-input.invalid { border-color: #ff6b6b; outline: none; }
