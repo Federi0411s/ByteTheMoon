@@ -18,7 +18,7 @@ M3_CSV = DATA_DIR / "li2018_south.csv"
 GRID_CSV = REPO_DIR / "web" / "public" / "data" / "charging_points.csv"
 OUTPUT_DIR = REPO_DIR / "web" / "public" / "data"
 
-# DA VERIFICARE NEL FILE .LBL: 0-based indices cross-checked against the
+# To verify against the .LBL file: 0-based indices cross-checked against the
 # PDS product field definitions for DLRE_PRP_SOUTH.
 COL_LAT = 10
 COL_LON = 9

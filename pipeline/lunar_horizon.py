@@ -1,33 +1,33 @@
 """
 lunar_horizon.py
-Orizzonte topografico da DEM e visibilita' della Terra (o del Sole) dai siti lunari.
+Topographic horizon from a DEM and visibility of the Earth (or the Sun) from lunar sites.
 
 Idea:
-  per ogni sito si "lancia un raggio" sul DEM lungo un azimut e si cerca l'angolo
-  massimo sotto cui si vede il terreno (creste, bordi dei crateri), tenendo conto
-  della curvatura lunare. Quello e' l'orizzonte locale in quella direzione.
-  La Terra (o il Sole) e' visibile se la sua elevazione supera l'orizzonte
-  nel suo azimut.
+  for each site a "ray is cast" over the DEM along an azimuth, looking for the maximum
+  angle under which terrain is seen (ridges, crater rims), taking the Moon's curvature
+  into account. That is the local horizon in that direction.
+  The Earth (or the Sun) is visible if its elevation is above the horizon at its
+  azimuth.
 
-DEM atteso: griglia regolare in proiezione STEREOGRAFICA POLARE SUD centrata sul polo
-(come i prodotti LOLA polari), altezze in metri rispetto alla sfera di riferimento
-R = 1737.4 km.  Convenzione assunta (PROJ +proj=stere +lat_0=-90 +lon_0=0):
+Expected DEM: regular grid in SOUTH POLAR STEREOGRAPHIC projection centred on the pole
+(like the LOLA polar products), heights in metres relative to the reference sphere
+R = 1737.4 km.  Assumed convention (PROJ +proj=stere +lat_0=-90 +lon_0=0):
     x = rho * sin(lon),   y = rho * cos(lon),   rho = 2 R tan((90 + lat)/2)
-Verificala con un punto noto del tuo DEM (funzione xy_to_latlon): se lat/lon non
-tornano, adatta xy_to_latlon / latlon_to_xy.
+Check it with a known point of your DEM (function xy_to_latlon): if lat/lon don't
+match, adapt xy_to_latlon / latlon_to_xy.
 
-Dipendenze: numpy, scipy (matplotlib solo per il grafico del profilo).
+Dependencies: numpy, scipy (matplotlib only for the profile plot).
 """
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
 R_MOON = 1737400.0          # [m]
-EARTH_RADIUS_DEG = 0.95     # raggio apparente medio della Terra vista dalla Luna
+EARTH_RADIUS_DEG = 0.95     # mean apparent radius of the Earth seen from the Moon
 SUN_RADIUS_DEG = 0.27
 
 
-# ---------------------------------------------------------------- proiezione
+# ---------------------------------------------------------------- projection
 def xy_to_latlon(x, y, R=R_MOON):
     rho = np.hypot(x, y)
     lat = -90.0 + 2.0 * np.degrees(np.arctan(rho / (2.0 * R)))
@@ -42,7 +42,7 @@ def latlon_to_xy(lat, lon, R=R_MOON):
 
 
 def local_axes_xy(x, y):
-    """Versori nord ed est locali nel piano della mappa (polo sud: nord = radiale verso l'esterno)."""
+    """Local north and east unit vectors in the map plane (south pole: north = radially outward)."""
     rho = np.hypot(x, y)
     rho = np.where(rho < 1e-6, 1e-6, rho)
     north = np.stack([x / rho, y / rho], axis=-1)
@@ -50,13 +50,13 @@ def local_axes_xy(x, y):
     return north, east
 
 
-# ---------------------------------------------------------------- angoli locali
+# ---------------------------------------------------------------- local angles
 def enu_angles(lat_deg, lon_deg, vec_hat):
     """
-    Elevazione e azimut (da nord, orario verso est) [deg] di una direzione 3D
-    nel frame solidale Luna, vista da siti (lat, lon).  vec_hat: (3,) versore.
-    Per la Terra con parallasse passa invece il vettore sito->Terra normalizzato
-    per ogni sito (shape (N,3)).
+    Elevation and azimuth (from north, clockwise towards east) [deg] of a 3D direction
+    in the Moon-fixed frame, seen from sites (lat, lon).  vec_hat: (3,) unit vector.
+    For the Earth with parallax, pass instead the normalised site->Earth vector
+    for each site (shape (N,3)).
     """
     lat = np.radians(np.asarray(lat_deg, float))
     lon = np.radians(np.asarray(lon_deg, float))
@@ -72,19 +72,19 @@ def enu_angles(lat_deg, lon_deg, vec_hat):
     return el, az
 
 
-# ---------------------------------------------------------------- modello
+# ---------------------------------------------------------------- model
 class HorizonModel:
     def __init__(self, Z, x, y, R=R_MOON, observer_height=2.0):
         """
-        Z : (ny, nx) quote [m]
-        x : (nx,) coordinate colonne [m];  y : (ny,) coordinate righe [m]
-        observer_height : altezza dell'osservatore/antenna sopra il suolo [m]
+        Z : (ny, nx) heights [m]
+        x : (nx,) column coordinates [m];  y : (ny,) row coordinates [m]
+        observer_height : height of the observer/antenna above the ground [m]
         """
         self.Z = np.asarray(Z, float)
         self.x = np.asarray(x, float)
         self.y = np.asarray(y, float)
         self.dx = self.x[1] - self.x[0]
-        self.dy = self.y[1] - self.y[0]       # puo' essere negativo (righe dall'alto)
+        self.dy = self.y[1] - self.y[0]       # may be negative (rows from the top)
         self.R = R
         self.h_obs = observer_height
         self.pixel = min(abs(self.dx), abs(self.dy))
@@ -92,8 +92,8 @@ class HorizonModel:
 
     def _build_pyramid(self, max_levels=14):
         """
-        Piramide di DEM a risoluzione dimezzata con MASSIMO sul blocco: lontano dal sito
-        si campiona con passo grande senza perdere le creste (scelta conservativa).
+        Pyramid of half-resolution DEMs taking the block MAXIMUM: far from the site we
+        sample with long steps without losing the ridges (a conservative choice).
         """
         self.levels = [self.Z]
         Z = self.Z
@@ -121,11 +121,11 @@ class HorizonModel:
 
     def _levels_for(self, d):
         """
-        Livello di piramide per ogni distanza: blocco <= passo di campionamento.
-        (Con blocco >= 2 x passo il massimo sul blocco includeva il terreno accanto al sito gia'
-        al primo passo e alzava l'orizzonte sui pendii: visibilita' della Terra -0.08 rispetto a
-        LOLA AVGVISIB_EARTH; con blocco <= passo l'errore e' quello del campionamento a piena
-        risoluzione.)
+        Pyramid level for each distance: block <= sampling step.
+        (With block >= 2 x step, the block maximum already included the terrain next to the site
+        at the first step and raised the horizon on slopes: Earth visibility -0.08 compared to
+        LOLA AVGVISIB_EARTH; with block <= step the error is that of full-resolution
+        sampling.)
         """
         step = np.diff(np.r_[0.0, d])
         lev = np.floor(np.log2(np.maximum(step / self.pixel, 1.0))).astype(int)
@@ -135,15 +135,15 @@ class HorizonModel:
         return self._sample(np.asarray(xs, float), np.asarray(ys, float))
 
     def distances(self, max_dist=150e3, n_steps=300):
-        """Distanze di campionamento: fitte vicino al sito, rade lontano."""
+        """Sampling distances: dense near the site, sparse far away."""
         return np.geomspace(self.pixel, max_dist, n_steps)
 
     def horizon(self, xs, ys, az_deg, max_dist=150e3, n_steps=300, chunk=2000):
         """
-        Elevazione dell'orizzonte [deg].
-        xs, ys : (N,) coordinate dei siti [m]
-        az_deg : (K,) azimut comuni a tutti i siti, oppure (N, K) azimut per sito
-        ritorna (N, K)
+        Horizon elevation [deg].
+        xs, ys : (N,) site coordinates [m]
+        az_deg : (K,) azimuths shared by all sites, or (N, K) azimuths per site
+        returns (N, K)
         """
         xs = np.asarray(xs, float).ravel()
         ys = np.asarray(ys, float).ravel()
@@ -153,7 +153,7 @@ class HorizonModel:
             az = np.broadcast_to(az, (N, az.size))
         K = az.shape[1]
         d = self.distances(max_dist, n_steps)                     # (M,)
-        drop = d**2 / (2.0 * self.R)                              # curvatura
+        drop = d**2 / (2.0 * self.R)                              # curvature
         lev = self._levels_for(d)
         out = np.empty((N, K))
 
@@ -177,9 +177,9 @@ class HorizonModel:
             out[e] = np.degrees(best)
         return out
 
-    # ------------------------------------------------------------ profilo
+    # ------------------------------------------------------------ profile
     def profile(self, x0, y0, az_deg, max_dist=150e3, n_steps=600):
-        """Profilo del terreno lungo un azimut, gia' corretto per la curvatura."""
+        """Terrain profile along an azimuth, already corrected for curvature."""
         north, east = local_axes_xy(np.array([x0]), np.array([y0]))
         A = np.radians(az_deg)
         dvec = np.cos(A) * north[0] + np.sin(A) * east[0]
@@ -188,8 +188,8 @@ class HorizonModel:
         return d, h - d**2 / (2.0 * self.R)
 
     def plot_line_of_sight(self, x0, y0, az_deg, target_el_deg, max_dist=150e3, ax=None,
-                           title="Linea di vista verso la Terra"):
-        """Grafico per la presentazione: terreno, orizzonte e linea di vista verso il target."""
+                           title="Line of sight to the Earth"):
+        """Presentation plot: terrain, horizon and line of sight to the target."""
         import matplotlib.pyplot as plt
         d, h = self.profile(x0, y0, az_deg, max_dist)
         valid = h > -1e8
@@ -198,26 +198,26 @@ class HorizonModel:
         hz = self.horizon([x0], [y0], [az_deg], max_dist)[0, 0]
         if ax is None:
             _, ax = plt.subplots(figsize=(10, 4))
-        ax.fill_between(d / 1e3, h, h.min() - 200, color="0.6", label="terreno")
+        ax.fill_between(d / 1e3, h, h.min() - 200, color="0.6", label="terrain")
         ax.plot(d / 1e3, h0 + d * np.tan(np.radians(target_el_deg)), "b-",
-                label=f"linea di vista Terra (el = {target_el_deg:.2f}°)")
+                label=f"line of sight to Earth (el = {target_el_deg:.2f}°)")
         ax.plot(d / 1e3, h0 + d * np.tan(np.radians(hz)), "r--",
-                label=f"orizzonte (el = {hz:.2f}°)")
-        ax.plot(0, h0, "k^", ms=10, label="sito")
-        ax.set_xlabel("distanza [km]")
-        ax.set_ylabel("quota [m]")
+                label=f"horizon (el = {hz:.2f}°)")
+        ax.plot(0, h0, "k^", ms=10, label="site")
+        ax.set_xlabel("distance [km]")
+        ax.set_ylabel("height [m]")
         visible = target_el_deg > hz
-        ax.set_title(f"{title} - {'VISIBILE' if visible else 'OSTRUITA'}")
+        ax.set_title(f"{title} - {'VISIBLE' if visible else 'BLOCKED'}")
         ax.legend(loc="best")
         ax.grid(alpha=0.4)
         return ax
 
 
-# ---------------------------------------------------------------- visibilita'
+# ---------------------------------------------------------------- visibility
 def interp_horizon(hz_table, az_table, az_query):
     """
-    Interpola l'orizzonte nell'azimut richiesto, sito per sito.
-    hz_table : (N,K)  az_table : (N,K) crescente per riga (o (K,))  az_query : (N,)
+    Interpolate the horizon at the requested azimuth, site by site.
+    hz_table : (N,K)  az_table : (N,K) increasing along each row (or (K,))  az_query : (N,)
     """
     hz_table = np.asarray(hz_table)
     N, K = hz_table.shape
@@ -230,13 +230,13 @@ def interp_horizon(hz_table, az_table, az_query):
 
 def earth_window_azimuths(az_E_series, half_margin_deg=3.0, step_deg=0.5):
     """
-    Per ogni sito, griglia di azimut che copre solo l'intervallo spazzato dalla Terra
-    (dalle effemeridi) + un margine. Molto piu' veloce che calcolare 360 gradi.
-    az_E_series : (T, N) azimut della Terra nel tempo per ogni sito [deg]
-    ritorna (N, K)
+    For each site, an azimuth grid covering only the range swept by the Earth
+    (from the ephemeris) plus a margin. Much faster than computing all 360 degrees.
+    az_E_series : (T, N) Earth azimuth over time for each site [deg]
+    returns (N, K)
     """
     a = np.radians(az_E_series)
-    center = np.degrees(np.arctan2(np.sin(a).mean(0), np.cos(a).mean(0)))   # media circolare
+    center = np.degrees(np.arctan2(np.sin(a).mean(0), np.cos(a).mean(0)))   # circular mean
     dev = (az_E_series - center[None, :] + 180.0) % 360.0 - 180.0
     half = np.abs(dev).max(0) + half_margin_deg
     K = int(np.ceil(2 * half.max() / step_deg)) + 1

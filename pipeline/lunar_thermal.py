@@ -15,14 +15,14 @@ Usage:
     from lunar_thermal import RegolithThermal, absorbed_flux
     model = RegolithThermal(n_points, T_init=150.0)
     for each epoch (time step dt in seconds):
-        Q = absorbed_flux(inc_deg, lit, r_sun_AU)          # W/m2 per punto
-        T_surf = model.step(Q, dt)                          # K per punto
+        Q = absorbed_flux(inc_deg, lit, r_sun_AU)          # W/m2 per point
+        T_surf = model.step(Q, dt)                          # K per point
 """
 
 import numpy as np
 
 SIGMA = 5.670374419e-8      # Stefan-Boltzmann [W m-2 K-4]
-S0 = 1361.0                 # costante solare a 1 AU [W m-2]
+S0 = 1361.0                 # solar constant at 1 AU [W m-2]
 
 # --- Hayne et al. 2017 parameters ---
 EMISSIVITY = 0.95
@@ -43,7 +43,7 @@ def albedo(inc_deg):
 
 def absorbed_flux(inc_deg, lit, r_sun_AU=1.0, q_extra=0.0):
     """
-    Flusso solare assorbito [W m-2].
+    Absorbed solar flux [W m-2].
     inc_deg  : solar incidence angle at the surface (from the normal) [deg]
     lit      : bool, point illuminated (above the topographic horizon and inc < 90)
     r_sun_AU : Moon-Sun distance [AU] (from ephemerides; ~1)
@@ -58,9 +58,9 @@ def absorbed_flux(inc_deg, lit, r_sun_AU=1.0, q_extra=0.0):
 
 def equilibrium_temperature(Q_abs, T_floor=40.0):
     """
-    Stima rapida senza inerzia termica: T = (Q / eps sigma)^(1/4).
-    Buona per i punti illuminati a Sole quasi costante (poli), sovrastima i picchi
-    e non dice nulla sulle zone in ombra (T_floor = valore assegnato al buio).
+    Quick estimate without thermal inertia: T = (Q / eps sigma)^(1/4).
+    Good for points lit by a nearly constant Sun (poles); it overestimates the peaks
+    and says nothing about shadowed areas (T_floor = value assigned in the dark).
     """
     Q = np.asarray(Q_abs, float)
     T = (np.maximum(Q, 0.0) / (EMISSIVITY * SIGMA)) ** 0.25
@@ -74,7 +74,7 @@ def heat_capacity(T):
 
 class RegolithThermal:
     """
-    Profilo termico vettorizzato su n_points punti.
+    Thermal profile vectorised over n_points points.
     Vertical grid with increasing spacing up to z_max (default 1.5 m; 3 m is better
     than the annual-wave penetration depth at the poles).
     """
@@ -124,7 +124,7 @@ class RegolithThermal:
         rho = self.rho[:, None]
         dz = self.dz[:, None]
 
-        # flussi all'interfaccia tra nodi (K medio)
+        # fluxes at the interfaces between nodes (mean K)
         K_half = 0.5 * (K[1:] + K[:-1])
         F = -K_half * (T[1:] - T[:-1]) / dz          # downward flux [W m-2]
 
