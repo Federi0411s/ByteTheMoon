@@ -41,6 +41,7 @@ export class DemTerrainProvider implements TerrainProvider {
   private maximumAvailableLevel: number
   private poleHeightsPromise: Promise<{ north: number; south: number }> | undefined
   private disposed = false
+  private decodeContext: CanvasRenderingContext2D | null = null
 
   constructor(baseUrl: string, fineUrl: string | null) {
     this.baseUrl = baseUrl
@@ -167,11 +168,17 @@ export class DemTerrainProvider implements TerrainProvider {
     const bitmap = await createImageBitmap(await response.blob())
     try {
       if (this.disposed) throw new Error('LOLA terrain provider has been disposed')
-      const canvas = document.createElement('canvas')
-      canvas.width = TILE
-      canvas.height = TILE
-      const context = canvas.getContext('2d', { willReadFrequently: true })
+      // one reusable canvas: drawImage + getImageData run back to back with no await in between,
+      // so concurrent tile loads cannot interleave here (a canvas per tile piled up until GC)
+      if (!this.decodeContext) {
+        const canvas = document.createElement('canvas')
+        canvas.width = TILE
+        canvas.height = TILE
+        this.decodeContext = canvas.getContext('2d', { willReadFrequently: true })
+      }
+      const context = this.decodeContext
       if (!context) throw new Error('Could not create a canvas context for LOLA terrain')
+      context.clearRect(0, 0, TILE, TILE)
       context.drawImage(bitmap, 0, 0)
       return this.decode(context.getImageData(0, 0, TILE, TILE).data)
     } finally {
