@@ -75,6 +75,8 @@ export function SitePanel({
   selected,
   onSelect,
   onSearchCoordinates,
+  onGenerateReport,
+  reportDisabled,
   timeline,
   summary,
   now,
@@ -101,6 +103,8 @@ export function SitePanel({
   selected?: Site
   onSelect: (s: Site) => void
   onSearchCoordinates: (lat: number, lon: number) => void
+  onGenerateReport: () => void
+  reportDisabled: boolean
   timeline: TimelineSample[]
   summary?: SiteSummary
   now?: TimelineSample
@@ -165,6 +169,10 @@ export function SitePanel({
 
       {selected && (
         <>
+          <button className="report-open-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
+            Generate technical report (PDF)
+          </button>
+          {reportDisabled && <p className="muted">A loaded ephemeris is required to generate a period report.</p>}
           {(selected.group === 'Custom' || selected.group === 'Saved') && (
             <SavedSiteEditor key={selected.id} site={selected} onSave={onSaveSite} onRemove={onRemoveSite} />
           )}

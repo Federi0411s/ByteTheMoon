@@ -7,6 +7,7 @@ NASA Space Apps 2026. An interactive 3D Moon for comparing landing sites by **su
 - Time controls to step backward or forward by 1 minute, 30 minutes, 1 hour, 6 hours, 12 hours, or 1 day, plus a slider to set the date; Moon lighting uses the Sun's real position (NASA SPICE)
 - Landing-site panel expands to half the screen for easier browsing of analysis windows from 1 day to 1 year
 - Click a point on the Moon to inspect it, then save it with a custom name; saved sites persist in the browser and can be renamed or removed
+- Generate a formal technical PDF report for any selected site, with its 360° terrain-horizon panorama and Sun/Earth tracks, full-period visibility analysis, terrain details, and optional close-up map images captured separately for each active filter
 - Per-site horizon panorama with Sun/Earth paths, a lit/comms timeline, time to sunset/Earthset, and the longest night
 - Click anywhere on the Moon to analyse a custom site (horizon computed where elevation data is available)
 - Select a landing site and open its low-altitude terrain view from the left panel; return to the saved map camera with one click

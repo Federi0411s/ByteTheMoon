@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import type { HorizonMask, TimelineSample } from '../lib/analysis'
+import { fitPanoramaRange } from '../lib/panorama'
 
 /**
  * 360° horizon panorama: terrain skyline (grey), Sun path (yellow) and Earth path (blue) over the
@@ -10,27 +11,6 @@ import type { HorizonMask, TimelineSample } from '../lib/analysis'
  */
 const PAD = { left: 30, right: 8, top: 8, bottom: 18 }
 const AZ_LABELS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-const STEPS = [1, 2, 5, 10, 15, 20, 30, 45]
-
-/** Elevation range (deg) and tick step that fit the skyline and the parts of the paths that matter. */
-function fitRange(mask: HorizonMask | undefined, timeline: TimelineSample[], now?: TimelineSample) {
-  let tMin = 0, tMax = 0
-  if (mask) for (const e of mask.elevDeg) { if (e < tMin) tMin = e; if (e > tMax) tMax = e }
-  // Sun/Earth paths count up to a cap above the skyline: a body crossing the horizon matters, its
-  // high noon arc does not (an equatorial Sun at 80° would flatten the skyline into a line)
-  const cap = Math.max(tMax + 6, tMax * 1.8, 5)
-  let bMax = -Infinity, bMin = Infinity
-  const add = (el: number) => {
-    if (el > bMax) bMax = el
-    if (el < bMin) bMin = el
-  }
-  for (const s of timeline) { add(s.sunEl); add(s.earthEl) }
-  if (now) { add(now.sunEl); add(now.earthEl) }
-  const hi0 = Math.max(tMax + 1.5, Math.min(cap, bMax + 1), 3)
-  const lo0 = Math.min(tMin - 1, Math.max(bMin - 1, tMin - 3), -1)
-  const step = STEPS.find((s) => (hi0 - lo0) / s <= 6) ?? 90
-  return { lo: Math.floor(lo0 / step) * step, hi: Math.ceil(hi0 / step) * step, step }
-}
 
 export function Panorama({
   mask,
@@ -59,7 +39,7 @@ export function Panorama({
 
   const { w: W, h: H } = size
   const pw = Math.max(1, W - PAD.left - PAD.right), ph = Math.max(1, H - PAD.top - PAD.bottom)
-  const { lo, hi, step } = fitRange(mask, timeline, now)
+  const { lo, hi, step } = fitPanoramaRange(mask, timeline, now)
   const x = (az: number) => PAD.left + (az / 360) * pw
   const y = (el: number) => PAD.top + ((hi - el) / (hi - lo)) * ph
   const bottom = PAD.top + ph

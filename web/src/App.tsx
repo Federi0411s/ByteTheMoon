@@ -43,8 +43,10 @@ import { dsnAt } from './lib/dsn'
 import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
+import { TechnicalReportDialog } from './components/TechnicalReportDialog'
 import { MissionEngine, PeriodField, type MissionResult } from './lib/mission'
 import type { RasterField } from './lib/raster'
+import type { ReportFilterImage, ReportOverlay } from './lib/technicalReport'
 
 const DAY = 86400_000
 const CSS_PIXELS_PER_CM = 96 / 2.54
@@ -234,6 +236,7 @@ export default function App() {
   const [terrainViewActive, setTerrainViewActive] = useState(false)
   const [terrainViewLoading, setTerrainViewLoading] = useState(false)
   const [terrainViewError, setTerrainViewError] = useState<string>()
+  const [reportOpen, setReportOpen] = useState(false)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const terrainCamera = useRef<{ position: Cartesian3; direction: Cartesian3; up: Cartesian3 } | null>(null)
@@ -281,6 +284,151 @@ export default function App() {
       restoreElevationOnExit.current = false
     }
   }, [])
+  const closeReport = useCallback(() => setReportOpen(false), [])
+  const captureMapForReport = useCallback(async (site: Site, overlays: ReportOverlay[]): Promise<ReportFilterImage[]> => {
+    const moonScene = sceneRef.current
+    const viewer = moonScene?.viewer
+    if (!viewer || viewer.isDestroyed()) throw new Error('The lunar map is not available.')
+    const scene = viewer.scene
+    if (!overlays.length) return []
+
+    const delay = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const photoLayers = new Set(Object.values(moonScene.photo).flat())
+    const layerStates = Array.from({ length: moonScene.overlays.length }, (_, index) => {
+      const layer = moonScene.overlays.get(index)
+      return { layer, show: layer.show, alpha: layer.alpha }
+    })
+    const iceVisibility = new Map(iceEntitiesRef.current.map((entity) => [entity, entity.show]))
+    const cameraPose = {
+      position: Cartesian3.clone(viewer.camera.positionWC, new Cartesian3()),
+      direction: Cartesian3.clone(viewer.camera.directionWC, new Cartesian3()),
+      up: Cartesian3.clone(viewer.camera.upWC, new Cartesian3()),
+    }
+
+    const waitForIce = async () => {
+      const deadline = Date.now() + 10_000
+      while (!iceLoadedRef.current && Date.now() < deadline) await delay(100)
+      if (iceError) throw new Error(iceError)
+      if (!iceLoadedRef.current || !iceEntitiesRef.current.length) {
+        throw new Error('The water-ice layer is not ready to capture yet.')
+      }
+    }
+
+    const waitForMap = async () => {
+      const tileset = moonScene.tileset
+      if (!scene.globe && !tileset) {
+        await delay(1_500)
+      } else {
+        const startedAt = Date.now()
+        const deadline = startedAt + 2_500
+        let stableFrames = 0
+        while (Date.now() < deadline && (stableFrames < 3 || Date.now() - startedAt < 900)) {
+          scene.requestRender()
+          await nextFrame()
+          const tilesLoaded = scene.globe ? scene.globe.tilesLoaded : tileset?.tilesLoaded ?? true
+          if (tilesLoaded) stableFrames++
+          else stableFrames = 0
+          if (stableFrames < 3 || Date.now() - startedAt < 900) await delay(100)
+        }
+        await delay(scene.globe ? 250 : 800)
+      }
+      scene.render()
+      await nextFrame()
+    }
+
+    const captureCenter = () => {
+      const source = scene.canvas
+      const side = Math.floor(Math.min(source.width, source.height))
+      if (!side) throw new Error('The map view has no rendered image to capture.')
+      const outputSide = Math.min(side, 1_200)
+      const canvas = document.createElement('canvas')
+      canvas.width = outputSide
+      canvas.height = outputSide
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('A temporary canvas could not be created for the map image.')
+      context.drawImage(
+        source,
+        Math.floor((source.width - side) / 2),
+        Math.floor((source.height - side) / 2),
+        side,
+        side,
+        0,
+        0,
+        outputSide,
+        outputSide,
+      )
+      return canvas.toDataURL('image/jpeg', 0.9)
+    }
+
+    try {
+      if (overlays.some((overlay) => overlay.id === '__ice')) await waitForIce()
+      for (const entity of iceEntitiesRef.current) {
+        if (!iceVisibility.has(entity)) iceVisibility.set(entity, entity.show)
+      }
+      for (const layerState of layerStates) {
+        if (!photoLayers.has(layerState.layer)) layerState.layer.show = false
+      }
+      iceEntitiesRef.current.forEach((entity) => { entity.show = false })
+
+      const surface = Cartesian3.fromDegrees(site.lon, site.lat, site.heightM ?? 0, Ellipsoid.MOON)
+      const normal = Ellipsoid.MOON.geodeticSurfaceNormal(surface, new Cartesian3())
+      const latitude = site.lat * D2R
+      const longitude = site.lon * D2R
+      const north = new Cartesian3(
+        -Math.sin(latitude) * Math.cos(longitude),
+        -Math.sin(latitude) * Math.sin(longitude),
+        Math.cos(latitude),
+      )
+      const destination = Cartesian3.add(
+        surface,
+        Cartesian3.multiplyByScalar(normal, 8_000, new Cartesian3()),
+        new Cartesian3(),
+      )
+      viewer.camera.setView({
+        destination,
+        orientation: { direction: Cartesian3.negate(normal, new Cartesian3()), up: north },
+      })
+
+      const images: ReportFilterImage[] = []
+      for (const overlay of overlays) {
+        if (overlay.id === '__ice') {
+          iceEntitiesRef.current.forEach((entity) => { entity.show = true })
+        } else {
+          const layer = overlay.id === '__radiation'
+            ? radiationLayerRef.current
+            : layerRefs.current[overlay.id]
+          if (!layer || !moonScene.overlays.contains(layer)) {
+            throw new Error(`The active filter “${overlay.title}” is not ready to capture yet.`)
+          }
+          layer.show = true
+          layer.alpha = overlay.opacity
+        }
+        await waitForMap()
+        images.push({ ...overlay, image: captureCenter() })
+        if (overlay.id === '__ice') iceEntitiesRef.current.forEach((entity) => { entity.show = false })
+        else {
+          const layer = overlay.id === '__radiation' ? radiationLayerRef.current : layerRefs.current[overlay.id]
+          if (layer) layer.show = false
+        }
+      }
+      return images
+    } finally {
+      for (const layerState of layerStates) {
+        layerState.layer.show = layerState.show
+        layerState.layer.alpha = layerState.alpha
+      }
+      for (const entity of iceEntitiesRef.current) {
+        if (iceVisibility.has(entity)) entity.show = iceVisibility.get(entity) ?? true
+      }
+      viewer.camera.setView({
+        destination: cameraPose.position,
+        orientation: { direction: cameraPose.direction, up: cameraPose.up },
+      })
+      scene.requestRender()
+      scene.render()
+    }
+  }, [iceError])
 
   const toggleTerrainView = useCallback(async () => {
     if (terrainCamera.current) {
@@ -632,6 +780,38 @@ export default function App() {
     const [min, max] = g.range ?? [m.min, m.max]
     return { ...m, min, max, source: g.polar ? `${m.source}; elsewhere ${g.method}` : g.method }
   }), [bundle, heat, heatVersion])
+  const reportOverlays = useMemo<ReportOverlay[]>(() => {
+    const active: ReportOverlay[] = displayLayers
+      .filter((layer) => layerState[layer.id]?.visible)
+      .map((layer) => ({
+        id: layer.id,
+        title: layer.title,
+        source: layer.source,
+        opacity: layerState[layer.id].opacity,
+      }))
+    if (score.enabled) {
+      active.push({
+        id: '__score',
+        title: 'Landing suitability',
+        source: `Sunlight weight ${Math.round(score.sun * 100)}%, Earth visibility weight ${Math.round(score.earth * 100)}%, maximum slope ${score.maxSlope}°`,
+        opacity: score.opacity,
+      })
+    }
+    if (radiationVisible) {
+      active.push({
+        id: '__radiation',
+        title: 'Radiation',
+        source: `Lunar GCR and regolith-albedo model, ${radiationMode} display`,
+        opacity: radiationOpacity,
+      })
+    }
+    if (iceVisible) active.push({ id: '__ice', title: 'Water ice', source: 'LOLA-derived polar water-ice overlay', opacity: 1 })
+    return active
+  }, [displayLayers, layerState, score, radiationVisible, radiationMode, radiationOpacity, iceVisible])
+  const reportPeriod: [number, number] = missionValid && missionInWindow
+    ? [mission.start!, mission.end!]
+    : timeRange
+  const reportPeriodSource = missionValid && missionInWindow ? 'Configured Mission period' : 'Loaded ephemeris window'
 
   // ---- raster overlays (one ImageryLayer per visible layer; rebuilt when its field changes) ----
   const layerFields = useRef<Record<string, RasterField | undefined>>({})
@@ -1118,6 +1298,7 @@ export default function App() {
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
             <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              onGenerateReport={() => { setPlaying(false); setReportOpen(true) }} reportDisabled={!ephemeris}
               timeline={timeline} summary={summary}
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
@@ -1171,6 +1352,20 @@ export default function App() {
                 <i />
               </div>
             </div>
+          )}
+          {reportOpen && selected && ephemeris && (
+            <TechnicalReportDialog
+              key={selected.id}
+              site={selected}
+              ephemeris={ephemeris}
+              panoramaTimeline={timeline}
+              panoramaNow={now}
+              period={reportPeriod}
+              periodSource={reportPeriodSource}
+              overlays={reportOverlays}
+              captureMap={captureMapForReport}
+              onClose={closeReport}
+            />
           )}
         </>
       )}
