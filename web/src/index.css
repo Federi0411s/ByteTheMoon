@@ -58,7 +58,30 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .side { position: absolute; top: 12px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
 .side.left.expanded { width: 50vw; }
-.side.right { right: 12px; width: 300px; }
+.side.right { right: 12px; bottom: 118px; width: 300px; }
+
+.map-scale {
+  position: absolute;
+  right: 12px;
+  bottom: 68px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.map-scale-ruler { position: relative; width: 1cm; height: 8px; border-bottom: 1px solid var(--text); }
+.map-scale-ruler i { position: absolute; bottom: 0; width: 1px; height: 7px; background: var(--text); }
+.map-scale-ruler i:first-child { left: 0; }
+.map-scale-ruler i:nth-child(2) { left: 50%; height: 4px; }
+.map-scale-ruler i:last-child { right: 0; }
 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
 .panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
@@ -67,6 +90,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .site-panel-expand { margin-bottom: 6px; }
 .site-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 8px; color: var(--muted); font-size: 11px; }
 .site-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.coordinate-search { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.coordinate-search-row { display: flex; gap: 6px; }
+.coordinate-search-row input[type='text'] { flex: 1; min-width: 0; }
+.coordinate-error { margin: 0; color: #ffc27a; font-size: 11px; }
 .marker-dot { width: 9px; height: 9px; border: 1px solid #000; border-radius: 50%; }
 .marker-dot.past { background: #ff0000; }
 .marker-dot.future { background: #1e90ff; }
@@ -76,7 +103,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .muted { color: var(--muted); font-size: 12px; }
 .source { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 
-select, button, input[type='datetime-local'] {
+select, button, input[type='datetime-local'], input[type='text'] {
   background: #141a2b; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px;
 }
 select { width: 100%; }
@@ -132,6 +159,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
   .site-panel-expand { display: none; }
+  .map-scale { position: relative; right: auto; bottom: auto; width: max-content; margin: 8px 12px 76px auto; }
   /* panels stack in normal flow here, so credits just sit above the time bar */
   .app .cesium-viewer-bottom { left: 12px !important; max-width: calc(100% - 24px); }
 }

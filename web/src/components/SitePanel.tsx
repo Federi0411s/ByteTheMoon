@@ -1,3 +1,4 @@
+import { useState, type FormEvent } from 'react'
 import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
 import { Panorama } from './Panorama'
@@ -9,10 +10,51 @@ const fmtDur = (ms: number | null) => {
   return h >= 48 ? `${(h / 24).toFixed(1)} d` : `${h.toFixed(0)} h`
 }
 
+function CoordinateSearch({ onSearch }: { onSearch: (lat: number, lon: number) => void }) {
+  const [coordinates, setCoordinates] = useState('')
+  const [error, setError] = useState<string>()
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const parts = coordinates.trim().split(/[,\s;]+/).filter(Boolean)
+    if (parts.length !== 2) {
+      setError('Enter latitude and longitude, e.g. -89.5, 135.2.')
+      return
+    }
+
+    const [lat, lon] = parts.map(Number)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setError('Coordinates must be valid numbers.')
+      return
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      setError('Latitude must be between -90° and 90°; longitude between -180° and 180°.')
+      return
+    }
+
+    setError(undefined)
+    onSearch(lat, lon)
+  }
+
+  return (
+    <form className="coordinate-search" onSubmit={submit}>
+      <label className="muted" htmlFor="coordinate-search-input">Go to coordinates</label>
+      <div className="coordinate-search-row">
+        <input id="coordinate-search-input" type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
+          aria-label="Latitude and longitude" aria-invalid={!!error} placeholder="-89.5, 135.2" value={coordinates}
+          onChange={(e) => { setCoordinates(e.target.value); setError(undefined) }} />
+        <button type="submit" aria-label="Go to coordinates">Go</button>
+      </div>
+      {error && <p className="coordinate-error" role="alert">{error}</p>}
+    </form>
+  )
+}
+
 export function SitePanel({
   sites,
   selected,
   onSelect,
+  onSearchCoordinates,
   timeline,
   summary,
   now,
@@ -22,10 +64,13 @@ export function SitePanel({
   inspect,
   expanded,
   onToggleExpanded,
+  showSiteMarkers,
+  onShowSiteMarkersChange,
 }: {
   sites: Site[]
   selected?: Site
   onSelect: (s: Site) => void
+  onSearchCoordinates: (lat: number, lon: number) => void
   timeline: TimelineSample[]
   summary?: SiteSummary
   now?: TimelineSample
@@ -35,6 +80,8 @@ export function SitePanel({
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
   expanded: boolean
   onToggleExpanded: () => void
+  showSiteMarkers: boolean
+  onShowSiteMarkersChange: (show: boolean) => void
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
@@ -51,6 +98,11 @@ export function SitePanel({
         <span><i className="marker-dot future" aria-hidden="true" />Future candidates</span>
         <span><i className="marker-dot selected" aria-hidden="true" />Selected point</span>
       </div>
+      <label className="layer-head" title="Show or hide mission and candidate markers on the map.">
+        <input type="checkbox" checked={showSiteMarkers} onChange={(e) => onShowSiteMarkersChange(e.target.checked)} />
+        Show landing-site markers
+      </label>
+      <CoordinateSearch onSearch={onSearchCoordinates} />
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
         {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}
@@ -60,7 +112,7 @@ export function SitePanel({
           </optgroup>
         ))}
       </select>
-      <p className="muted">Click the map to inspect and analyse a point as a custom landing site.</p>
+      <p className="muted">Click the map or search coordinates to inspect and analyse a custom landing site.</p>
 
       {inspect && (
         <div className="inspect">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Cartesian2,
   Cartesian3,
@@ -35,6 +35,7 @@ import { SitePanel } from './components/SitePanel'
 import { TimeBar } from './components/TimeBar'
 
 const DAY = 86400_000
+const CSS_PIXELS_PER_CM = 96 / 2.54
 const DEFAULT_TIME_START = Date.UTC(EPHEMERIS_START_YEAR, 0, 1)
 const DEFAULT_TIME_END = Date.UTC(EPHEMERIS_START_YEAR + EPHEMERIS_WINDOW_YEARS, 0, 1)
 const CALENDAR_RANGE: [number, number] = [
@@ -46,6 +47,13 @@ const FUTURE_SITE_GROUPS = new Set([
   'Artemis III candidate regions',
   'South pole (best-lit spot near feature)',
 ])
+
+function formatScaleDistance(meters: number) {
+  if (meters >= 1000) return `${Number((meters / 1000).toPrecision(2))} km`
+  if (meters >= 1) return `${Number(meters.toPrecision(2))} m`
+  if (meters >= 0.01) return `${Number((meters * 100).toPrecision(2))} cm`
+  return `${Number((meters * 1000).toPrecision(2))} mm`
+}
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -66,6 +74,7 @@ export default function App() {
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
   const [selected, setSelected] = useState<Site>()
+  const [showSiteMarkers, setShowSiteMarkers] = useState(true)
   const [windowDays, setWindowDays] = useState(30)
   const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
@@ -133,6 +142,12 @@ export default function App() {
       }),
     )
   }, [ready, bundle])
+
+  useEffect(() => {
+    markers.current.sites.forEach((marker) => {
+      marker.show = showSiteMarkers
+    })
+  }, [showSiteMarkers, ready, bundle])
 
   // ---- photo basemap toggles (Moon Trek LOD stack) ----
   useEffect(() => {
@@ -278,6 +293,56 @@ export default function App() {
     return () => clearInterval(id)
   }, [playing, stepMs, ephemeris, timeRange])
 
+  const inspectCustomPoint = useCallback((lat: number, lon: number) => {
+    const scene = sceneRef.current
+    if (!scene || !bundle) return
+    const viewer = scene.viewer
+    const p = { lat, lon }
+    const dem = bundle.fields.dem_south
+    const elevation = dem?.sample(lon * D2R, lat * D2R)
+    const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
+    const horizon = dem && heightM !== undefined ? computeHorizon(dem, lat, lon) : undefined
+    const values = bundle.layers.map((m) => {
+      const v = bundle.fields[m.id]?.sample(lon * D2R, lat * D2R)
+      return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
+    })
+    if (markers.current.custom) viewer.entities.remove(markers.current.custom)
+    markers.current.custom = viewer.entities.add({
+      position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+      point: {
+        pixelSize: 13,
+        color: Color.YELLOW,
+        outlineColor: Color.BLACK,
+        outlineWidth: 3,
+        disableDepthTestDistance: 500_000,
+      },
+      label: {
+        text: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+        font: '13px system-ui',
+        style: LabelStyle.FILL_AND_OUTLINE,
+        outlineWidth: 3,
+        verticalOrigin: VerticalOrigin.BOTTOM,
+        pixelOffset: new Cartesian2(0, -16),
+        disableDepthTestDistance: 500_000,
+      },
+    })
+    setInspect({ ...p, values })
+    setSelected({
+      id: `custom-${Date.now()}`,
+      name: `Custom ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`,
+      group: 'Custom',
+      ...p,
+      heightM,
+      horizon,
+    })
+  }, [bundle])
+
+  const searchCoordinates = useCallback((lat: number, lon: number) => {
+    inspectCustomPoint(lat, lon)
+    const scene = sceneRef.current
+    if (scene) flyToSite(scene.viewer, lat, lon)
+  }, [inspectCustomPoint])
+
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -293,46 +358,10 @@ export default function App() {
     handler.setInputAction((e: { position: Cartesian2 }) => {
       const p = pick(e.position)
       if (!p) return
-      const dem = bundle.fields.dem_south
-      const elevation = dem?.sample(p.lon * D2R, p.lat * D2R)
-      const heightM = elevation !== undefined && Number.isFinite(elevation) ? elevation : undefined
-      const horizon = dem && heightM !== undefined ? computeHorizon(dem, p.lat, p.lon) : undefined
-      const values = bundle.layers.map((m) => {
-        const v = bundle.fields[m.id]?.sample(p.lon * D2R, p.lat * D2R)
-        return { title: m.title, value: v === undefined || !Number.isFinite(v) ? '—' : `${v.toFixed(m.units === 'm' ? 0 : 2)} ${m.units}` }
-      })
-      if (markers.current.custom) viewer.entities.remove(markers.current.custom)
-      markers.current.custom = viewer.entities.add({
-        position: Cartesian3.fromDegrees(p.lon, p.lat, 0, Ellipsoid.MOON),
-        point: {
-          pixelSize: 13,
-          color: Color.YELLOW,
-          outlineColor: Color.BLACK,
-          outlineWidth: 3,
-          disableDepthTestDistance: 500_000,
-        },
-        label: {
-          text: `${p.lat.toFixed(4)}°, ${p.lon.toFixed(4)}°`,
-          font: '13px system-ui',
-          style: LabelStyle.FILL_AND_OUTLINE,
-          outlineWidth: 3,
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          pixelOffset: new Cartesian2(0, -16),
-          disableDepthTestDistance: 500_000,
-        },
-      })
-      setInspect({ ...p, values })
-      setSelected({
-        id: `custom-${Date.now()}`,
-        name: `Custom ${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`,
-        group: 'Custom',
-        ...p,
-        heightM,
-        horizon,
-      })
+      inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
     return () => handler.destroy()
-  }, [ready, bundle])
+  }, [ready, bundle, inspectCustomPoint])
 
   // ---- site analysis ----
   const dayStart = Math.floor(t / DAY) * DAY
@@ -396,9 +425,11 @@ export default function App() {
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
-            <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} timeline={timeline} summary={summary}
+            <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              timeline={timeline} summary={summary}
               now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
-              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} />
+              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
+              showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
@@ -418,6 +449,18 @@ export default function App() {
               onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
               stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
               busy={ephemerisBusy} error={ephemerisError} />
+          )}
+          {viewResM !== undefined && Number.isFinite(viewResM) && viewResM > 0 && (
+            <div className="map-scale" role="img"
+              aria-label={`1 cm on screen corresponds to about ${formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon`}
+              title="Estimate at the map center; 1 cm uses the standard CSS scale.">
+              <span>≈ {formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon</span>
+              <div className="map-scale-ruler" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </div>
+            </div>
           )}
         </>
       )}
