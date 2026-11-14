@@ -16,6 +16,8 @@ import {
 } from 'cesium'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
+import { DemReliefProvider } from './cesium/DemReliefProvider'
+import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
@@ -120,6 +122,12 @@ function formatScaleDistance(meters: number) {
   return `${Number((meters * 1000).toPrecision(2))} mm`
 }
 
+function fineDemBaseUrl() {
+  const env = import.meta.env.VITE_DEM_FINE_URL as string | undefined
+  const url = env === '' || env === 'none' ? null : env ?? (import.meta.env.DEV ? '/dem-fine' : null)
+  return url ? new URL(url, location.href).href.replace(/\/$/, '') : null
+}
+
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
@@ -170,9 +178,18 @@ export default function App() {
   const [radiationVisible, setRadiationVisible] = useState(false)
   const [radiationOpacity, setRadiationOpacity] = useState(0.7)
   const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
+  const [terrainViewActive, setTerrainViewActive] = useState(false)
+  const [terrainViewLoading, setTerrainViewLoading] = useState(false)
+  const [terrainViewError, setTerrainViewError] = useState<string>()
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const terrainCamera = useRef<{ position: Cartesian3; direction: Cartesian3; up: Cartesian3 } | null>(null)
+  const terrainSiteId = useRef<string | undefined>(undefined)
+  const terrainRequest = useRef(0)
+  const restoreElevationOnExit = useRef(false)
 
   radiationOpacityRef.current = radiationOpacity
-  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, relief: true })
+  const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
   const [viewResM, setViewResM] = useState<number>()
   const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
   const [mission, setMission] = useState<Mission>({})
@@ -184,6 +201,94 @@ export default function App() {
   const [heatVersion, setHeatVersion] = useState(0)
   const heatRef = useRef<HeatEngine | null>(null)
   heatRef.current = heat
+
+  const stopTerrainView = useCallback((restoreCamera: boolean) => {
+    terrainRequest.current++
+    const pose = terrainCamera.current
+    const viewer = sceneRef.current?.viewer
+    viewer?.camera.cancelFlight()
+    if (restoreCamera && pose && viewer) {
+      viewer.camera.flyTo({
+        destination: pose.position,
+        orientation: { direction: pose.direction, up: pose.up },
+        duration: 1.2,
+      })
+    }
+    terrainCamera.current = null
+    terrainSiteId.current = undefined
+    setTerrainViewActive(false)
+    setTerrainViewLoading(false)
+    setTerrainViewError(undefined)
+    if (restoreElevationOnExit.current) {
+      setBasemapState((state) => ({ ...state, elevation: false }))
+      restoreElevationOnExit.current = false
+    }
+  }, [])
+
+  const toggleTerrainView = useCallback(async () => {
+    if (terrainCamera.current) {
+      stopTerrainView(true)
+      return
+    }
+    const site = selectedRef.current
+    const scene = sceneRef.current
+    if (!site || !scene) return
+
+    const viewer = scene.viewer
+    viewer.camera.cancelFlight()
+    terrainCamera.current = {
+      position: Cartesian3.clone(viewer.camera.positionWC, new Cartesian3()),
+      direction: Cartesian3.clone(viewer.camera.directionWC, new Cartesian3()),
+      up: Cartesian3.clone(viewer.camera.upWC, new Cartesian3()),
+    }
+    terrainSiteId.current = site.id
+    const requestId = ++terrainRequest.current
+    setTerrainViewLoading(true)
+    setTerrainViewError(undefined)
+
+    try {
+      let height = site.heightM
+      if (scene.basemap === 'trek' || height === undefined) {
+        const activeTerrain = viewer.scene.globe.terrainProvider
+        if (activeTerrain instanceof DemTerrainProvider) {
+          height = await activeTerrain.sampleHeight(site.lon * D2R, site.lat * D2R)
+        } else {
+          const terrain = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
+          try {
+            height = await terrain.sampleHeight(site.lon * D2R, site.lat * D2R)
+          } finally {
+            terrain.dispose()
+          }
+        }
+      }
+      if (requestId !== terrainRequest.current || selectedRef.current?.id !== site.id || sceneRef.current !== scene) return
+      if (height === undefined || !Number.isFinite(height)) throw new Error('Elevation data is unavailable for this point.')
+
+      restoreElevationOnExit.current = scene.basemap === 'trek' && !basemapState.elevation
+      if (restoreElevationOnExit.current) setBasemapState((state) => ({ ...state, elevation: true }))
+      viewer.camera.flyTo({
+        destination: Cartesian3.fromDegrees(site.lon, site.lat, height + 150, Ellipsoid.MOON),
+        orientation: { heading: 0, pitch: CMath.toRadians(-4), roll: 0 },
+        duration: 1.5,
+      })
+      setTerrainViewActive(true)
+    } catch (error) {
+      if (requestId !== terrainRequest.current) return
+      terrainCamera.current = null
+      terrainSiteId.current = undefined
+      if (restoreElevationOnExit.current) {
+        setBasemapState((state) => ({ ...state, elevation: false }))
+        restoreElevationOnExit.current = false
+      }
+      setTerrainViewError(`Could not open terrain view: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (requestId === terrainRequest.current) setTerrainViewLoading(false)
+    }
+  }, [basemapState.elevation, stopTerrainView])
+
+  useEffect(() => {
+    if (terrainSiteId.current && terrainSiteId.current !== selected?.id) stopTerrainView(true)
+  }, [selected?.id, stopTerrainView])
 
   // ---- boot: Cesium scene + static data bundle ----
   useEffect(() => {
@@ -280,6 +385,31 @@ export default function App() {
     for (const g of ['kaguya', 'nacPolar', 'nacSites'] as const) scene.photo[g].forEach((l) => (l.show = basemapState[g]))
   }, [ready, basemapState])
 
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !basemapState.elevation) return
+    const provider = new DemReliefProvider(`${DATA_URL}/dem`)
+    const layer = new ImageryLayer(provider as unknown as import('cesium').ImageryProvider, { alpha: 0.38 })
+    const index = scene.basemap === 'trek'
+      ? scene.photo.wac.length + scene.photo.kaguya.length + scene.photo.nacPolar.length + scene.photo.nacSites.length
+      : undefined
+    scene.overlays.add(layer, index)
+    return () => removeLayer(scene, layer)
+  }, [ready, basemapState.elevation])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    const globe = scene?.viewer.scene.globe
+    if (!ready || !scene || scene.basemap !== 'trek' || !globe || !basemapState.elevation) return
+    const baseTerrain = globe.terrainProvider
+    const terrain = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
+    globe.terrainProvider = terrain
+    return () => {
+      if (globe.terrainProvider === terrain) globe.terrainProvider = baseTerrain
+      terrain.dispose()
+    }
+  }, [ready, basemapState.elevation])
+
   // ---- LOLA relief shading south of 80S: above the WAC/Kaguya photos (which smear near the pole)
   //      but below the sharper NAC mosaics, so it fills the gaps without hiding the best imagery ----
   useEffect(() => {
@@ -302,7 +432,9 @@ export default function App() {
     const { camera, canvas } = scene.viewer.scene
     camera.percentageChanged = 0.05
     const update = () => {
-      const h = camera.positionCartographic.height
+      const position = camera.positionCartographic
+      const groundHeight = scene.viewer.scene.globe.getHeight(position) ?? 0
+      const h = Math.max(0, position.height - groundHeight)
       const fovy = (camera.frustum as { fovy?: number }).fovy ?? Math.PI / 3
       setViewResM((2 * h * Math.tan(fovy / 2)) / Math.max(canvas.clientHeight, 1))
     }
@@ -716,10 +848,11 @@ export default function App() {
   }, [bundle])
 
   const searchCoordinates = useCallback((lat: number, lon: number) => {
+    stopTerrainView(false)
     inspectCustomPoint(lat, lon)
     const scene = sceneRef.current
     if (scene) flyToSite(scene.viewer, lat, lon)
-  }, [inspectCustomPoint])
+  }, [inspectCustomPoint, stopTerrainView])
 
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
@@ -793,6 +926,7 @@ export default function App() {
   }
 
   const selectSite = (s: Site) => {
+    stopTerrainView(false)
     setInspect(undefined)
     if (markers.current.custom && sceneRef.current) {
       sceneRef.current.viewer.entities.remove(markers.current.custom)
@@ -843,6 +977,12 @@ export default function App() {
         <h1>ByteTheMoon</h1>
         <span className="muted">Lunar Landing Site Navigator{sceneRef.current && ` · basemap: ${sceneRef.current.basemap === 'ion' ? 'Cesium Moon 3D' : 'NASA Moon Trek'}`}</span>
       </header>
+      {terrainViewActive && (
+        <div className="terrain-view-controls" role="status">
+          <span>First-person terrain view</span>
+          <button type="button" onClick={() => stopTerrainView(true)}>Return to map</button>
+        </div>
+      )}
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
@@ -853,7 +993,9 @@ export default function App() {
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
               dsn={ephemeris ? { now: dsnNow } : undefined}
-              power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined} />
+              power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
+              terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
+              terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
           <aside className="side right">
             {bundle.ephemeris && (

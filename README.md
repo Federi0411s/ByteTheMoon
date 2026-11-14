@@ -9,6 +9,7 @@ NASA Space Apps 2026. An interactive 3D Moon for comparing landing sites by **su
 - Click a point on the Moon to inspect it, then save it with a custom name; saved sites persist in the browser and can be renamed or removed
 - Per-site horizon panorama with Sun/Earth paths, a lit/comms timeline, time to sunset/Earthset, and the longest night
 - Click anywhere on the Moon to analyse a custom site (horizon computed where elevation data is available)
+- Select a landing site and open its low-altitude terrain view from the left panel; return to the saved map camera with one click
 
 See [docs/PLAN.md](docs/PLAN.md) for the architecture, the team split and next steps.
 
@@ -30,6 +31,7 @@ Heatmaps are computed in the browser from a global LOLA elevation pyramid (see [
 - **Levels 0–5** (666 m/px and coarser, 134 MB) ship with the app in `web/public/data/dem`.
 - **Levels 6–7** (333 and 167 m/px, 1.67 GB) are too large for git. `pipeline/dem_tiles.py` writes them to `$MOON_DATA/dem_fine`, and `npm run dev` serves them at `/dem-fine` automatically.
 - **In production**, upload `dem_fine/` to a static bucket that allows cross-origin requests (e.g. Cloudflare R2 with CORS open). Set its base URL in `VITE_DEM_FINE_URL`; tiles are fetched as `{z}/{x}/{y}.webp`. If it is not set, the app falls back to the 666 m tiles everywhere.
+- On the **Moon Trek fallback**, **LOLA 3D elevation relief** builds terrain meshes from the shipped DEM tiles on demand and colorizes the same visible area. It is off by default to keep startup rendering light, and can be toggled in the basemap panel. Optional fine DEM tiles are used only when configured; otherwise the terrain stops at the shipped 666 m/px level. Polar mesh edges use a shared pole height to avoid spikes where longitude lines converge. The Cesium ion basemap supplies its own 3D terrain mesh.
 
 The older radiation layer reads `radiation_overlay.json`, `radiation_classes.png` and
 `radiation_continuous.png` from `web/public/radiation`. Its controls appear in the map-layer panel only when
