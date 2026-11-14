@@ -1,6 +1,7 @@
 const STEPS = [
   { label: '1 h/tick', ms: 3600_000 },
   { label: '6 h/tick', ms: 6 * 3600_000 },
+  { label: '12 h/tick', ms: 12 * 3600_000 },
   { label: '1 d/tick', ms: 86400_000 },
 ]
 
