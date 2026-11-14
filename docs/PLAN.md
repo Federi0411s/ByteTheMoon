@@ -35,7 +35,7 @@ IAU names + LOLA ─────────────────────
 | `psr` | Permanently shadowed regions | LOLA LPSR 60 m |
 | `slope` | Surface slope | LOLA LDSM 40 m |
 | `dem_south` | Elevation, 80°S–90°S, 240 m (also used for custom-site horizons) | LOLA LDEM 80 m |
-| (derived) landing score | `w_sun·sun + w_earth·earth + w_flat·(1 − slope/max)`, transparent where slope > max | computed live |
+| (derived) landing score | `(w_sun·sun + w_earth·earth) / (w_sun + w_earth)`, transparent where the max slope inside the landing footprint > limit (≤ 10°) | computed live |
 
 Adding a layer means adding one entry to `LAYERS` in `pipeline/overlays.py` and running it again. The UI picks it up automatically.
 

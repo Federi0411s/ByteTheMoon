@@ -18,7 +18,8 @@ import { createMoonScene, flyToSite, setSunDirection, setSunLighting, type MoonS
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { loadBundle, type DataBundle, type Site } from './lib/data'
-import { hillshade } from './lib/raster'
+import { footprintMax, hillshade } from './lib/raster'
+import { DEFAULT_FOOTPRINT, footprintAxes, SLOPE_MAX_DEG } from './lib/requirements'
 import { earthPosition, ephemerisRange, sunPosition } from './lib/ephemeris'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
@@ -36,7 +37,7 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
-  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, flat: 0.2, maxSlope: 10, opacity: 0.7 })
+  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [t, setT] = useState(() => Date.parse('2027-06-01T00:00:00Z'))
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
@@ -127,9 +128,23 @@ export default function App() {
   }, [ready, bundle, layerState])
 
   // ---- derived "landing suitability" heatmap, rebuilt when weights change ----
-  const scoreFields = bundle && bundle.fields.sun_avg && bundle.fields.earth_avg && bundle.fields.slope
-    ? { sun: bundle.fields.sun_avg, earth: bundle.fields.earth_avg, slope: bundle.fields.slope }
-    : null
+  // Slope used here = MAX slope inside the chosen landing footprint (circle / ellipse) centred on each
+  // point (see lib/requirements.ts). Base raster: the pipeline layer slope_max (each 100 m pixel = max of
+  // the 40 m LDSM inside it); fallback: the 100 m slope layer (averaged, so steep spots are underestimated).
+  // Recomputed (debounced) when the footprint changes.
+  const [fpA, fpB, fpAz] = footprintAxes(score.footprint)
+  const [fpKey, setFpKey] = useState(`${fpA},${fpB},${fpAz}`)
+  useEffect(() => {
+    const id = setTimeout(() => setFpKey(`${fpA},${fpB},${fpAz}`), 400) // wait for typing to stop
+    return () => clearTimeout(id)
+  }, [fpA, fpB, fpAz])
+  const scoreFields = useMemo(() => {
+    const f = bundle?.fields
+    const base = f?.slope_max ?? f?.slope
+    if (!f?.sun_avg || !f.earth_avg || !base) return null
+    const [a, b, az] = fpKey.split(',').map(Number)
+    return { sun: f.sun_avg, earth: f.earth_avg, slope: footprintMax(base, a, b, az), exact: !!f.slope_max }
+  }, [bundle, fpKey])
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !scoreFields) return
@@ -138,14 +153,15 @@ export default function App() {
     if (!score.enabled) return
     const handle = setTimeout(() => {
       const { sun, earth, slope } = scoreFields
-      const wSum = score.sun + score.earth + score.flat || 1
+      const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
+      const wSum = score.sun + score.earth || 1
       const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
         value: (lon, lat) => {
           const sl = slope.sampleNearest(lon, lat)
-          if (!(sl <= score.maxSlope)) return NaN // too steep or no data -> transparent
+          if (!(sl <= limit)) return NaN // fails the slope requirement or no data -> transparent
           const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
           if (Number.isNaN(s) || Number.isNaN(e)) return NaN
-          return (score.sun * s + score.earth * e + score.flat * (1 - sl / score.maxSlope)) / wSum
+          return (score.sun * s + score.earth * e) / wSum
         },
         min: 0, max: 1, colormap: 'viridis',
         boundsRad: sun.boundsRad(),
@@ -155,8 +171,7 @@ export default function App() {
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, scoreFields !== null, score])
+  }, [ready, scoreFields, score])
 
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
@@ -250,7 +265,7 @@ export default function App() {
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields} />
+              score={score} onScore={setScore} scoreAvailable={!!scoreFields} slopeExact={!!scoreFields?.exact} />
             {bundle.warnings.length > 0 && (
               <section className="panel warn">
                 <h2>Setup</h2>
