@@ -159,12 +159,12 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  // ---- default overlay base: keep a readable, useful stack on first load ----
+  // ---- keep all data overlays off by default ----
   useEffect(() => {
     if (!bundle || Object.keys(layerState).length) return
     const defaults: Record<string, LayerState> = {}
     for (const meta of bundle.layers) {
-      defaults[meta.id] = { visible: meta.id === 'sun_avg', opacity: 0.65 }
+      defaults[meta.id] = { visible: false, opacity: 0.65 }
     }
     setLayerState(defaults)
   }, [bundle, layerState])
