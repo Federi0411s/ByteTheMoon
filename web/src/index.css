@@ -25,10 +25,14 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 
 .side { position: absolute; top: 64px; bottom: 64px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
+.side.left.expanded { width: 50vw; }
 .side.right { right: 12px; width: 300px; }
 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
 .panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.site-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.site-panel-heading h2 { margin: 4px 0 10px; }
+.site-panel-expand { margin-bottom: 6px; }
 .panel h3 { margin: 12px 0 4px; font-size: 15px; }
 .panel.warn p { color: #ffc27a; font-size: 12px; margin: 4px 0; }
 .muted { color: var(--muted); font-size: 12px; }
@@ -80,4 +84,5 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
+  .site-panel-expand { display: none; }
 }

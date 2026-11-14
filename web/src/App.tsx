@@ -43,6 +43,7 @@ export default function App() {
   const [stepMs, setStepMs] = useState(3600_000)
   const [selected, setSelected] = useState<Site>()
   const [windowDays, setWindowDays] = useState(30)
+  const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
 
   // ---- boot: Cesium scene + static data bundle ----
@@ -244,9 +245,10 @@ export default function App() {
       </header>
       {bundle && (
         <>
-          <aside className="side left">
+          <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
             <SitePanel sites={bundle.sites} selected={selected} onSelect={selectSite} timeline={timeline} summary={summary}
-              now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect} />
+              now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
+              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} />
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}

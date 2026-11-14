@@ -5,7 +5,7 @@ NASA Space Apps 2026. An interactive 3D Moon for comparing landing sites by **su
 - Streaming 3D Moon (Cesium Moon 3D Tiles), with a NASA Moon Trek fallback
 - Heatmaps draped on the 3D surface: average sunlight, Earth visibility, permanent shadow, slope, elevation, and a live **landing-suitability score** with adjustable weights
 - Time controls to step backward or forward by 1 hour, 6 hours, or 1 day, plus a slider to set the date; Moon lighting uses the Sun's real position (NASA SPICE)
-- Landing-site analysis windows from 1 day to 1 year, including 1-day and 3-day views
+- Landing-site panel expands to half the screen for easier browsing of analysis windows from 1 day to 1 year
 - Per-site horizon panorama with Sun/Earth paths, a lit/comms timeline, time to sunset/Earthset, and the longest night
 - Double-click anywhere at the south pole to analyse a custom site (horizon computed in the browser)
 
