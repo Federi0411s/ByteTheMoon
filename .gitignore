@@ -12,7 +12,7 @@ __pycache__/
 .venv/
 venv/
 
-# Raw data never goes in git (lives in MOON_DATA, default ../data)
+# Raw data never goes in git (MOON_DATA or pipeline/data/)
 *.tif
 *.img
 *.lbl
@@ -20,6 +20,7 @@ venv/
 *.bpc
 *.zip
 *.part
+pipeline/data/
 
 # Editors / OS
 .vscode/*

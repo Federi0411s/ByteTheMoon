@@ -1,0 +1,11 @@
+id,name,lat,lon,earth_vis_frac,earth_any_frac,max_blackout_days
+im1,IM-1 Odysseus · Malapert A,-80.13,1.44,1.0000,1.0000,0.00
+shackleton,Shackleton rim,-89.6864,-162.9371,0.4865,0.5322,13.75
+de-gerlache,de Gerlache rim,-88.6646,-68.3956,0.5701,0.6168,11.50
+haworth,Haworth,-86.9946,-24.3129,0.5425,0.5882,12.50
+mons-malapert,Malapert Massif,-86.0046,2.2271,0.4758,0.5210,14.50
+mons-mouton,Mons Mouton,-85.3003,37.0989,0.5434,0.5888,12.50
+nobile,Nobile rim,-86.0333,41.8672,0.4375,0.4830,15.50
+slater,Slater plain,-88.8089,123.7561,0.5636,0.6104,12.25
+cabeus,Cabeus region,-85.9431,-26.8836,0.5372,0.5834,12.50
+faustini,Faustini rim,-87.7738,94.6643,0.4711,0.5162,14.25

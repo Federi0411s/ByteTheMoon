@@ -103,12 +103,45 @@ Spin-up defaults to one year of sampled epochs and can be overridden with `--n-s
 With the supplied environment curves, the most negative modeled value is -80.2 V, so the default
 fraction below -100 V is zero; use `--threshold-v -50` to map time below -50 V instead.
 
+## Layer ghiaccio
+
+Download `DLRE_PRP_SOUTH.TAB` and its matching `DLRE_PRP_SOUTH.LBL` from the
+[NASA PDS Geosciences Node Diviner Polar Resource Products archive](https://pds-geosciences.wustl.edu/lro/urn-nasa-pds-lro_diviner_derived1/data_derived_prp/),
+the Diviner Polar Resource Product (PRP; Paige et al. 2010), and place both files in `pipeline/data/`.
+The optional M3 surface-ice point file, if available, is `pipeline/data/li2018_south.csv`.
+
+The ice layer uses the `lat` and `lon` point grid in `web/public/data/charging_points.csv`.
+The PRP columns are indexed from zero (`tri_clat` 10, `tri_clon` 9, `temp_max` 13,
+`ice_depth` 14); depth is in meters, `-999` means no stable ice and `-1` (surface-stable
+ice, T max < ~101 K) is read as 0 m. The optional M3 file can be omitted. The command writes
+`mappa_ghiaccio.csv`, `mappa_ghiaccio.geojson`, and `mappa_ghiaccio.png`, plus
+`distanza_ghiaccio.csv` with distances in kilometers:
+
+```powershell
+python pipeline/ice.py
+```
+
 To regenerate the five-year timeline data through 2205, download only the SPICE kernels and create
 year-aligned chunks (the browser loads only the chunks needed for the selected window):
 
 ```powershell
 python pipeline/download.py --kernels-only
 python pipeline/ephemeris.py --start 2026-01-01 --end 2206-01-01 --step-hours 2 --chunk-years 5
+```
+
+## Layer visibilità della Terra
+
+`pipeline/earth_visibility.py` computes the fraction of time the Earth disc is above the local
+terrain horizon on the same 4 km grid as `charging_points.csv` (80S-90S). Horizons come from
+`pipeline/lunar_horizon.py` over the LOLA polar DEM (`ldem_80s_80m.lbl` if present, otherwise the
+`dem_south.png` overlay), extended to 70S with the shipped global DEM tiles; the Earth position is
+the SPICE ephemeris in `web/public/data/ephemeris.json`, with site parallax. It writes the
+`earth_visibility` overlay (+ `overlays/index.json` entry), `earth_visibility_points.csv` and
+`earth_visibility_sites.csv` (`earth_vis_frac`, `earth_any_frac`, `max_blackout_days`). Inside 85S
+it agrees with LOLA AVGVISIB_EARTH (r = 0.95, mean difference -0.02):
+
+```powershell
+python pipeline/earth_visibility.py    # ~2 min; --step-hours, --observer-height, --dem
 ```
 
 ## Data sources

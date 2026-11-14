@@ -143,12 +143,48 @@ function fineDemBaseUrl() {
   return url ? new URL(url, location.href).href.replace(/\/$/, '') : null
 }
 
+interface IceGeoJsonPoint {
+  lat: number
+  lon: number
+  color: Color
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function parseIceGeoJson(value: unknown): IceGeoJsonPoint[] {
+  if (!isRecord(value) || value.type !== 'FeatureCollection' || !Array.isArray(value.features)) {
+    throw new Error('Invalid ice GeoJSON FeatureCollection')
+  }
+
+  return value.features.map((feature: unknown, index: number) => {
+    if (!isRecord(feature) || !isRecord(feature.geometry) || !isRecord(feature.properties) ||
+        feature.geometry.type !== 'Point' || !Array.isArray(feature.geometry.coordinates)) {
+      throw new Error(`Invalid ice GeoJSON feature at index ${index}`)
+    }
+
+    const [lon, lat] = feature.geometry.coordinates
+    const colorValue = feature.properties.color
+    if (typeof lon !== 'number' || !Number.isFinite(lon) ||
+        typeof lat !== 'number' || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+        typeof colorValue !== 'string') {
+      throw new Error(`Invalid coordinates or color in ice GeoJSON feature ${index}`)
+    }
+    const color = Color.fromCssColorString(colorValue)
+    if (!color) throw new Error(`Invalid color in ice GeoJSON feature ${index}`)
+    return { lat, lon, color }
+  })
+}
+
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<MoonScene | null>(null)
   const layerRefs = useRef<Record<string, ImageryLayer>>({})
   const radiationLayerRef = useRef<ImageryLayer | null>(null)
   const radiationOpacityRef = useRef(0.7)
+  const iceEntitiesRef = useRef<Entity[]>([])
+  const iceLoadedRef = useRef(false)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
@@ -202,6 +238,8 @@ export default function App() {
   const terrainSiteId = useRef<string | undefined>(undefined)
   const terrainRequest = useRef(0)
   const restoreElevationOnExit = useRef(false)
+  const [iceVisible, setIceVisible] = useState(false)
+  const [iceError, setIceError] = useState<string>()
 
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
@@ -768,6 +806,44 @@ export default function App() {
     if (radiationLayerRef.current) radiationLayerRef.current.alpha = radiationOpacity
   }, [radiationOpacity])
 
+  useEffect(() => {
+    iceEntitiesRef.current.forEach((entity) => {
+      entity.show = iceVisible
+    })
+  }, [ready, iceVisible])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !iceVisible || iceLoadedRef.current) return
+
+    let cancelled = false
+    setIceError(undefined)
+    const loadIceLayer = async () => {
+      const url = `${DATA_URL}/mappa_ghiaccio.geojson`
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`Ice GeoJSON unavailable (${response.status} ${response.statusText})`)
+      const points = parseIceGeoJson(await response.json())
+      if (cancelled) return
+
+      iceEntitiesRef.current = points.map(({ lat, lon, color }) => scene.viewer.entities.add({
+        position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+        point: {
+          pixelSize: 7,
+          color,
+          outlineColor: Color.WHITE,
+          outlineWidth: 1,
+          disableDepthTestDistance: 500_000,
+        },
+      }))
+      iceLoadedRef.current = true
+    }
+    void loadIceLayer().catch((error: unknown) => {
+      if (!cancelled) setIceError(`Unable to load the ice layer: ${error instanceof Error ? error.message : String(error)}`)
+    })
+
+    return () => { cancelled = true }
+  }, [ready, iceVisible])
+
   // ---- clock: Sun lighting + Sun/Earth markers ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -1045,6 +1121,7 @@ export default function App() {
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
+              iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
               slopeExact={!!scoreFields?.exact} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />

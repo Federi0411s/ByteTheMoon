@@ -84,6 +84,9 @@ export function LayerPanel({
   onRadiationOpacity,
   radiationMode,
   onRadiationMode,
+  iceVisible,
+  onIceVisible,
+  iceError,
   slopeExact,
 }: {
   layers: LayerMeta[]
@@ -101,6 +104,9 @@ export function LayerPanel({
   onRadiationOpacity: (opacity: number) => void
   radiationMode: 'classes' | 'continuous'
   onRadiationMode: (mode: 'classes' | 'continuous') => void
+  iceVisible: boolean
+  onIceVisible: (visible: boolean) => void
+  iceError?: string
   /** true: max slope from the 40 m LDSM (pipeline layer slope_max); false: approximated from the 100 m slope layer */
   slopeExact: boolean
 }) {
@@ -257,6 +263,24 @@ export function LayerPanel({
               </>
             )}
             {radiationError && <p className="muted">{radiationError}</p>}
+          </div>
+        </div>
+      </details>
+
+      <details className="menu-section">
+        <summary className="menu-section-summary">
+          <span>Water ice</span>
+          <span className="menu-section-state">{iceError ? 'Error' : iceVisible ? 'On' : 'Off'}</span>
+          <span className="menu-section-chevron" aria-hidden="true">›</span>
+        </summary>
+        <div className="menu-section-body">
+          <div className="layer">
+            <label className="layer-head">
+              <input type="checkbox" checked={iceVisible} onChange={(e) => onIceVisible(e.target.checked)} />
+              Show layer
+            </label>
+            {iceError && <p className="muted">{iceError}</p>}
+            <p className="source">Diviner PRP (Paige et al. 2010): light blue = stable within 0.5 m, blue = stable at the surface (T max &lt; 110 K), cyan = observed by M3.</p>
           </div>
         </div>
       </details>
