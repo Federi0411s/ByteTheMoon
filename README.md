@@ -40,4 +40,4 @@ Set `MOON_DATA` to keep raw data somewhere other than `..\data`.
 - LRO LOLA topography, slope, average illumination, Earth visibility and PSR maps: NASA PDS Geosciences Node (Mazarico et al. 2011; LOLA Science Team)
 - Ephemerides: NASA NAIF SPICE (DE440, Moon PA/ME frames)
 - Feature names: IAU / USGS Gazetteer of Planetary Nomenclature
-- 3D Moon: Cesium Moon Terrain (Cesium ion) · fallback imagery: NASA Moon Trek LRO WAC mosaic
+- 3D Moon: Cesium Moon Terrain (Cesium ion) · fallback imagery: NASA Moon Trek (LRO WAC global, Kaguya TC ortho, LROC NAC polar and site mosaics; list built by `pipeline/trek_catalog.py`)
