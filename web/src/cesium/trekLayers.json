@@ -1,0 +1,730 @@
+[
+ {
+  "id": "LRO_WAC_Mosaic_Global_303ppd_v02",
+  "title": "LRO WAC global mosaic",
+  "kind": "global",
+  "minLevel": 0,
+  "ext": "jpg",
+  "maxLevel": 8,
+  "bbox": [
+   -180.0,
+   -90.0,
+   180.0,
+   90.0
+  ]
+ },
+ {
+  "id": "Kaguya_TCortho_Mosaic_Global_4096ppd",
+  "title": "Kaguya TC global ortho mosaic",
+  "kind": "global",
+  "minLevel": 7,
+  "ext": "png",
+  "maxLevel": 10,
+  "bbox": [
+   -180.0,
+   -60,
+   179.9997621,
+   60
+  ]
+ },
+ {
+  "id": "LRO_NAC_AvgMosaic_SPole855_1mp_EQ",
+  "title": "LROC NAC south pole mosaic",
+  "kind": "global",
+  "minLevel": 5,
+  "ext": "png",
+  "maxLevel": 12,
+  "bbox": [
+   -180.0,
+   -90.0,
+   180.0,
+   -83.6392721
+  ]
+ },
+ {
+  "id": "LRO_NAC_AvgMosaic_NPole855_1mp_EQ",
+  "title": "LROC NAC north pole mosaic",
+  "kind": "global",
+  "minLevel": 5,
+  "ext": "png",
+  "maxLevel": 12,
+  "bbox": [
+   -180.0,
+   83.6392826,
+   179.9999551,
+   90.0
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_00N234E_50cmp",
+  "title": "Image Mosaic, Hertzsprung",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -126.2468509,
+   -0.5736338,
+   -124.9271419,
+   0.7460752
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_02N085E_50cmp",
+  "title": "Image Mosaic, Mare Smythii",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   84.680063,
+   1.4832565,
+   86.0005702,
+   2.8029719
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_02S167E_50cmp",
+  "title": "Image Mosaic, Stratton (Dewar)",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   166.10499,
+   -2.7398092,
+   167.4254972,
+   -1.4201102
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_02S317E_50cmp",
+  "title": "Image Mosaic, Flamsteed Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -43.8582359,
+   -3.1269696,
+   -42.5377287,
+   -1.8072541
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_03N280E_70cm",
+  "title": "Mosaic, Fresh Crater East of Lents",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -100.5615806,
+   2.6661118,
+   -100.0324363,
+   4.0432537
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_03S286E_50cmp",
+  "title": "Image Mosaic, Riccioli Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -74.926441,
+   -3.7141328,
+   -73.6049185,
+   -2.3944254
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_05N000E_50cmp",
+  "title": "Image Mosaic, Murchison Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -1.0743526,
+   4.0526571,
+   0.2503905,
+   5.3723615
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_06N120E_50cmp",
+  "title": "Image Mosaic, King Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   119.5578735,
+   5.9841418,
+   120.1012184,
+   7.10901
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_07N022E_50cmp",
+  "title": "Image Mosaic, Mare Tranquillitatis",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   21.4096105,
+   6.251668,
+   22.7392329,
+   7.5713764
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_07N301E_50cmp",
+  "title": "Image Mosaic, Reiner Gamma",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -58.865679,
+   6.8588197,
+   -58.4103963,
+   7.823245
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_08N332E_50cmp",
+  "title": "Image Mosaic, Hortensius Domes",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -28.0743377,
+   7.061833,
+   -27.4761511,
+   8.0915531
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_09S015E_50cmp",
+  "title": "Image Mosaic, Apollo 16",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 15,
+  "bbox": [
+   14.8183154,
+   -9.6510514,
+   16.1544716,
+   -8.331338
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_0_52mpp_SiteH",
+  "title": "NAC Mosaic 0.52mpp, Site H",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 15,
+  "bbox": [
+   -161.0330099,
+   -60.5086482,
+   -158.0576105,
+   -58.9132887
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_0_67mpp_Malapert_Massif",
+  "title": "NAC Mosaic 0.67mpp, Malapert Massif",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 13,
+  "bbox": [
+   -5.2505902,
+   -86.0541388,
+   4.7757903,
+   -85.633938
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_0_82mpp_Shioli",
+  "title": "NAC Mosaic 0.82mpp, Shioli",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 15,
+  "bbox": [
+   25.0600958,
+   -14.1732319,
+   25.8436614,
+   -12.587345
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_13N356E_50cmp",
+  "title": "Image Mosaic, Rima Bode",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -4.4318104,
+   12.2244799,
+   -3.0773899,
+   13.5441828
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_13S358E_50cmp",
+  "title": "Image Mosaic, Alphonsus",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -2.6084195,
+   -13.1202777,
+   -2.0048713,
+   -12.0865602
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_14N304E_50cmp",
+  "title": "Image Mosaic, Marius Hills",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -56.1363593,
+   13.2130603,
+   -55.641694,
+   14.1964194
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_16S041E_50cmp",
+  "title": "Image Mosaic, Montes Pyrenaeus",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   40.1384279,
+   -16.5809869,
+   41.5113216,
+   -15.2612753
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_17S173E_50cmp",
+  "title": "Image Mosaic, Aitken Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   172.7765042,
+   -17.4444962,
+   174.156492,
+   -16.1248013
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_19N005E_50cmp",
+  "title": "Image Mosaic, Ina D-Caldera",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   5.2291122,
+   18.1294969,
+   5.5045417,
+   19.0862649
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_19S070E_50cmp",
+  "title": "Image Mosaic, Balmer Basin",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   69.1351845,
+   -19.3637861,
+   70.5309178,
+   -18.0440813
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_19S129E_50cmp",
+  "title": "Image Mosaic, Tsiolkovskiy Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   127.8271176,
+   -20.023707,
+   129.2228684,
+   -18.7040018
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_20N010E_60cmp",
+  "title": "Image Mosaic, Sulpicius Gallus",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   10.1997242,
+   19.5486499,
+   10.5706583,
+   20.517891
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_25N311E_50cmp",
+  "title": "Image Mosaic, Aristarchus 1",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -49.0411832,
+   24.0892345,
+   -48.4352215,
+   25.2896692
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_26N004E_50cmp",
+  "title": "Image Mosaic, Apollo 15",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   2.9307878,
+   25.4463744,
+   4.399092,
+   26.7660726
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_26N150E_50cmp",
+  "title": "Image Mosaic, Mare Moscoviense",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   150.1461771,
+   25.6232589,
+   150.684656,
+   26.8169245
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_26S265E_50cmp",
+  "title": "Image Mosaic, Orientale 1",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -95.7877313,
+   -26.7174785,
+   -95.0620436,
+   -25.4910156
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_27N318E_50cmp",
+  "title": "Image Mosaic, Rimae Prinz",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -42.4541096,
+   26.7381062,
+   -40.9729628,
+   28.0578164
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_28N307E_50cmp",
+  "title": "Image Mosaic, Aristarchus 2",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -53.2920658,
+   27.2083061,
+   -51.7973948,
+   28.5279987
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_32N292E_50cmp",
+  "title": "Image Mosaic, Lichtenberg Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -67.8792321,
+   31.0043128,
+   -66.85427,
+   32.3157892
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_36N320E_50cmp",
+  "title": "Image Mosaic, Gruithuisen Domes",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -40.3343706,
+   35.6676455,
+   -39.6430575,
+   36.7431529
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_36S164E_70cmp",
+  "title": "Image Mosaic, Mare Ingenii",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   164.0230511,
+   -36.1359548,
+   164.8636234,
+   -34.8575103
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_43S349E_50cmp",
+  "title": "Image Mosaic, Tycho Crater",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -12.10517,
+   -43.6431726,
+   -10.3007028,
+   -42.3234729
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_50cmpp_VonKarman_v2",
+  "title": "NAC Mosaic 0.5mpp, Von Karman",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 15,
+  "bbox": [
+   171.4493162,
+   -48.9293994,
+   179.9242867,
+   -42.0188174
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_51S171E_60cmp",
+  "title": "Image Mosaic, South Pole-Aitken Rim",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   170.5026136,
+   -51.6682651,
+   171.401338,
+   -50.3714391
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_55N077E_50cmp",
+  "title": "Image Mosaic, Humboldtianum Basin",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   76.9027777,
+   53.7777101,
+   77.397115,
+   54.9352389
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_60S200E_50cmp",
+  "title": "Image Mosaic, South Pole-Aitken Basin Interior",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -161.2134521,
+   -60.6230284,
+   -158.574045,
+   -59.3033248
+  ]
+ },
+ {
+  "id": "LRO_NAC_Mosaic_61N099E_50cmp",
+  "title": "Image Mosaic, Compton Belkovich Th Anomaly",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   98.114441,
+   60.4354811,
+   100.8365669,
+   61.7551977
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_52mpp_SiteH",
+  "title": "NAC Mosaic 0.52mpp, Endurance-A (Near) Site H",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 15,
+  "bbox": [
+   -161.0330099,
+   -60.5086482,
+   -158.0576105,
+   -58.9132887
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_66mpp_SiteQ",
+  "title": "NAC Orthoimage 0.66mpp, Endurance-A Concept Site Q",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   138.8183645,
+   -75.1516282,
+   139.8281637,
+   -74.8905429
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_78mpp_SiteB",
+  "title": "NAC Orthoimage 0.78mpp, Endurance-A Site B",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   162.4329675,
+   -57.6286893,
+   162.73646,
+   -56.8544249
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_79mpp_SiteC",
+  "title": "NAC Orthoimage 0.79mpp, Endurance-A Concept Site C",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   176.4921064,
+   -61.2925825,
+   176.6295172,
+   -61.2265275
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_82mpp_SiteA",
+  "title": "NAC Orthoimage 0.82mpp, Endurance-A Concept Site A",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   160.9862154,
+   -59.1575436,
+   161.1158856,
+   -59.0914431
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_0_82mpp_SiteG",
+  "title": "NAC Orthoimage 0.82mpp, Endurance-A Concept Site G",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -162.6479428,
+   -57.2321311,
+   -162.5251599,
+   -57.1656666
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_1_25mpp_SiteH",
+  "title": "NAC Orthoimage 1.25mpp, Endurance-A Concept Site H",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 14,
+  "bbox": [
+   -161.864334,
+   -57.8951804,
+   -161.739921,
+   -57.8290718
+  ]
+ },
+ {
+  "id": "LRO_NAC_Ortho_1_52mpp_SiteD",
+  "title": "NAC Orthoimage 1.52mpp, Endurance-A Concept Site D",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 13,
+  "bbox": [
+   -171.9920617,
+   -57.2672107,
+   -171.8695505,
+   -57.2010124
+  ]
+ },
+ {
+  "id": "LRO_NAC_Post_Landing_OrthoMosaic_1mpp_IM_1_LandingSite",
+  "title": "NAC Post-Landing Ortho Mosaic 1mpp, IM-1 Landing Site",
+  "kind": "regional",
+  "minLevel": 11,
+  "ext": "png",
+  "maxLevel": 13,
+  "bbox": [
+   0.9386801,
+   -80.2163532,
+   1.9391742,
+   -80.0428121
+  ]
+ }
+]

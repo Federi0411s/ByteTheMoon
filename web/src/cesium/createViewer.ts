@@ -12,14 +12,18 @@ import {
   Ion,
   LightingModel,
   Math as CMath,
+  Rectangle,
   ShadowMode,
   UrlTemplateImageryProvider,
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
+import trekLayers from './trekLayers.json'
 
 // All coordinates, cameras and terrain are on the Moon (must be set before creating the Viewer).
 Ellipsoid.default = Ellipsoid.MOON
+
+export type PhotoGroup = 'wac' | 'kaguya' | 'nacPolar' | 'nacSites'
 
 export interface MoonScene {
   viewer: Viewer
@@ -27,16 +31,57 @@ export interface MoonScene {
   overlays: ImageryLayerCollection
   basemap: 'ion' | 'trek'
   tileset?: Cesium3DTileset
+  /** Moon Trek photo layers by group (trek basemap only), bottom of the imagery stack */
+  photo: Record<PhotoGroup, ImageryLayer[]>
 }
 
-/** NASA Moon Trek LRO WAC global mosaic (public WMTS, geographic 2x1 tiling, levels 0-10). */
-function trekImagery() {
-  return new UrlTemplateImageryProvider({
-    url: 'https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg',
-    tilingScheme: new GeographicTilingScheme({ ellipsoid: Ellipsoid.MOON }),
-    maximumLevel: 10,
-    credit: 'NASA Moon Trek · LRO WAC mosaic',
-  })
+interface TrekLayer {
+  id: string
+  title: string
+  kind: 'global' | 'regional'
+  minLevel: number
+  maxLevel: number
+  ext: string
+  bbox: [number, number, number, number]
+}
+
+const TREK = 'https://trek.nasa.gov/tiles/Moon/EQ'
+
+function photoGroup(l: TrekLayer): PhotoGroup {
+  if (l.id.startsWith('LRO_WAC')) return 'wac'
+  if (l.id.startsWith('Kaguya')) return 'kaguya'
+  return l.kind === 'global' ? 'nacPolar' : 'nacSites'
+}
+
+/**
+ * NASA Moon Trek mosaics stacked as a level-of-detail pyramid (list built by pipeline/trek_catalog.py):
+ *   LRO WAC global, ~100 m/px  ->  Kaguya TC global (+-60 deg), ~21 m/px  ->  LROC NAC polar caps,
+ *   ~5 m/px  ->  ~50 LROC NAC site mosaics, 0.5-1.5 m/px.
+ * Cesium only requests a tile when it is on screen at the needed resolution, and only inside each
+ * layer's bounding box; below a layer's minLevel the layer underneath shows through. Missing data is
+ * transparent in the PNG mosaics, so gaps fall back to the coarser layer automatically.
+ */
+function addTrekPhotoLayers(collection: ImageryLayerCollection): Record<PhotoGroup, ImageryLayer[]> {
+  const tiling = new GeographicTilingScheme({ ellipsoid: Ellipsoid.MOON })
+  const groups: Record<PhotoGroup, ImageryLayer[]> = { wac: [], kaguya: [], nacPolar: [], nacSites: [] }
+  for (const l of trekLayers as TrekLayer[]) {
+    const provider = new UrlTemplateImageryProvider({
+      url: `${TREK}/${l.id}/1.0.0/default/default028mm/{z}/{y}/{x}.${l.ext}`,
+      tilingScheme: tiling,
+      maximumLevel: l.maxLevel,
+      rectangle: Rectangle.fromDegrees(...l.bbox),
+      credit: `NASA Moon Trek · ${l.title}`,
+    })
+    const group = photoGroup(l)
+    const layer = new ImageryLayer(provider, {
+      minimumTerrainLevel: l.minLevel || undefined,
+      // Kaguya TC is darker and flatter than the photometrically normalised WAC mosaic
+      ...(group === 'kaguya' ? { brightness: 1.9, contrast: 1.25 } : {}),
+    })
+    collection.add(layer)
+    groups[group].push(layer)
+  }
+  return groups
 }
 
 export async function createMoonScene(container: HTMLElement): Promise<MoonScene> {
@@ -74,7 +119,7 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
       const tileset = await Cesium3DTileset.fromIonAssetId(assetId)
       tileset.shadows = ShadowMode.ENABLED
       scene.primitives.add(tileset)
-      result = { viewer, overlays: tileset.imageryLayers, basemap: 'ion', tileset }
+      result = { viewer, overlays: tileset.imageryLayers, basemap: 'ion', tileset, photo: { wac: [], kaguya: [], nacPolar: [], nacSites: [] } }
     } catch (err) {
       console.warn('Cesium Moon tileset failed, falling back to Moon Trek globe:', err)
     }
@@ -85,13 +130,38 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
     globe.baseColor = Color.fromCssColorString('#222')
     globe.enableLighting = false // see setSunLighting
     globe.showGroundAtmosphere = false
+    // keep zooming until the deepest photo level is actually on screen
+    globe.maximumScreenSpaceError = 1.5
+    globe.tileCacheSize = 400
     scene.globe = globe
-    globe.imageryLayers.add(new ImageryLayer(trekImagery()))
-    result = { viewer, overlays: globe.imageryLayers, basemap: 'trek' }
+    const photo = addTrekPhotoLayers(globe.imageryLayers)
+    result = { viewer, overlays: globe.imageryLayers, basemap: 'trek', photo }
   }
 
-  flyToSite(viewer, -89.5, 0, 250_000, 0)
+  // Initial camera is set by the app with viewFromEarth() once the ephemeris has loaded.
   return result
+}
+
+/**
+ * Look at the whole Moon from the direction of the Earth (positions in metres, Moon-fixed), i.e. the
+ * disc as seen from Earth at that moment, libration included. The Moon is centred on screen, lunar
+ * north up, and the camera sits just close enough for the full disc to fill ~85% of the view height.
+ */
+export function viewFromEarth(viewer: Viewer, earthPosM: [number, number, number], fill = 0.85, duration = 0) {
+  const toEarth = Cartesian3.normalize(new Cartesian3(...earthPosM), new Cartesian3())
+  const fovy = (viewer.camera.frustum as { fovy?: number }).fovy ?? CMath.toRadians(60)
+  const halfAngle = Math.atan(fill * Math.tan(fovy / 2)) // angular radius the disc should have
+  const dist = Ellipsoid.MOON.maximumRadius / Math.sin(halfAngle)
+  const destination = Cartesian3.multiplyByScalar(toEarth, dist, new Cartesian3())
+  const direction = Cartesian3.negate(toEarth, new Cartesian3())
+  // lunar north (+Z) projected perpendicular to the view direction
+  const z = Cartesian3.UNIT_Z
+  const up = Cartesian3.normalize(
+    Cartesian3.subtract(z, Cartesian3.multiplyByScalar(direction, Cartesian3.dot(z, direction), new Cartesian3()), new Cartesian3()),
+    new Cartesian3(),
+  )
+  if (duration > 0) viewer.camera.flyTo({ destination, orientation: { direction, up }, duration })
+  else viewer.camera.setView({ destination, orientation: { direction, up } })
 }
 
 export function flyToSite(viewer: Viewer, latDeg: number, lonDeg: number, rangeM = 60_000, duration = 2.5) {

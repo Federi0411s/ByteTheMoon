@@ -20,6 +20,8 @@ export function SitePanel({
   windowDays,
   onWindowDays,
   inspect,
+  expanded,
+  onToggleExpanded,
 }: {
   sites: Site[]
   selected?: Site
@@ -31,11 +33,19 @@ export function SitePanel({
   windowDays: number
   onWindowDays: (d: number) => void
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
+  expanded: boolean
+  onToggleExpanded: () => void
 }) {
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
-    <section className="panel">
-      <h2>Landing sites</h2>
+    <section className="panel" id="landing-sites-panel">
+      <div className="site-panel-heading">
+        <h2>Landing sites</h2>
+        <button className="site-panel-expand" onClick={onToggleExpanded} aria-expanded={expanded} aria-controls="landing-sites-panel"
+          aria-label={expanded ? 'Collapse landing sites panel' : 'Expand landing sites panel'}>
+          {expanded ? 'Collapse' : 'Expand'}
+        </button>
+      </div>
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
         {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}
@@ -72,7 +82,7 @@ export function SitePanel({
           <Panorama mask={selected.horizon} timeline={timeline} now={now} />
           <div className="row">
             <span className="muted">Window</span>
-            {[7, 30, 90, 365].map((d) => (
+            {[1, 3, 7, 30, 90, 365].map((d) => (
               <button key={d} className={d === windowDays ? 'on' : ''} onClick={() => onWindowDays(d)}>{d} d</button>
             ))}
           </div>

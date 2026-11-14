@@ -1,6 +1,7 @@
 const STEPS = [
   { label: '1 h/tick', ms: 3600_000 },
   { label: '6 h/tick', ms: 6 * 3600_000 },
+  { label: '12 h/tick', ms: 12 * 3600_000 },
   { label: '1 d/tick', ms: 86400_000 },
 ]
 
@@ -28,9 +29,11 @@ export function TimeBar({
   return (
     <footer className="timebar">
       <button onClick={() => onPlay(!playing)} aria-label={playing ? 'Pause' : 'Play'}>{playing ? '❚❚' : '▶'}</button>
-      <select value={stepMs} onChange={(e) => onStep(Number(e.target.value))} aria-label="Speed">
+      <button onClick={() => onChange(Math.max(range[0], t - stepMs))} disabled={t <= range[0]} aria-label="Previous time step">-1</button>
+      <select value={stepMs} onChange={(e) => onStep(Number(e.target.value))} aria-label="Time step">
         {STEPS.map((s) => <option key={s.ms} value={s.ms}>{s.label}</option>)}
       </select>
+      <button onClick={() => onChange(Math.min(range[1], t + stepMs))} disabled={t >= range[1]} aria-label="Next time step">+1</button>
       <input type="range" min={range[0]} max={range[1]} step={3600_000} value={t} onChange={(e) => onChange(Number(e.target.value))} aria-label="Date" />
       <input
         type="datetime-local"
