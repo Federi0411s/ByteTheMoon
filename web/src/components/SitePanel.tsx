@@ -70,7 +70,7 @@ export function SitePanel({
           <Panorama mask={selected.horizon} timeline={timeline} now={now} />
           <div className="row">
             <span className="muted">Window</span>
-            {[7, 30, 90, 365].map((d) => (
+            {[1, 3, 7, 30, 90, 365].map((d) => (
               <button key={d} className={d === windowDays ? 'on' : ''} onClick={() => onWindowDays(d)}>{d} d</button>
             ))}
           </div>
