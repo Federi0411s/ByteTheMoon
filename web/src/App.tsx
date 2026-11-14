@@ -53,6 +53,10 @@ const CALENDAR_RANGE: [number, number] = [
   Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR, 11, 31, 23, 59),
 ]
 const D2R = Math.PI / 180
+const MOON_RADIUS_M = 1737400
+const FOCUS_RADIUS_M = 15_000 // refined heatmaps around the selected site
+const RELIEF_EDGE_RAD = 80 * D2R // the relief basemap (LOLA LDEM 80S) ends here
+const RELIEF_FADE_RAD = 1 * D2R
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
 /**
  * Whole-Moon versions of every overlay layer, computed on the fly (lib/heatWorker.ts).
@@ -77,6 +81,17 @@ function radiationThresholds(m: RadiationOverlayMetadata): [number, number] {
   const nums = m.classLegend.map((c) => Number(/([\d.]+)/.exec(c.label)?.[1])).filter(Number.isFinite)
   return nums.length >= 2 ? [nums[0], nums[1]] : [12.0, 12.8]
 }
+/**
+ * Radiation classes = terrain shielding. The legend thresholds were set at the 2019 solar minimum
+ * (open flat terrain: 13.2 uGy/h), so they are scaled by the period's solar-cycle factor: the classes
+ * keep meaning "well shielded / partly shielded / open terrain" whatever the period (with fixed
+ * thresholds the whole Moon flipped class with the solar cycle). Returns the period's thresholds.
+ */
+function radiationClassThresholds(m: RadiationOverlayMetadata, gcr: number): [number, number] {
+  const [a, b] = radiationThresholds(m)
+  return [a * gcr, b * gcr]
+}
+const RAD_CLASS_NAMES = ['well shielded', 'partly shielded', 'open terrain']
 
 type PolarFields = Record<string, RasterField | undefined>
 const GLOBAL_LAYERS: Record<string, {
@@ -420,6 +435,8 @@ export default function App() {
       value: hillshade(dem), min: 0, max: 1, colormap: 'grey',
       boundsRad: dem.boundsRad(), maximumLevel: levelForResolution(dem.meta.resolutionM) + 1,
       credit: 'Relief: LOLA LDEM 80S',
+      // fade out over the last degree before its 80S edge, so the edge isn't a hard line on the map
+      alpha: (_lon, lat) => Math.min(1, Math.max(0, (-lat - RELIEF_EDGE_RAD) / RELIEF_FADE_RAD)),
     })), { alpha: 0.75 })
     scene.overlays.add(layer, scene.photo.wac.length + scene.photo.kaguya.length)
     return () => { scene.overlays.remove(layer, true) }
@@ -508,17 +525,23 @@ export default function App() {
     return () => { cancelled = true }
   }, [heat, selected])
 
-  // refined area around the selected site: denser samples + finest elevation tiles there
+  // Refined area around the selected site (~15 km around it): every layer is computed there from the
+  // finest elevation tiles, sampled at their own resolution, once the view is close enough (map tile
+  // level >= 6, ~85 km tiles). Elsewhere the resolution follows the zoom level as usual.
+  const selLat = selected?.lat, selLon = selected?.lon
   const focus = useMemo<GlobalHeatOptions['focus']>(() => {
-    if (!selected || !heat) return undefined
-    const dLat = 0.3 * D2R, dLon = Math.min(Math.PI, dLat / Math.max(Math.cos(selected.lat * D2R), 0.02))
-    const lat = selected.lat * D2R, lon = selected.lon * D2R
+    if (selLat === undefined || selLon === undefined || !heat) return undefined
+    const dLat = FOCUS_RADIUS_M / MOON_RADIUS_M, dLon = Math.min(Math.PI, dLat / Math.max(Math.cos(selLat * D2R), 0.02))
+    const lat = selLat * D2R, lon = selLon * D2R
     return {
       boundsRad: [lon - dLon, Math.max(-Math.PI / 2, lat - dLat), lon + dLon, Math.min(Math.PI / 2, lat + dLat)],
-      samples: 33,
+      samples: 65,
       demLevel: heat.dem.fineMaxLevel,
+      minLevel: 6,
+      center: [lon, lat],
+      radiusM: FOCUS_RADIUS_M,
     }
-  }, [selected, heat])
+  }, [selLat, selLon, heat])
 
   // Fields actually displayed / scored / inspected: LOLA averages, or rescaled to the mission period.
   const fields = useMemo<Record<string, RasterField>>(() => {
@@ -533,6 +556,19 @@ export default function App() {
   fieldsRef.current = fields
 
   // layer metadata as displayed: global range + source when the layer is computed on the fly
+  // radiation legend as displayed: the global computation's dose range, and the class thresholds of
+  // the selected period (scaled by its solar-cycle factor, see radiationClassThresholds)
+  const radiationDisplayMeta = useMemo(() => {
+    if (!radiationMetadata || !heat || !heatVersion) return radiationMetadata
+    const [a, b] = radiationClassThresholds(radiationMetadata, heat.gcr)
+    const cut = [`≤ ${a.toFixed(1)}`, `≤ ${b.toFixed(1)}`, `> ${b.toFixed(1)}`]
+    return {
+      ...radiationMetadata,
+      doseMin: RAD_CONTINUOUS_RANGE[0], doseMax: RAD_CONTINUOUS_RANGE[1],
+      classLegend: radiationMetadata.classLegend.map((c, i) => ({ ...c, label: `${cut[i] ?? c.label} ${radiationMetadata.units} · ${RAD_CLASS_NAMES[i] ?? ''}` })),
+    }
+  }, [radiationMetadata, heat, heatVersion])
+
   const displayLayers = useMemo(() => (bundle?.layers ?? []).map((m) => {
     const g = heat && heatVersion ? GLOBAL_LAYERS[m.id] : undefined
     if (!g) return m
@@ -681,7 +717,7 @@ export default function App() {
     const meta = radiationLayerMeta(metadata, radiationMode)
     if (heat && heatVersion) {
       const gcr = heat.gcr
-      const [green, yellow] = radiationThresholds(metadata)
+      const [green, yellow] = radiationClassThresholds(metadata, gcr)
       const classes = radiationMode === 'classes'
       const [lo, hi] = classes ? [meta.min, meta.max] : RAD_CONTINUOUS_RANGE
       layer = new ImageryLayer(asProvider(new GlobalHeatProvider({
@@ -805,9 +841,9 @@ export default function App() {
       const x = Math.min(2 ** (z + 1) - 1, Math.floor((lonR + Math.PI) / step)), y = Math.min(2 ** z - 1, Math.floor((Math.PI / 2 - latR) / step))
       heat.tile(z, x, y, 17, heat.dem.fineMaxLevel, true).then((tile) => {
         if (!tile) return
-        const n = tile.n, k = n - 1
-        const fx = ((lonR - (-Math.PI + x * step)) / step) * k, fy = ((Math.PI / 2 - y * step - latR) / step) * k
-        const x0 = Math.min(Math.floor(fx), k - 1), y0 = Math.min(Math.floor(fy), k - 1), wx = fx - x0, wy = fy - y0
+        const n = tile.nx, kx = n - 1, ky = tile.ny - 1
+        const fx = ((lonR - (-Math.PI + x * step)) / step) * kx, fy = ((Math.PI / 2 - y * step - latR) / step) * ky
+        const x0 = Math.min(Math.floor(fx), kx - 1), y0 = Math.min(Math.floor(fy), ky - 1), wx = fx - x0, wy = fy - y0
         const at = (a: Float32Array) => {
           const i = y0 * n + x0
           return a[i] * (1 - wx) * (1 - wy) + a[i + 1] * wx * (1 - wy) + a[i + n] * (1 - wx) * wy + a[i + n + 1] * wx * wy
@@ -1004,7 +1040,7 @@ export default function App() {
             )}
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!scoreFields}
-              radiationMetadata={radiationMetadata && heat && heatVersion ? { ...radiationMetadata, doseMin: RAD_CONTINUOUS_RANGE[0], doseMax: RAD_CONTINUOUS_RANGE[1] } : radiationMetadata}
+              radiationMetadata={radiationDisplayMeta}
               radiationLoading={radiationLoading} radiationError={radiationError}
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}

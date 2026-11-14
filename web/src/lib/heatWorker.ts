@@ -11,7 +11,7 @@
  *        regular steps: Sun dir xyz + distance (AU); thermalCount marks the steps that enter the
  *        statistics (the rest are warm-up before each sampled stretch)
  *   { type: 'tile', id, z, x, y, n, demMax, thermal? }
- *        -> { id, version, n, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky }   (Float32Array n*n, row 0 = north;
+ *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
  *           t* empty unless thermal was requested: the regolith model is the expensive part)
  *   { type: 'horizon', id, lat, lon, azStepDeg }   -> { id, elevDeg: Float32Array, demLevel }       (radians in, degrees out)
  *
@@ -24,6 +24,7 @@
  * so a new time window only redoes the (cheap) time integration.
  */
 import { DemSampler, demLevelFor, demPixelM } from './dem'
+import { heatGrid } from './heatGrid'
 import type { EquipotTable } from './equipot'
 
 const R = 1737400
@@ -70,7 +71,7 @@ function makeRay(demMax: number, steps = STEPS, d0Factor = 0.75): Ray {
 }
 
 /** Fetch the DEM tiles a set of points needs, for every level the ray uses (plus `extra` level). */
-async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray, extra: number) {
+async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray, extra: number, hold: number[]) {
   const reach = new Map<number, number>() // level -> max distance at which it is used
   for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
   reach.set(extra, Math.max(reach.get(extra) ?? 0, demPixelM(extra) * 2))
@@ -84,16 +85,21 @@ async function ensureFor(west: number, south: number, east: number, north: numbe
     const full = Math.PI / 2 - maxAbs <= dLat * 1.01
     const dLon = full ? Math.PI : Math.asin(Math.min(1, Math.sin(dLat) / Math.cos(maxAbs))) * 1.05
     jobs.push(full || east - west + 2 * dLon >= 2 * Math.PI
-      ? dem.ensureBox(z, -Math.PI, s, Math.PI, n)
-      : dem.ensureBox(z, west - dLon, s, east + dLon, n))
+      ? dem.ensureBox(z, -Math.PI, s, Math.PI, n, hold)
+      : dem.ensureBox(z, west - dLon, s, east + dLon, n, hold))
   }
   await Promise.all(jobs)
 }
 
-/** Horizon elevation (deg) per azimuth for one point. */
-function horizon(lon0: number, lat0: number, ray: Ray, demMax: number, out: Float32Array, nAz = NAZ, sA = sinAz, cA = cosAz) {
+/**
+ * Horizon elevation (deg) per azimuth for one point. Without the point's own height the result would
+ * be meaningless (a guessed 0 m under a 4 km deep crater gives a horizon far below 0), so then the
+ * output is NaN (drawn transparent), unless `guessHeight` (the site panorama keeps its old fallback).
+ */
+function horizon(lon0: number, lat0: number, ray: Ray, demMax: number, out: Float32Array, nAz = NAZ, sA = sinAz, cA = cosAz, guessHeight = false) {
   const sinP = Math.sin(lat0), cosP = Math.cos(lat0)
   const h0 = dem.sample(lon0, lat0, demMax)
+  if (h0 !== h0 && !guessHeight) { out.fill(NaN); return }
   const hs = (h0 === h0 ? h0 : 0) + OBSERVER_H
   const K = ray.d.length
   for (let a = 0; a < nAz; a++) {
@@ -322,33 +328,44 @@ const hzCache = new Map<string, Terrain>()
 const hzOrder: string[] = []
 const HZ_CACHE = 80 // per worker; a 33 x 33 tile's horizons are ~140 KB
 
-function tileRect(z: number, x: number, y: number) {
+/** Rectangle of tile group x (g tiles wide, see heatGrid.tileGroup) in row y of level z. */
+function tileRect(z: number, x: number, y: number, g = 1) {
   const step = Math.PI / 2 ** z
-  const west = -Math.PI + x * step, north = Math.PI / 2 - y * step
-  return { west, south: north - step, east: west + step, north }
+  const west = -Math.PI + x * g * step, north = Math.PI / 2 - y * step
+  return { west, south: north - step, east: west + g * step, north }
 }
 
-async function terrain(z: number, x: number, y: number, n: number, demMax: number): Promise<Terrain> {
-  const key = `${z}/${x}/${y}/${n}/${demMax}`
+async function terrain(z: number, x: number, y: number, n: number, demMax: number, g = 1): Promise<Terrain> {
+  const key = `${z}/${x}/${y}/${n}/${demMax}/${g}`
   const hit = hzCache.get(key)
   if (hit) return hit
-  const { west, south, east, north } = tileRect(z, x, y)
+  const { west, south, east, north } = tileRect(z, x, y, g)
   const ray = makeRay(demMax)
   // slope/elevation at the sample spacing (coarse tiles -> coarse, honest slopes)
-  const spacing = ((north - south) * R) / (n - 1)
+  const { ny } = heatGrid(z, y, n, g)
+  const spacing = ((north - south) * R) / (ny - 1)
   const zs = demLevelFor(spacing, demMax)
-  await ensureFor(west, south, east, north, ray, zs)
+  const hold: number[] = []
+  try {
+    await ensureFor(west, south, east, north, ray, zs, hold)
+    return computeTerrain(key, west, south, east, north, heatGrid(z, y, n, g), demMax, ray, zs)
+  } finally {
+    dem.unpin(hold)
+  }
+}
 
-  const hz = new Float32Array(n * n * NAZ)
-  const slope = new Float32Array(n * n), elev = new Float32Array(n * n)
-  const gE = new Float32Array(n * n), gN = new Float32Array(n * n)
+function computeTerrain(key: string, west: number, south: number, east: number, north: number, g: { nx: number; ny: number }, demMax: number, ray: Ray, zs: number): Terrain {
+  const { nx, ny } = g, N = nx * ny
+  const hz = new Float32Array(N * NAZ)
+  const slope = new Float32Array(N), elev = new Float32Array(N)
+  const gE = new Float32Array(N), gN = new Float32Array(N)
   const tmp = new Float32Array(NAZ)
   const ds = demPixelM(zs)
-  for (let j = 0; j < n; j++) {
-    const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (n - 1)))
-    for (let i = 0; i < n; i++) {
-      const lon = west + (i * (east - west)) / (n - 1)
-      const c = j * n + i
+  for (let j = 0; j < ny; j++) {
+    const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (ny - 1)))
+    for (let i = 0; i < nx; i++) {
+      const lon = west + (i * (east - west)) / (nx - 1)
+      const c = j * nx + i
       horizon(lon, lat, ray, demMax, tmp)
       hz.set(tmp, c * NAZ)
       // gradient from central differences over one DEM pixel of level zs (east, north)
@@ -368,20 +385,26 @@ async function terrain(z: number, x: number, y: number, n: number, demMax: numbe
   return out
 }
 
-async function tile(m: { id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean }) {
+async function tile(m: { id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean; g?: number }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
-  const t = await terrain(m.z, m.x, m.y, m.n, demMax)
-  const { west, south, east, north } = tileRect(m.z, m.x, m.y)
-  const n = m.n, N = n * n
+  const g = m.g ?? 1
+  const t = await terrain(m.z, m.x, m.y, m.n, demMax, g)
+  const { west, south, east, north } = tileRect(m.z, m.x, m.y, g)
+  const { nx, ny } = heatGrid(m.z, m.y, m.n, g), N = nx * ny
   const s = new Float32Array(N), e = new Float32Array(N)
   const cMean = new Float32Array(N), cMin = new Float32Array(N), cBelow = new Float32Array(N)
   const tMean = new Float32Array(m.thermal ? N : 0), tMin = new Float32Array(m.thermal ? N : 0), tMax = new Float32Array(m.thermal ? N : 0)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
-  for (let j = 0; j < n; j++) {
-    const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (n - 1)))
-    for (let i = 0; i < n; i++) {
-      const lon = west + (i * (east - west)) / (n - 1)
-      const c = j * n + i
+  for (let j = 0; j < ny; j++) {
+    const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (ny - 1)))
+    for (let i = 0; i < nx; i++) {
+      const lon = west + (i * (east - west)) / (nx - 1)
+      const c = j * nx + i
+      if (t.hz[c * NAZ] !== t.hz[c * NAZ]) { // no elevation here (see horizon): leave the point transparent
+        s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = NaN
+        if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
+        continue
+      }
       s[c] = visibleFraction(sun, lon, lat, t.hz, c * NAZ)
       e[c] = visibleFraction(earth, lon, lat, t.hz, c * NAZ)
       ;[cMean[c], cMin[c], cBelow[c]] = charging(lon, lat, t.hz, c * NAZ, t.gE[c], t.gN[c])
@@ -394,7 +417,7 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
   const slope = t.slope.slice(), elev = t.elev.slice()
   const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky]
   ;(self as unknown as Worker).postMessage(
-    { id: m.id, version, n, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, thermal: !!m.thermal },
+    { id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, thermal: !!m.thermal },
     arrays.map((a) => a.buffer),
   )
 }
@@ -403,7 +426,13 @@ async function siteHorizon(m: { id: number; lat: number; lon: number; azStepDeg:
   const demMax = dem.maxLevel
   const ray = makeRay(demMax, 220, 0.5) // much denser than tiles: this is the site's own panorama
   const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, m.lat))
-  await ensureFor(m.lon, lat, m.lon, lat, ray, demMax)
+  const hold: number[] = []
+  try {
+    await ensureFor(m.lon, lat, m.lon, lat, ray, demMax, hold)
+  } catch (err) {
+    dem.unpin(hold)
+    throw err
+  }
   const nAz = Math.round(360 / m.azStepDeg)
   const sA = new Float64Array(nAz), cA = new Float64Array(nAz)
   for (let a = 0; a < nAz; a++) {
@@ -411,7 +440,8 @@ async function siteHorizon(m: { id: number; lat: number; lon: number; azStepDeg:
     cA[a] = Math.cos((2 * Math.PI * a) / nAz)
   }
   const out = new Float32Array(nAz)
-  horizon(m.lon, lat, ray, demMax, out, nAz, sA, cA)
+  horizon(m.lon, lat, ray, demMax, out, nAz, sA, cA, true)
+  dem.unpin(hold)
   ;(self as unknown as Worker).postMessage({ id: m.id, elevDeg: out, demLevel: demMax }, [out.buffer])
 }
 

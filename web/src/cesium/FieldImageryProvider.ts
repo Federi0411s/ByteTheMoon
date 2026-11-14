@@ -33,6 +33,8 @@ export interface FieldImageryOptions {
   transparentIf?: (v: number) => boolean
   /** global contrast enhancement, applied before colormap lookup */
   contrast?: number
+  /** optional per-pixel opacity 0..1 (e.g. to feather a layer's edge); default opaque */
+  alpha?: (lon: number, lat: number) => number
 }
 
 const TILE = 256
@@ -79,7 +81,7 @@ export class FieldImageryProvider {
     const ctx = canvas.getContext('2d')!
     const img = ctx.createImageData(TILE, TILE)
     const px = img.data
-    const { value, min, max, transparentIf, contrast = 1 } = this.opts
+    const { value, min, max, transparentIf, contrast = 1, alpha } = this.opts
     const lut = this.lut
     const dLon = (r.east - r.west) / TILE
     const dLat = (r.north - r.south) / TILE
@@ -87,7 +89,10 @@ export class FieldImageryProvider {
     for (let j = 0; j < TILE; j++) {
       const lat = r.north - (j + 0.5) * dLat
       for (let i = 0; i < TILE; i++) {
-        const v = value(r.west + (i + 0.5) * dLon, lat)
+        const lon = r.west + (i + 0.5) * dLon
+        const a = alpha ? alpha(lon, lat) : 1
+        if (!(a > 0)) continue
+        const v = value(lon, lat)
         const o = (j * TILE + i) * 4
         if (Number.isNaN(v) || (transparentIf && transparentIf(v))) continue // alpha stays 0
 
@@ -98,7 +103,7 @@ export class FieldImageryProvider {
         px[o] = lut[k]
         px[o + 1] = lut[k + 1]
         px[o + 2] = lut[k + 2]
-        px[o + 3] = 255
+        px[o + 3] = a >= 1 ? 255 : Math.round(a * 255)
       }
     }
     ctx.putImageData(img, 0, 0)

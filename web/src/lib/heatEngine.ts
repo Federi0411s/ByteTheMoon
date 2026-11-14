@@ -18,7 +18,9 @@ import { DATA_URL } from './data'
 import { loadEquipot, type EquipotTable } from './equipot'
 
 export interface HeatTile {
-  n: number // samples per side, edges included
+  /** sample grid (edges included, row 0 = north): see lib/heatGrid.ts */
+  nx: number
+  ny: number
   sun: Float32Array
   earth: Float32Array
   slope: Float32Array
@@ -73,8 +75,10 @@ export function gcrFactor(start: number, end: number) {
   return acc / n
 }
 
-const MAX_INFLIGHT = 2 // per worker
-const TILE_TIMEOUT_MS = 120_000 // a tile that takes longer than this means a stuck worker
+// 1 per worker: a worker runs its jobs one at a time, and the stuck-worker timer starts at dispatch, so a
+// queued second job counted its waiting time and heavy polar tiles tripped restarts that killed both
+const MAX_INFLIGHT = 1
+const TILE_TIMEOUT_MS = 180_000 // a tile that takes longer than this means a stuck worker
 
 interface Job {
   msg: Record<string, unknown>
@@ -279,19 +283,20 @@ export class HeatEngine {
   }
 
   /**
-   * Values for Cesium geographic tile (z, x, y) on an n x n sample grid. `demMax` caps the elevation
+   * Values for Cesium geographic tile (z, x, y) on about n x n samples (nx x ny, lib/heatGrid.ts). `demMax` caps the elevation
    * level used (coarse tiles use coarse terrain: a rough first answer, refined as you zoom in).
    * `wanted` lets the caller drop the request while it is still queued (e.g. its layer was removed).
    * Resolves null on failure; failures are not cached.
    */
-  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean): Promise<HeatTile | null> {
-    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/${thermal ? 't' : ''}`
+  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1): Promise<HeatTile | null> {
+    // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
+    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}`
     let p = this.cache.get(key)
     // a tile computed with the regolith model also answers requests without it
     if (!p && !thermal) p = this.cache.get(`${key}t`)
     if (p) return p
     const version = this.version
-    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal }, `${z}/${x}/${y}`, wanted)
+    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, g }, `${z}/${x}/${y}/${g}`, wanted)
       .then((d) => {
         const ok = d && !d.error && d.version === version
         if (!ok) this.cache.delete(key) // never keep a failure: the next request recomputes

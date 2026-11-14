@@ -43,6 +43,11 @@ export class DemSampler {
   private readonly tiles = new Map<number, Tile>()
   private readonly pending = new Map<number, Promise<Tile>>()
   private readonly order: number[] = []
+  // tiles a running computation still needs: never evicted until released (ref-counted, because a
+  // worker interleaves a couple of tile jobs). Without this, jobs needing more tiles than the cache
+  // holds (near-polar tiles read whole rings of DEM tiles) lost early tiles before sampling them and
+  // got NaN heights -> bogus horizons.
+  private readonly pins = new Map<number, number>()
   private lastKey = -1
   private lastTile: Tile | undefined = undefined
   private fineBroken = false
@@ -130,22 +135,45 @@ export class DemSampler {
     if (k === this.lastKey) this.lastKey = -1 // the cached lookup may have been a miss
     this.tiles.set(k, t)
     this.order.push(k)
-    while (this.order.length > this.maxTiles) {
+    // evict the oldest unpinned tiles; pinned ones go to the back (the cache may overflow while
+    // one computation needs more tiles than maxTiles)
+    for (let guard = this.order.length; this.order.length > this.maxTiles && guard > 0; guard--) {
       const old = this.order.shift()!
+      if (this.pins.has(old)) { this.order.push(old); continue }
       this.tiles.delete(old)
       if (old === this.lastKey) this.lastKey = -1
     }
   }
 
-  /** Fetch every tile of level z overlapping the given lon/lat box (radians). */
-  async ensureBox(z: number, west: number, south: number, east: number, north: number) {
+  /** Unpin tiles held by `ensureBox(..., hold)`. */
+  unpin(hold: number[]) {
+    for (const k of hold) {
+      const c = (this.pins.get(k) ?? 1) - 1
+      if (c <= 0) this.pins.delete(k)
+      else this.pins.set(k, c)
+    }
+    hold.length = 0
+  }
+
+  /**
+   * Fetch every tile of level z overlapping the given lon/lat box (radians). With `hold`, the tiles
+   * are pinned (their keys appended to it) until `unpin(hold)`.
+   */
+  async ensureBox(z: number, west: number, south: number, east: number, north: number, hold?: number[]) {
     const n = 2 ** z
     const step = Math.PI / n
     const y0 = Math.max(0, Math.floor((Math.PI / 2 - north) / step))
     const y1 = Math.min(n - 1, Math.floor((Math.PI / 2 - south) / step))
     const jobs: Promise<unknown>[] = []
     const addX = (x0: number, x1: number) => {
-      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) jobs.push(this.ensure(z, x, y))
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        if (hold) {
+          const k = this.key(z, x, y)
+          this.pins.set(k, (this.pins.get(k) ?? 0) + 1)
+          hold.push(k)
+        }
+        jobs.push(this.ensure(z, x, y))
+      }
     }
     const xs = (lon: number) => Math.floor((lon + Math.PI) / step)
     const nx = 2 * n

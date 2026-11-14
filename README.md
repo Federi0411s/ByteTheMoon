@@ -43,13 +43,17 @@ Each heatmap tile is computed in a Web Worker (`web/src/lib/heatWorker.ts`) for 
 
 | Layer | Method |
 |---|---|
-| Horizons | 32 azimuths × 40 steps out to 200 km per point. Coarser DEM levels are used further away, and lunar curvature is included |
+| Horizons | 32 azimuths × 40 steps out to 200 km per point. Coarser DEM levels are used further away, and lunar curvature is included. Near the poles each tile's sample grid has more rows than columns (`lib/heatGrid.ts`), so the spacing stays square on the ground |
 | Sunlight / Earth visibility | Fraction of the window with the Sun / Earth above that horizon (SPICE ephemeris) |
 | Permanent shadow (PSR) | Never lit during the selected period |
 | Slope, elevation | From the same DEM tiles |
 | Surface charging | EQUIPOT model, reading `pipeline/equipot_results.csv` directly, with the terrain horizon instead of a flat one |
 | Regolith temperature | Hayne et al. 2017 1-D model, implicit solver in 6 h steps. A window over 1 year is sampled as 12 lunations spread across it, each after a 1-lunation warm-up |
-| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky)) × GCR factor`, where f_sky is the visible-sky fraction. The GCR factor is **approximate**: a cosine 11-year solar cycle, minimum Dec 2019, 30 % lower at solar maximum |
+| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky)) × GCR factor`, where f_sky is the visible-sky fraction. The GCR factor is **approximate**: a cosine 11-year solar cycle, minimum Dec 2019, 30 % lower at solar maximum. The *classes* view shows terrain shielding: its thresholds (12.0 / 12.8 µGy/h at the 2019 minimum) scale with the same factor, and the legend shows the selected period's values |
+
+Resolution follows the zoom level, except around the selected site: within about 15 km of it, every layer
+is computed from the finest elevation tiles (167 m with the fine tiles, otherwise 666 m), with one sample per
+elevation pixel, once the view is close enough (map tile level 6 or deeper).
 
 South of 85°S, the 60 m LOLA polar maps (sunlight, Earth visibility, PSR, slope, elevation) replace the
 computed values. Sunlight and Earth visibility are rescaled to the selected period (`web/src/lib/mission.ts`,
