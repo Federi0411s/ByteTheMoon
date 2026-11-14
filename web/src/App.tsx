@@ -108,7 +108,7 @@ const GLOBAL_LAYERS: Record<string, {
   // shadowed through the whole selected period (LOLA's PSR map is "never lit", long-term)
   psr: {
     value: (v) => (v.sun < 0.002 ? 1 : NaN), polar: true, method: 'never lit during the selected period',
-    polarValue: { from: 'sun_avg', value: (f, lon, lat) => { const s = f.sun_avg?.sampleNearest(lon, lat) ?? NaN; return s !== s ? NaN : s < 0.002 ? 1 : -Infinity } },
+    polarValue: { from: 'sun_avg', value: (f, lon, lat) => { const s = f.sun_avg?.sampleBilinear(lon, lat) ?? NaN; return s !== s ? NaN : s < 0.002 ? 1 : -Infinity } },
   },
   slope: { value: (v) => v.slope, polar: true, method: 'LOLA global DEM gradient' },
   dem_south: { value: (v) => v.elev, polar: true, range: [-9000, 10000], method: 'LOLA global DEM' },
@@ -655,14 +655,14 @@ export default function App() {
         layer = new ImageryLayer(asProvider(g ? new GlobalHeatProvider({
           engine: heat!,
           value: g.value,
-          polar: usePolar ? (g.polarValue ? (lon, lat) => g.polarValue!.value(fields, lon, lat) : (lon, lat) => field!.sampleNearest(lon, lat)) : undefined,
+          polar: usePolar ? (g.polarValue ? (lon, lat) => g.polarValue!.value(fields, lon, lat) : (lon, lat) => field!.sampleBilinear(lon, lat)) : undefined,
           polarBelowLat: usePolar ? polarSrc.boundsRad()[3] : undefined,
           min: lo, max: hi, colormap: meta.colormap, contrast,
           thermal: g.thermal,
           credit: usePolar ? `${meta.source}; elsewhere ${g.method}` : `${meta.title}: ${g.method} (LOLA global DEM)`,
           focus,
         }) as unknown as FieldImageryProvider : new FieldImageryProvider({
-          value: (lon, lat) => field!.sampleNearest(lon, lat),
+          value: (lon, lat) => field!.sampleBilinear(lon, lat),
           min: meta.min, max: meta.max, colormap: meta.colormap,
           boundsRad: field!.boundsRad(),
           maximumLevel: levelForResolution(meta.resolutionM),
@@ -716,7 +716,7 @@ export default function App() {
         const sl = slope.sampleNearest(lon, lat)
         if (Number.isNaN(sl)) return NaN
         if (!(sl <= limit)) return FAIL
-        const s = sun.sampleNearest(lon, lat), e = earth.sampleNearest(lon, lat)
+        const s = sun.sampleBilinear(lon, lat), e = earth.sampleBilinear(lon, lat)
         if (Number.isNaN(s) || Number.isNaN(e)) return NaN
         return (score.sun * s + score.earth * e) / wSum
       })
@@ -779,7 +779,7 @@ export default function App() {
     loadRaster(meta, `${import.meta.env.BASE_URL}radiation`).then((field) => {
       if (cancelled) return
       layer = new ImageryLayer(asProvider(new FieldImageryProvider({
-        value: (lon, lat) => field.sampleNearest(lon, lat),
+        value: (lon, lat) => field.sampleBilinear(lon, lat),
         min: meta.min,
         max: meta.max,
         colormap: meta.colormap,

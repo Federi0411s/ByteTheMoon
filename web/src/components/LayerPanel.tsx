@@ -125,6 +125,7 @@ export function LayerPanel({
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
         <div className="menu-section-body">
+          <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
           {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
           {shown.map((l) => {
             const s = state[l.id] ?? { visible: false, opacity: 0.55 }
