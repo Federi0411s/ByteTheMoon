@@ -121,23 +121,20 @@ export function LayerPanel({
           </label>
           {(['sun', 'earth'] as const).map((k) => (
             <label key={k} className="slider">
-<<<<<<< HEAD
-              <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)' }[k]}</span>
-=======
               <span className="slider-label">
-                <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)', flat: 'Flat terrain' }[k]}</span>
+                <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)' }[k]}</span>
                 <span className="slider-value">{Math.round(score[k] * 100)}%</span>
               </span>
->>>>>>> a8de4f2ff7c2532998e154c904a62d2b32b8c890
               <input type="range" min={0} max={1} step={0.05} value={score[k]} onChange={(e) => onScore({ ...score, [k]: Number(e.target.value) })} />
             </label>
           ))}
           <FootprintEditor fp={score.footprint} onChange={(footprint) => onScore({ ...score, footprint })} />
           <label className="slider">
-<<<<<<< HEAD
-            <span>
-              Max slope in footprint: {score.maxSlope}° ·{' '}
-              <b style={{ color: slopeClass(score.maxSlope).color }}>{slopeClass(score.maxSlope).label}</b>
+            <span className="slider-label">
+              <span>Max slope in footprint</span>
+              <span className="slider-value">
+                {score.maxSlope}° · <b style={{ color: slopeClass(score.maxSlope).color }}>{slopeClass(score.maxSlope).label}</b>
+              </span>
             </span>
             <input type="range" min={0.5} max={SLOPE_MAX_DEG} step={0.5} value={score.maxSlope}
               onChange={(e) => onScore({ ...score, maxSlope: Number(e.target.value) })} />
@@ -151,15 +148,7 @@ export function LayerPanel({
           <div className="legend-labels">
             {SLOPE_CLASSES.map((c, i) => <span key={c.label}>{c.label} {i ? SLOPE_CLASSES[i - 1].upTo : 0}–{c.upTo}°</span>)}
           </div>
-=======
-            <span className="slider-label">
-              <span>Max slope</span>
-              <span className="slider-value">{score.maxSlope}°</span>
-            </span>
-            <input type="range" min={2} max={30} step={1} value={score.maxSlope} onChange={(e) => onScore({ ...score, maxSlope: Number(e.target.value) })} />
-          </label>
           <p className="muted">The weights are relative and are normalized when calculating the score.</p>
->>>>>>> a8de4f2ff7c2532998e154c904a62d2b32b8c890
           {score.enabled && <Legend colormap="viridis" min={0} max={1} units="score" />}
           {score.enabled && (
             <p className="source">

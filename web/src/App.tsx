@@ -38,13 +38,8 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
-<<<<<<< HEAD
   const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
-  const [t, setT] = useState(() => Date.parse('2027-06-01T00:00:00Z'))
-=======
-  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, flat: 0.2, maxSlope: 10, opacity: 0.7 })
   const [t, setT] = useState(() => Date.now()) // start at the current UTC time (clamped to the ephemeris on load)
->>>>>>> a8de4f2ff7c2532998e154c904a62d2b32b8c890
   const [playing, setPlaying] = useState(false)
   const [lighting, setLighting] = useState(false)
   const [stepMs, setStepMs] = useState(3600_000)
@@ -345,14 +340,10 @@ export default function App() {
           </aside>
           <aside className="side right">
             <LayerPanel layers={bundle.layers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-<<<<<<< HEAD
               score={score} onScore={setScore} scoreAvailable={!!scoreFields} slopeExact={!!scoreFields?.exact} />
-=======
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}
->>>>>>> a8de4f2ff7c2532998e154c904a62d2b32b8c890
             {bundle.warnings.length > 0 && (
               <section className="panel warn">
                 <h2>Setup</h2>

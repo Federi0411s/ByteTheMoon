@@ -125,10 +125,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
-<<<<<<< HEAD
   .site-panel-expand { display: none; }
-=======
   /* panels stack in normal flow here, so credits just sit above the time bar */
   .app .cesium-viewer-bottom { left: 12px !important; max-width: calc(100% - 24px); }
->>>>>>> 59fd4541c5db401daa8d5d339c91136a8e816f5b
 }
