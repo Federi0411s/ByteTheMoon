@@ -57,7 +57,7 @@ The selected period is the mission period when it is set, otherwise the loaded 5
 
 DEM pyramid (`pipeline/dem_tiles.py`): 256 px geographic WebP tiles. Height = `0.5·(R·256 + G) − 10000` m, and `B = 255` marks valid pixels.
 - Levels 0–5 (≥ 666 m/px, 134 MB) ship in `web/public/data/dem`.
-- Levels 6–7 (333 / 167 m/px, 1.67 GB) go to `$MOON_DATA/dem_fine`. They are served at `/dem-fine` in dev, and in production from a CORS-open static bucket set in `VITE_DEM_FINE_URL`. Without it, the app falls back to 666 m.
+- Levels 6–7 (333 / 167 m/px, about 1.8 GB) go to `$MOON_DATA/dem_fine`. They are served at `/dem-fine` in dev, and in production from the CORS-open R2 bucket `bytethemoon-tiles`, whose `dem_fine` URL is set in `VITE_DEM_FINE_URL`. Without it, the app falls back to 666 m.
 
 The poles use the same engine; the LOLA 60 m polar maps and the pipeline's 4 km polar rasters are no longer drawn (kept only as reference data).
 
@@ -79,7 +79,7 @@ Next, in priority order:
 2. **Validation**: check Sun az/el against JPL Horizons for 2–3 sites (observer `coord@301`, API `https://ssd.jpl.nasa.gov/api/horizons.api`). Show "matches JPL to within X°" in an About panel.
 3. **Shadows**: try `viewer.shadows = true` with the Sun light on the 3D tiles at close range (a strong demo moment). If the Cesium Moon tiles turn out to be unlit, test `tileset.customShader` with `LightingModel.PBR`.
 4. **UI polish**: onboarding tooltip, presets "Compare Artemis regions", mobile layout, URL state (`?site=haworth&t=2027-06-01`) so links can be shared.
-5. Deploy the fine tiles (levels 6–7 of `dem_fine`, `slope_fine`, `sky_fine`) to one bucket and set `VITE_DEM_FINE_URL`.
+5. Fine tiles (levels 6–7 of `dem_fine`, 5–7 of `slope_fine` / `sky_fine`, 3–5 of `horizon_fine`; about 7.8 GB / 130k files) go to the R2 bucket `bytethemoon-tiles`; set `VITE_DEM_FINE_URL` in Vercel to its `dem_fine` folder.
 6. Replace the approximate GCR solar-cycle factor with measured neutron-monitor or CRaTER data.
 
 ## 4. Team split (adapt to team size)
@@ -101,7 +101,7 @@ They aren't really alternatives. The NASA/GoDaddy Registry offer is mainly a **f
 2. Claim the free domain (e.g. `bytethemoon.space`, if it's non-premium) and add it in Vercel → Domains. Vercel then shows the DNS records to create at Porkbun.
 3. Skip the bundled GoDaddy/Porkbun hosting. It has no git-push deploys and no preview URLs, and you'd upload files by hand.
 
-The app is fully static (about 220 MB of data, including the 134 MB elevation pyramid; the 1.67 GB fine tiles live in a separate bucket), so Vercel Hobby, GitHub Pages or Cloudflare Pages all work. In Cesium ion, restrict the public token to the Moon asset and to your domain(s).
+The app is fully static (about 220 MB of data, including the 134 MB elevation pyramid). The fine tiles, about 7.8 GB / 130k files (dem 1.8 GB, slope 2.4 GB, sky 0.9 GB, horizon 2.7 GB), live in the Cloudflare R2 bucket `bytethemoon-tiles`, not in the deploy. So Vercel Hobby, GitHub Pages or Cloudflare Pages all work. In Cesium ion, restrict the public token to the Moon asset and to your domain(s).
 
 ## 6. Risks
 

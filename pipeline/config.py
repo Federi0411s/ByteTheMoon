@@ -54,6 +54,12 @@ OPTIONAL_PRODUCTS = {
     "avgvisib_75s_120m_201608": f"{PDS}/extras/illumination/img/avgvisib_75s_120m_201608",
     "avgvisib_75s_120m_201608_earth": f"{PDS}/extras/illumination/img/avgvisib_75s_120m_201608_earth",
 }
+# North pole: elevation 80N-90N at 80 m (polar_dem_tiles.py --pole north) and, for validation, the
+# LOLA team average illumination 85N-90N at 60 m
+NORTH_PRODUCTS = {
+    "ldem_80n_80m": f"{PDS}/data/lola_gdr/polar/img/ldem_80n_80m",
+    "avgvisib_85n_060m_201608": f"{PDS}/extras/illumination/img/avgvisib_85n_060m_201608",
+}
 
 KERNEL_FILES = {
     "naif0012.tls": f"{NAIF}/lsk/naif0012.tls",

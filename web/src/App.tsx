@@ -11,6 +11,7 @@ import {
   ImageryLayer,
   LabelStyle,
   Math as CMath,
+  Rectangle,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   VerticalOrigin,
@@ -59,19 +60,22 @@ import {
 } from './lib/ephemeris'
 import { loadRadiationMetadata, radiationDose, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
-import { LayerPanel, type LayerState, type ScoreConfig } from './components/LayerPanel'
+import { LayerPanel, type LayerState, type ReachConfig, type ScoreConfig } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { compareSavedSites } from './lib/savedSiteComparison'
 import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
 import { siteThermalSeries } from './lib/regolith'
-import { combine, scoreRadiation, scoreSlope, scoreSunlight, scoreTelecom, scoreTemperature } from './lib/landingScore'
+import { combine, scoreLandingCell, scoreRadiation, scoreSlope, scoreSunlight, scoreTelecom, scoreTemperature } from './lib/landingScore'
 import { DEFAULT_PANEL, powerAt, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
 import { TechnicalReportDialog } from './components/TechnicalReportDialog'
 import type { ReportFilterImage, ReportOverlay } from './lib/technicalReport'
-import { copyAdvancedSettings, DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './lib/advancedSettings'
+import { copyAdvancedSettings, DEFAULT_ADVANCED_SETTINGS, DEFAULT_DISPLAY_SETTINGS, type AdvancedSettings, type DisplaySettings } from './lib/advancedSettings'
+import { asReachProvider, ReachImageryProvider } from './cesium/ReachImageryProvider'
+import { ReachEngine, type ReachResult } from './lib/reach'
+import { reachAreaKm2, SLOPE_QUANTUM } from './lib/reachGrid'
 
 const DAY = 86400_000
 const CSS_PIXELS_PER_CM = 96 / 2.54
@@ -84,7 +88,7 @@ const CALENDAR_RANGE: [number, number] = [
 const D2R = Math.PI / 180
 const MOON_RADIUS_M = 1737400
 const FOCUS_RADIUS_M = 15_000 // refined heatmaps around the selected site
-const SCORE_RADIUS_M = 500_000 // the landing-suitability map covers this radius around the selected site
+const SCORE_RADIUS_KM = 500 // default radius of the landing-suitability map around the selected site (Settings)
 const RELIEF_EDGE_RAD = 80 * D2R // the relief basemap (LOLA LDEM 80S) ends here
 const RELIEF_FADE_RAD = 1 * D2R
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
@@ -240,7 +244,7 @@ export default function App() {
   const [ephemerisBusy, setEphemerisBusy] = useState(false)
   const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
-  const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
+  const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, radiusKm: SCORE_RADIUS_KM, opacity: 0.7 })
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(() => copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
@@ -255,8 +259,10 @@ export default function App() {
   const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
   // precomputed time-independent layers (pipeline/dem_tiles.py, slope_tiles.py, sky_view.py)
   const [pyramids, setPyramids] = useState<Partial<Record<PyramidName, PyramidIndex>>>({})
-  // DEM-guided upsampling of the computed heatmaps (GlobalHeatProvider `guide`); off = plain bilinear
-  const [guided, setGuided] = useState(true)
+  // Settings: movement slope limit and distance (reachable-area layer) and DEM-guided upsampling of
+  // the computed heatmaps (GlobalHeatProvider `guide`; off = plain bilinear)
+  const [display, setDisplay] = useState<DisplaySettings>(() => ({ ...DEFAULT_DISPLAY_SETTINGS }))
+  const guided = display.guided
   const guide = useMemo(() => (guided && pyramids.dem ? pyramidTiles(pyramids.dem) : undefined), [guided, pyramids])
   useEffect(() => {
     let cancelled = false
@@ -926,6 +932,18 @@ export default function App() {
     const [a, b, az] = fpKey.split(',').map(Number)
     return footprintMax(base, a, b, az)
   }, [bundle, fpKey, hasSelection])
+  // what is on screen, for the score map's compute order (tiles in view first); updated on camera moves
+  const viewRectRef = useRef<Rectangle | undefined>(undefined)
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const s = scene.viewer.scene
+    const update = () => { viewRectRef.current = s.camera.computeViewRectangle(s.globe.ellipsoid) ?? undefined }
+    update()
+    return s.camera.changed.addEventListener(update)
+  }, [ready])
+  const scoreOpacityRef = useRef(score.opacity)
+  const scoreSky = useMemo(() => (pyramids.sky ? pyramidTiles(pyramids.sky) : undefined), [pyramids.sky])
   useEffect(() => {
     const scene = sceneRef.current
     if (!ready || !scene || !(heat && heatVersion)) return
@@ -936,39 +954,138 @@ export default function App() {
     const handle = setTimeout(() => {
       const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
       const lat0 = selLat * D2R, lon0 = selLon * D2R
-      const dLat = SCORE_RADIUS_M / MOON_RADIUS_M
+      const radiusM = score.radiusKm * 1000
+      const dLat = radiusM / MOON_RADIUS_M
       const south = Math.max(-Math.PI / 2, lat0 - dLat), north = Math.min(Math.PI / 2, lat0 + dLat)
       // a pole inside the circle, or a box crossing the antimeridian: take every longitude
       const polar = lat0 + dLat >= Math.PI / 2 || lat0 - dLat <= -Math.PI / 2
       const dLon = polar ? Math.PI : Math.asin(Math.min(1, Math.sin(dLat) / Math.cos(lat0)))
       const wrap = lon0 - dLon < -Math.PI || lon0 + dLon > Math.PI
       const boundsRad: [number, number, number, number] = polar || wrap ? [-Math.PI, south, Math.PI, north] : [lon0 - dLon, south, lon0 + dLon, north]
-      const sinLat0 = Math.sin(lat0), cosLat0 = Math.cos(lat0), cosR = Math.cos(dLat)
-      const inCircle = (lon: number, lat: number) => sinLat0 * Math.sin(lat) + cosLat0 * Math.cos(lat) * Math.cos(lon - lon0) >= cosR
-      const slopeMask = slopeMax ? (rect: [number, number, number, number], z: number) => slopeMax.checkerBanded(rect, z, fpA, fpB, fpAz, limit) : undefined
+      // Per-pixel classification (sharp class boundaries): the worker returns the raw criteria per
+      // sample; they are interpolated along the terrain (DEM-guided) and classified per pixel here. The
+      // slope criterion and the slope limit come per pixel from the slope pyramid (steepest slope in the
+      // footprint, one pass for every class boundary), radiation from the sky-view pyramid. So changing
+      // thresholds, the slope limit or the footprint only repaints: nothing is recomputed.
+      const st = advancedSettings
+      const [periodStart, periodEnd] = heat.window
+      const periodHours = (periodEnd - periodStart) / 3600_000
+      const gcr = heat.gcr
+      const thresholds = [st.slope.recommendedDeg, st.slope.feasibleDeg, st.slope.difficultDeg, limit].sort((x, y) => x - y)
+      const top = thresholds[thresholds.length - 1]
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: true,
-        landing: { footprint: [fpA, fpB, fpAz], gcr: heat.gcr, scoreSettings: advancedSettings },
-        value: (v) => (Number.isFinite(v.landingScore) && v.slope <= limit ? v.landingScore : NaN),
-        mask: async (rect, z) => {
-          const keep = slopeMask ? await slopeMask(rect, z) : undefined
-          return keep ? (lon, lat) => inCircle(lon, lat) && keep(lon, lat) : inCircle
+        landing: slopeMax ? {} : { footprint: [fpA, fpB, fpAz] },
+        fields: ['tMean', 'link', 'linkGap', 'sunlit', 'dark', ...(scoreSky ? [] : ['fSky' as const]), ...(slopeMax ? [] : ['slope' as const])],
+        sky: scoreSky,
+        pixel: slopeMax ? (rect, z) => slopeMax.levelsBanded(rect, z, fpA, fpB, fpAz, thresholds) : undefined,
+        value: (v) => {
+          // steepest slope in the footprint: from the pyramid class (count of thresholds exceeded ->
+          // the upper bound of its interval, which classifies identically), else the worker's DEM value
+          let maxSlope: number
+          if (slopeMax) {
+            const c = v.pixel
+            if (!(c >= 0)) return NaN
+            maxSlope = c < thresholds.length ? thresholds[c] : top + 1
+          } else maxSlope = v.slope
+          if (!(maxSlope <= limit)) return NaN
+          const { tMean, fSky, link, linkGap, sunlit } = v
+          if (!(tMean === tMean && fSky === fSky && link === link && linkGap === linkGap && sunlit === sunlit)) return NaN
+          return scoreLandingCell({
+            tMeanC: tMean - 273.15,
+            doseRateUGyH: radiationDose(fSky, gcr),
+            periodHours,
+            maxSlopeDeg: maxSlope,
+            linkPct: link,
+            longestLinkGapH: linkGap,
+            sunlitPct: sunlit,
+          }, st)
         },
+        circle: [lon0, lat0, radiusM],
+        // nearest the selected point first, tiles on screen before the rest
+        prioritize: { inView: (r) => { const v = viewRectRef.current; return !v || !!Rectangle.intersection(r, v) } },
         boundsRad,
         maximumLevel: 13,
         // the whole circle at the selected site's refined quality: finest elevation tiles, one sample
         // per elevation pixel (capped at 33 per tile side for the regolith model) from tile level 5 on
-        focus: { boundsRad, center: [lon0, lat0], radiusM: SCORE_RADIUS_M, samples: 33, demLevel: heat.dem.fineMaxLevel, minLevel: 5 },
+        focus: { boundsRad, center: [lon0, lat0], radiusM, samples: 33, demLevel: heat.dem.fineMaxLevel, minLevel: 5 },
         min: 0, max: 100, colormap: 'viridis', guide,
         credit: 'Landing suitability: equal-weight Landing Score criteria (temperature, radiation, LOLA slope, DSN and sunlight)',
       }) as unknown as FieldImageryProvider
-      const layer = new ImageryLayer(asProvider(provider), { alpha: score.opacity })
+      const layer = new ImageryLayer(asProvider(provider), { alpha: scoreOpacityRef.current })
       scene.overlays.add(layer)
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, selLat, selLon, slopeMax, guide, advancedSettings])
+  }, [ready, score.enabled, score.maxSlope, score.radiusKm, fpA, fpB, fpAz, heat, heatVersion, selLat, selLon, slopeMax, scoreSky, guide, advancedSettings])
+  // opacity only changes the layer's alpha (rebuilding it repainted every tile)
+  useEffect(() => {
+    scoreOpacityRef.current = score.opacity
+    const layer = layerRefs.current.__score
+    if (layer) layer.alpha = score.opacity
+  }, [score.opacity])
+
+  // ---- reachable area from the selected site / point (lib/reachWorker.ts) ----
+  // One search per start point; the slope limit is applied afterwards (a lower limit is a pure redraw,
+  // a higher one resumes the search in the worker).
+  const [reach, setReach] = useState<ReachConfig>({ enabled: false, opacity: 0.6 })
+  const [reachResult, setReachResult] = useState<ReachResult | null>(null)
+  const [reachError, setReachError] = useState<string>()
+  const [reachEngine, setReachEngine] = useState<ReachEngine | null>(null)
+  const reachKey = useRef('')
+  const reachOpacity = useRef(reach.opacity) // read when the layer is rebuilt; changes alone don't rebuild it
+  const moveSlope = display.moveSlopeDeg
+  const reachRadiusKm = display.reachRadiusKm
+  useEffect(() => {
+    if (!heat || !reach.enabled) return
+    const engine = new ReachEngine(heat.dem)
+    engine.onResult = (r) => { setReachError(undefined); setReachResult(r) }
+    engine.onError = (e) => setReachError(e)
+    reachKey.current = ''
+    setReachEngine(engine)
+    return () => { engine.dispose(); setReachEngine(null); setReachResult(null) }
+  }, [heat, reach.enabled])
+  useEffect(() => {
+    if (!reachEngine) return
+    if (selLat === undefined || selLon === undefined) {
+      reachEngine.stop()
+      reachKey.current = ''
+      setReachResult(null)
+      return
+    }
+    const key = `${selLat},${selLon},${reachRadiusKm}`
+    if (reachKey.current === key) { reachEngine.setLimit(moveSlope); return }
+    reachKey.current = key
+    setReachResult(null)
+    setReachError(undefined)
+    reachEngine.start(selLat, selLon, reachRadiusKm * 1000, moveSlope)
+  }, [reachEngine, selLat, selLon, moveSlope, reachRadiusKm])
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const old = layerRefs.current.__reach
+    delete layerRefs.current.__reach
+    if (reach.enabled && reachResult) {
+      const layer = new ImageryLayer(asReachProvider(new ReachImageryProvider(reachResult, moveSlope)), { alpha: reachOpacity.current })
+      scene.overlays.add(layer)
+      layerRefs.current.__reach = layer
+    }
+    if (old) removeLayer(scene, old) // after adding the new one: no empty frame in between
+  }, [ready, reach.enabled, reachResult, moveSlope])
+  useEffect(() => {
+    reachOpacity.current = reach.opacity
+    const layer = layerRefs.current.__reach
+    if (layer) layer.alpha = reach.opacity
+  }, [reach.opacity])
+  const reachStatus = useMemo(() => {
+    if (reachError) return `Could not compute: ${reachError}`
+    if (!reachResult) return 'Computing…'
+    const q = Math.min(Math.floor(moveSlope * SLOPE_QUANTUM + 1e-9), reachResult.exploredQ)
+    const area = reachAreaKm2(reachResult.grid, reachResult.val, q / SLOPE_QUANTUM)
+    const more = !reachResult.final ? ' · refining…' : q < Math.floor(moveSlope * SLOPE_QUANTUM + 1e-9) ? ' · extending…' : ''
+    return `${area.toLocaleString('en-US', { maximumFractionDigits: 0 })} km² reachable · ${Math.round(reachResult.grid.cell)} m grid · ${reachResult.ms} ms${more}`
+  }, [reachError, reachResult, moveSlope])
 
   // ---- region filters ----
   const filterPeriod = useMemo(() => {
@@ -1408,12 +1525,13 @@ export default function App() {
     if (!selected || !ephemeris || !analysisPeriodInWindow) return undefined
     return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], 3600_000, bundle?.fields.dem_south)
   }, [selected, ephemeris, scorePeriod, bundle, analysisPeriodInWindow])
-  // Sunlight criterion: share of the selected mission period with the Sun above the terrain horizon.
+  // sunlight criterion: share of the period sunlit, weighted by the share of the Sun's light visible
+  // (an hour at 30 % counts 0.3 h), and longest night (less than half the light visible)
   const sunStats = useMemo(() => {
     if (!walkSeries) return undefined
-    let lit = 0
-    for (const v of walkSeries.sunlit) lit += v
-    return { pct: (100 * lit) / walkSeries.sunlit.length }
+    let lit = 0, run = 0, longest = 0
+    walkSeries.sunlit.forEach((v, i) => { lit += walkSeries.light[i]; run = v ? 0 : run + 1; longest = Math.max(longest, run) })
+    return { pct: (100 * lit) / walkSeries.sunlit.length, longestDarkH: longest * walkSeries.stepH }
   }, [walkSeries])
   const landing = useMemo(() => {
     if (!selected || !analysisPeriodInWindow) return undefined
@@ -1661,9 +1779,12 @@ export default function App() {
             <SettingsDialog
               settings={advancedSettings}
               footprint={score.footprint}
-              onSave={(settings, footprint) => {
+              mapRadiusKm={score.radiusKm}
+              display={display}
+              onSave={(settings, footprint, radiusKm, nextDisplay) => {
                 setAdvancedSettings(settings)
-                setScore((current) => ({ ...current, footprint }))
+                setScore((current) => ({ ...current, footprint, radiusKm }))
+                setDisplay(nextDisplay)
                 setSettingsOpen(false)
               }}
               onCancel={() => setSettingsOpen(false)}
@@ -1672,7 +1793,7 @@ export default function App() {
           <aside className="side right">
             <div className={`mission-settings-row${bundle.ephemeris ? ' with-mission' : ''}`}>
               <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
-                aria-label="Open settings" title="Settings">
+                aria-label="Open settings" title="Settings" data-tour="advanced-settings-button">
                 <span aria-hidden="true">⚙</span>
               </button>
               {bundle.ephemeris && (
@@ -1693,7 +1814,8 @@ export default function App() {
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
               iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
               pitsVisible={pitsVisible} onPitsVisible={setPitsVisible} pitsError={pitsError}
-              guided={guided} onGuided={setGuided} guidedAvailable={!!pyramids.dem} />
+              reach={reach} onReach={setReach}
+              reachInfo={{ available: !!heat && selLat !== undefined, maxDeg: moveSlope, radiusKm: display.reachRadiusKm, status: reachStatus }} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}

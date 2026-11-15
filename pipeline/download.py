@@ -3,6 +3,7 @@
     python pipeline/download.py                 # data products + full DE440 SPICE kernels
     python pipeline/download.py --kernels-only   # SPICE kernels only
     python pipeline/download.py --all            # + optional hi-res DEM and 75S illumination
+    python pipeline/download.py --north          # + north polar DEM (80N, 80 m) and 85N illumination
 
 Uses only HTTPS (NASA blocks FTP) and the standard library.
 """
@@ -13,7 +14,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from config import KERNEL_FILES, KERNELS, OPTIONAL_PRODUCTS, PRODUCTS, RAW
+from config import KERNEL_FILES, KERNELS, NORTH_PRODUCTS, OPTIONAL_PRODUCTS, PRODUCTS, RAW
 
 
 def fetch(url: str, dest: Path) -> None:
@@ -45,11 +46,12 @@ def fetch(url: str, dest: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true", help="also download optional products")
+    ap.add_argument("--north", action="store_true", help="also download the north polar products")
     ap.add_argument("--kernels-only", action="store_true", help="download only SPICE kernels")
     args = ap.parse_args()
 
     if not args.kernels_only:
-        products = dict(PRODUCTS, **(OPTIONAL_PRODUCTS if args.all else {}))
+        products = dict(PRODUCTS, **(OPTIONAL_PRODUCTS if args.all else {}), **(NORTH_PRODUCTS if args.north else {}))
         print(f"PDS products -> {RAW}")
         for name, base in products.items():
             for ext in (".lbl", ".img"):

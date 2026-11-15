@@ -7,6 +7,8 @@ azimuths (clockwise from north, a * 360/32 deg), march outward on the great circ
 geometrically growing steps up to 200 km, reading the elevation pyramid at a level matched to the step
 size (down to --dem-max, 167 m at level 7, next to the point), observer 2 m above the ground, Moon
 curvature included. The point height is read at --dem-max too, as the live worker does.
+Inside the polar caps (|lat| > ~80.3 deg) every height (point and ray samples) comes from the LOLA
+polar DEMs (web/public/data/dem_south, dem_north), read as lib/dem.ts does (sky_view.terrain()).
 
 Points: the pixel centres of --level (5 = 666 m). Coarser levels average the horizons of the 2 x 2
 finer pixels (per azimuth, ignoring no data), for the zoomed-out heatmaps.
@@ -18,6 +20,7 @@ side is web/src/lib/horizonTiles.ts.
 
     python pipeline/horizon_tiles.py --bench      # time a few rows, estimate the full run
     python pipeline/horizon_tiles.py              # level 5 (666 m) horizons, DEM down to 167 m
+    python pipeline/horizon_tiles.py --rows polar # only the tile rows the polar DEMs affect (|lat| > ~73.7)
 """
 from __future__ import annotations
 
@@ -36,6 +39,8 @@ from PIL import Image
 
 import sky_view as sv
 from config import DATA, MOON_R, WEB_DATA
+from polar_dem import blocks, load_poles, parse_rows, polar_rows
+from slope_tiles import level_stats
 
 TILE = 256
 NAZ, STEPS = sv.NAZ, sv.STEPS
@@ -46,13 +51,16 @@ H_OFFSET, H_STEP = -10.0, 0.26  # DN 1..255 -> -10 .. 56 deg (steepest crater wa
 _C: dict = {}
 
 
-def _init(level: int, dem_max: int, public_max: int):
+def _init(level: int, dem_max: int, public_max: int, polar: bool = True):
     for z in range(dem_max + 1):
         sv._M[z] = np.memmap(sv.mosaic_path(z), np.uint16, "r", shape=sv.mosaic_shape(z))
+    sv._P[:] = load_poles(polar)
     d, lev = sv.make_ray(dem_max)
     W = TILE * 2 ** (level + 1)
     frac = (np.arange(W) + 0.5) / W  # longitude of each point, fraction of the circle from -180
+    lon = -math.pi + 2 * math.pi * frac
     _C.update(level=level, dem_max=dem_max, public_max=public_max, d=d, lev=lev, W=W, H=TILE * 2**level, frac=frac,
+              sinL=np.sin(lon).astype(np.float32), cosL=np.cos(lon).astype(np.float32),
               base={z: frac * (TILE * 2 ** (z + 1)) for z in set(lev) | {dem_max}},
               az=[(math.sin(2 * math.pi * a / NAZ), math.cos(2 * math.pi * a / NAZ)) for a in range(NAZ)])
 
@@ -68,13 +76,11 @@ def horizon_row(j: int) -> np.ndarray:
     level, dem_max, d, lev, W, H = c["level"], c["dem_max"], c["d"], c["lev"], c["W"], c["H"]
     lat = math.pi / 2 - (j + 0.5) * math.pi / H
     lat = max(-sv.MAX_LAT, min(sv.MAX_LAT, lat))
-    # point height from the finest DEM level at the point (pixel containing the point centre)
-    hz0 = TILE * 2**dem_max
-    y0 = min(hz0 - 1, max(0, int((math.pi / 2 - lat) / math.pi * hz0)))
-    x0 = c["base"][dem_max].astype(np.int64) & (2 * hz0 - 1)
-    dn0 = np.asarray(sv._M[dem_max][y0])[x0]
-    valid0 = dn0 > 0
-    hs = dn0.astype(np.float32) * sv.DEM_SCALE + sv.DEM_OFFSET + sv.OBSERVER_H
+    # point height from the finest DEM level at the point (pixel containing the point centre; in a
+    # polar cap bilinear from the polar DEM)
+    h0 = sv.terrain(c, dem_max, lat, 0.0)
+    valid0 = np.isfinite(h0)
+    hs = h0 + np.float32(sv.OBSERVER_H)
     sinP, cosP = math.sin(lat), math.cos(lat)
     out = np.empty((NAZ, W), np.float32)
     best = np.empty(W, np.float32)
@@ -86,15 +92,8 @@ def horizon_row(j: int) -> np.ndarray:
             sin_lat = sinP * cosD + cosP * sinD * ca
             latk = math.asin(max(-1.0, min(1.0, sin_lat)))
             dlon = math.atan2(sa * sinD * cosP, cosD - sinP * sin_lat)
-            z = lev[k]
-            hz = TILE * 2**z
-            wz = 2 * hz
-            yk = min(hz - 1, max(0, int((math.pi / 2 - latk) / math.pi * hz)))
-            row = np.asarray(sv._M[z][yk])
-            xk = (c["base"][z] + dlon / (2 * math.pi) * wz).astype(np.int64) & (wz - 1)
-            dn = row[xk]
-            t = (dn.astype(np.float32) * sv.DEM_SCALE + sv.DEM_OFFSET - hs) / np.float32(dk) - np.float32(dk / (2 * MOON_R))
-            t[dn == 0] = -np.inf
+            t = (sv.terrain(c, lev[k], latk, dlon) - hs) / np.float32(dk) - np.float32(dk / (2 * MOON_R))
+            t[np.isnan(t)] = -np.inf
             np.maximum(best, t, out=best)
         # as heatWorker.horizon(): no terrain sample at all -> 0 deg
         out[a] = np.where(np.isfinite(best), np.degrees(np.arctan(best)), 0.0)
@@ -169,15 +168,21 @@ def main():
     ap.add_argument("--public-max", type=int, default=2)
     ap.add_argument("--procs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     ap.add_argument("--bench", action="store_true")
+    ap.add_argument("--rows", default="", help="recompute only these tile rows of --level, e.g. '0-2,29-31', "
+                    "or 'polar' (the rows the polar DEMs affect); coarser levels are rebuilt where they changed")
+    ap.add_argument("--no-polar", action="store_true", help="global DEM only, also inside the polar caps")
     a = ap.parse_args()
 
     for z in range(a.dem_max + 1):
         sv.build_mosaic(z)
+    poles = load_poles(not a.no_polar)  # builds the polar mosaics once, before the workers open them
+    for p in poles:
+        print(f"polar DEM {p.pole}: |lat| > {p.cap_lat_deg:.3f} deg, levels {p.ks}", flush=True)
 
     if a.bench:
-        _init(a.level, a.dem_max, a.public_max)
+        _init(a.level, a.dem_max, a.public_max, not a.no_polar)
         H = TILE * 2**a.level
-        rows = [H // 2, H // 4, H // 16, H - 40]
+        rows = [H // 2, H // 4, H // 16, H - 40, 3, H - 60]
         t0 = time.time()
         out = [horizon_row(j) for j in rows]
         per = (time.time() - t0) / len(rows)
@@ -189,15 +194,22 @@ def main():
     counts: dict[int, int] = {}
     sizes: dict[int, int] = {}
     n = 2**a.level
+    if a.rows:
+        rows = polar_rows(a.level, poles, sv.MAX_DIST) if a.rows == "polar" else parse_rows(a.rows, n)
+        print(f"recomputing tile rows {blocks(rows)} of level {a.level}", flush=True)
+    else:
+        rows = list(range(n))
     t0 = time.time()
-    with Pool(a.procs, initializer=_init, initargs=(a.level, a.dem_max, a.public_max)) as pool:
-        for i, (tiles, nbytes) in enumerate(pool.imap_unordered(horizon_band, range(n))):
+    with Pool(a.procs, initializer=_init, initargs=(a.level, a.dem_max, a.public_max, not a.no_polar)) as pool:
+        for i, (tiles, nbytes) in enumerate(pool.imap_unordered(horizon_band, rows)):
             counts[a.level] = counts.get(a.level, 0) + tiles
             sizes[a.level] = sizes.get(a.level, 0) + nbytes
             el = time.time() - t0
-            print(f"tile row {i + 1}/{n}  {el / 60:.1f} min, ~{el / (i + 1) * (n - i - 1) / 60:.0f} min left", flush=True)
+            print(f"tile row {i + 1}/{len(rows)}  {el / 60:.1f} min, ~{el / (i + 1) * (len(rows) - i - 1) / 60:.0f} min left", flush=True)
+        changed = set(rows)
         for z in range(a.level - 1, -1, -1):
-            jobs = [(z, x, y, a.public_max) for y in range(2**z) for x in range(2 ** (z + 1))]
+            changed = {y // 2 for y in changed}  # coarser tile rows whose children changed
+            jobs = [(z, x, y, a.public_max) for y in sorted(changed) for x in range(2 ** (z + 1))]
             for zz, nbytes in pool.imap_unordered(down_tile, jobs):
                 counts[zz] = counts.get(zz, 0) + 1
                 sizes[zz] = sizes.get(zz, 0) + nbytes
@@ -212,8 +224,13 @@ def main():
         "publicMaxLevel": min(a.public_max, a.level), "fineMaxLevel": a.level, "demMaxLevel": a.dem_max,
         "source": f"Terrain horizons from the LOLA global DEM ({NAZ} azimuths, {STEPS} steps to {sv.MAX_DIST / 1000:.0f} km, "
                   f"DEM down to level {a.dem_max}, observer {sv.OBSERVER_H:.0f} m)",
-        "levels": {str(z): {"tiles": counts.get(z, 0), "MB": round(sizes.get(z, 0) / 2**20, 1)} for z in range(a.level + 1)},
+        "levels": level_stats(PUBLIC_OUT, FINE_OUT, a.public_max, a.level) if a.rows else
+                  {str(z): {"tiles": counts.get(z, 0), "MB": round(sizes.get(z, 0) / 2**20, 1)} for z in range(a.level + 1)},
     }
+    if poles:
+        meta["source"] = meta["source"][:-1] + (
+            f"; inside the polar caps (|lat| > {poles[0].cap_lat_deg:.1f} deg) heights from the LOLA polar DEMs "
+            + " / ".join(p.meta["source"].split(" (")[0].replace("LOLA ", "") for p in poles) + ")")
     PUBLIC_OUT.mkdir(parents=True, exist_ok=True)
     (PUBLIC_OUT / "index.json").write_text(json.dumps(meta, indent=1))
     print(json.dumps(meta["levels"], indent=1), f"\ntotal {(time.time() - t0) / 60:.1f} min")

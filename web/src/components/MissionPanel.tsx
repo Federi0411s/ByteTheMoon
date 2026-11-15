@@ -45,7 +45,7 @@ export function MissionPanel({
     </>
   )
   return (
-    <section className="panel mission">
+    <section className="panel mission" data-tour="mission-period">
       <h2>Mission period</h2>
       <div className="mission-inputs">
         <label>

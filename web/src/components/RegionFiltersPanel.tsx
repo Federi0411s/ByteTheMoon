@@ -1,4 +1,5 @@
 import { NumField } from './NumField'
+import { InfoTip } from './InfoTip'
 import { FILTER_DEFS, FILTER_ORDER, activeFilters, defaultFilters, type FilterKey, type RegionFilterState } from '../lib/regionFilters'
 
 /**
@@ -25,6 +26,7 @@ export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel
     <details className="panel menu-section region-filters" data-tour="region-filters">
       <summary className="menu-section-summary">
         <span>Region filters</span>
+        <InfoTip topic="regionFilters" />
         <span className="menu-section-state">{!available ? 'Unavailable' : !periodReady ? 'Updating' : active.length ? `${active.length} on` : 'Off'}</span>
         <span className="menu-section-chevron" aria-hidden="true">›</span>
       </summary>

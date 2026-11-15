@@ -248,10 +248,10 @@ export function SitePanel({
           {terrainViewError && <p className="terrain-view-error" role="alert">{terrainViewError}</p>}
           {now && (
             <div className="kv-grid">
-              <div className="kv"><span>Elevation</span><b>{selected.heightM === undefined ? '—' : `${selected.heightM.toFixed(0)} m`}</b></div>
-              <div className="kv"><span>Sun elevation</span><b>{now.sunEl.toFixed(1)}°</b></div>
+              <div className="kv"><span>Altitude</span><b>{selected.heightM === undefined ? '—' : `${selected.heightM.toFixed(0)} m`}</b></div>
+              <div className="kv"><span>Sun altitude</span><b>{now.sunEl.toFixed(1)}°</b></div>
               <div className="kv"><span>Sun disc visible</span><b>{(now.sunVisibleFrac * 100).toFixed(0)}%</b></div>
-              <div className="kv"><span>Earth elevation</span><b>{now.earthEl.toFixed(1)}°</b></div>
+              <div className="kv"><span>Earth altitude</span><b>{now.earthEl.toFixed(1)}°</b></div>
               <div className="kv"><span>Earth visible</span><b>{(now.earthVisibleFrac * 100).toFixed(0)}%</b></div>
             </div>
           )}
