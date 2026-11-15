@@ -2,7 +2,11 @@ import { FOOTPRINT_MAX_M, FOOTPRINT_MIN_M, type Footprint } from '../lib/require
 import { NumField } from './NumField'
 
 /** Landing footprint (landing ellipse): circle with a radius, or ellipse with semi-axes and azimuth. */
-export function FootprintEditor({ fp, onChange }: { fp: Footprint; onChange: (fp: Footprint) => void }) {
+export function FootprintEditor({ fp, onChange, radioName = 'fp-shape' }: {
+  fp: Footprint
+  onChange: (fp: Footprint) => void
+  radioName?: string
+}) {
   return (
     <div className="footprint-editor">
       <p className="footprint-help">
@@ -13,7 +17,7 @@ export function FootprintEditor({ fp, onChange }: { fp: Footprint; onChange: (fp
       <div style={{ display: 'flex', gap: 16 }}>
         {(['circle', 'ellipse'] as const).map((s) => (
           <label key={s} className="layer-head">
-            <input type="radio" name="fp-shape" checked={fp.shape === s} onChange={() => onChange({ ...fp, shape: s })} />
+            <input type="radio" name={radioName} checked={fp.shape === s} onChange={() => onChange({ ...fp, shape: s })} />
             {s === 'circle' ? 'Circle' : 'Ellipse'}
           </label>
         ))}

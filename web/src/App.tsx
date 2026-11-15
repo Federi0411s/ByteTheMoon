@@ -23,7 +23,7 @@ import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
 import { WelcomeModal } from './components/WelcomeModal'
-import { AdvancedModeDialog } from './components/AdvancedModeDialog'
+import { SettingsDialog } from './components/SettingsDialog'
 import { welcomeHidden } from './lib/welcomeStorage'
 import { Tutorial } from './components/Tutorial'
 import { INSIGHTS_BUTTON } from './content/insights'
@@ -235,7 +235,7 @@ export default function App() {
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(() => copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS))
-  const [advancedModeOpen, setAdvancedModeOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
   const [t, setT] = useState(() => Math.floor(Date.now() / 1000) * 1000) // current UTC time, whole seconds (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
@@ -1444,21 +1444,23 @@ export default function App() {
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
-          {advancedModeOpen && (
-            <AdvancedModeDialog
+          {settingsOpen && (
+            <SettingsDialog
               settings={advancedSettings}
-              onSave={(settings) => { setAdvancedSettings(settings); setAdvancedModeOpen(false) }}
-              onCancel={() => setAdvancedModeOpen(false)}
+              footprint={score.footprint}
+              onSave={(settings, footprint) => {
+                setAdvancedSettings(settings)
+                setScore((current) => ({ ...current, footprint }))
+                setSettingsOpen(false)
+              }}
+              onCancel={() => setSettingsOpen(false)}
             />
           )}
           <aside className="side right">
-            <section className="panel advanced-mode-card">
-              <button type="button" className="advanced-mode-button" onClick={() => setAdvancedModeOpen(true)}>
-                <span>Advanced Mode</span>
-                <span aria-hidden="true">⚙</span>
-              </button>
-              <p className="muted">Configure environmental and crew limits for this session.</p>
-            </section>
+            <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings" title="Settings">
+              <span aria-hidden="true">⚙</span>
+            </button>
             {bundle.ephemeris && (
               <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
                 status={{
