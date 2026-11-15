@@ -28,7 +28,7 @@ export const FILTER_DEFS: Record<FilterKey, FilterDef> = {
   sunHours: { label: 'Sunlight', unit: 'h', limits: [0, null], help: 'Hours of sunlight in the selected period' },
   nightHours: { label: 'Longest night', unit: 'h', limits: [0, null], help: 'Longest continuous darkness in the selected period' },
   radiation: { label: 'Radiation dose', unit: 'µGy/h', limits: [0, 30], help: 'Cosmic-ray dose, lower where terrain hides the sky' },
-  temperature: { label: 'Temperature', unit: '°C', limits: [-273, 150], help: 'Surface temperature stays within this range (needs the regolith model: slower)' },
+  temperature: { label: 'Temperature (mean)', unit: '°C', limits: [-273, 150], help: 'Mean surface temperature over the selected period, matching the thermal-mean map (regolith model; slower)' },
   slope: { label: 'Slope', unit: '°', limits: [0, 90], help: 'Terrain slope' },
   ice: { label: 'Distance to water ice', unit: 'km', limits: [0, 500], help: 'Distance to the nearest cold trap (south polar map only)' },
   pits: { label: 'Distance to a lunar pit', unit: 'km', limits: [0, 5000], help: 'Distance to the nearest pit of the LROC catalog' },
@@ -139,7 +139,7 @@ export function regionValue(f: RegionFilterState, ctx: FilterContext): (v: HeatV
   if (f.earth.on) checks.push((v) => inRange(100 * v.earth, f.earth))
   if (f.radiation.on) checks.push((v) => inRange(ctx.dose(v.fSky), f.radiation))
   if (f.charging.on) checks.push((v) => inRange(v.cMean, f.charging))
-  if (f.temperature.on) checks.push((v) => v.tMin - KELVIN >= f.temperature.min && v.tMax - KELVIN <= f.temperature.max)
+  if (f.temperature.on) checks.push((v) => inRange(v.tMean - KELVIN, f.temperature))
   if (f.ice.on) {
     const ice = ctx.ice
     checks.push((_v, lon, lat) => !!ice && inRange(ice.distKm(lon, lat), f.ice))

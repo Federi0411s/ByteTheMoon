@@ -1000,6 +1000,7 @@ export default function App() {
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: regionFilters.temperature.on, // the regolith model only when temperature is filtered
+        sky: pyramids.sky ? pyramidTiles(pyramids.sky) : undefined,
         value: regionValue(regionFilters, {
           periodHours: filterPeriod.hours,
           dose: (fSky) => radiationDose(fSky, gcr),
@@ -1014,7 +1015,7 @@ export default function App() {
       layerRefs.current.__filters = layer
     }, 250) // debounce typing in the range boxes
     return () => clearTimeout(handle)
-  }, [ready, regionFilters, heat, heatVersion, filterPeriod.hours, iceDistance, pitDistance, focus, guide])
+  }, [ready, regionFilters, heat, heatVersion, filterPeriod.hours, iceDistance, pitDistance, focus, guide, pyramids.sky])
 
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
@@ -1617,18 +1618,20 @@ export default function App() {
             />
           )}
           <aside className="side right">
-            <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
-              aria-label="Open settings" title="Settings">
-              <span aria-hidden="true">⚙</span>
-            </button>
-            {bundle.ephemeris && (
-              <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
-                status={{
-                  state: ephemerisBusy ? 'loading'
-                    : !missionValid && landingDay === undefined ? 'idle'
-                      : analysisPeriodInWindow ? 'ready' : 'outside',
-                }} />
-            )}
+            <div className={`mission-settings-row${bundle.ephemeris ? ' with-mission' : ''}`}>
+              <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
+                aria-label="Open settings" title="Settings">
+                <span aria-hidden="true">⚙</span>
+              </button>
+              {bundle.ephemeris && (
+                <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
+                  status={{
+                    state: ephemerisBusy ? 'loading'
+                      : !missionValid && landingDay === undefined ? 'idle'
+                        : analysisPeriodInWindow ? 'ready' : 'outside',
+                  }} />
+              )}
+            </div>
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!(heat && heatVersion)}
               radiationMetadata={radiationDisplayMeta}
