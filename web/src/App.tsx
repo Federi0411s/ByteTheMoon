@@ -1791,7 +1791,7 @@ export default function App() {
           <aside className="side right">
             <div className={`mission-settings-row${bundle.ephemeris ? ' with-mission' : ''}`}>
               <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
-                aria-label="Open settings" title="Settings">
+                aria-label="Open settings" title="Settings" data-tour="advanced-settings-button">
                 <span aria-hidden="true">⚙</span>
               </button>
               {bundle.ephemeris && (

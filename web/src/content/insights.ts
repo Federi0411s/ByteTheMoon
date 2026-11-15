@@ -39,17 +39,39 @@ export const TUTORIAL = {
       target: '.map-scale',
     },
     {
+      title: 'Set a mission period',
+      body:
+        'Enter start and end dates in UTC. Time-dependent analysis, including sunlight and region filters, follows ' +
+        'this interval; enable Analyze the landing day only to use one UTC day.',
+      target: '[data-tour="mission-period"]',
+    },
+    {
       title: 'Map layers',
-      body: 'Open Map layers to switch data layers on and off. Each layer shows one factor that matters for a safe landing.',
+      body:
+        'Toggle overlays such as Altitude and Slope, then adjust their opacity. Reachable area shows terrain connected ' +
+        'to the selected point within the movement-slope limit.',
       target: '[data-tour="map-layers"]',
     },
     {
       title: 'Landing suitability',
       body:
-        'Show score heatmap combines sunlight, Earth visibility, slope, temperature and radiation into a ' +
-        'score from 0 to 100: yellow areas are the most suitable, dark purple the least. The slope alone is in ' +
-        'Map layers › Slope.',
+        'Show score heatmap combines temperature, radiation, footprint slope, DSN contact and the sunlight percentage ' +
+        'during your mission period into a score from 0 to 100. Yellow is higher; dark purple is lower.',
       target: '[data-tour="landing-suitability"]',
+    },
+    {
+      title: 'Filter regions',
+      body:
+        'Under Go to coordinates, enable any criteria and set ranges. Green areas meet every active filter; sunlight ' +
+        'and longest-night ranges follow the selected mission period.',
+      target: '[data-tour="region-filters"]',
+    },
+    {
+      title: 'Advanced settings',
+      body:
+        'Open Settings, then Advanced settings, to change score bands and map or crew limits. Sunlight bands use the ' +
+        'percentage of the selected mission period.',
+      target: '[data-tour="advanced-settings-button"]',
     },
     {
       title: 'Radiation',
@@ -66,9 +88,8 @@ export const TUTORIAL = {
     {
       title: 'Time',
       body:
-        'Use the timeline at the bottom to change the date (tick Sun lighting to see the real illumination), and ' +
-        'Mission period on the right to set the dates of your mission: illumination, temperature and Earth ' +
-        'visibility change with time.',
+        'Use the timeline to scrub dates or Play to animate. Turn on Sun lighting to see the Moon illuminated from ' +
+        'the Sun’s real direction at the selected time.',
       target: '.timebar',
     },
     {
@@ -132,8 +153,26 @@ export const INFO = {
   landingSite: {
     question: 'What makes a good landing site?',
     answer:
-      'A good landing site is a compromise: gentle slope, a high percentage of sunlight during the selected mission ' +
-      'period, Earth in view for communications, and close to (but not inside) ice-rich craters.',
+      'The Landing Score equally weighs temperature, radiation, landing-footprint slope, DSN contact and sunlight ' +
+      'percentage during the selected mission period. Terrain can block both the Sun and Earth.',
+  },
+  regionFilters: {
+    question: 'How do region filters work?',
+    answer:
+      'Enable criteria and set ranges to highlight areas meeting all of them. Sunlight and longest night use the ' +
+      'selected mission period; “Updating” means those map values are recalculating.',
+  },
+  advancedSettings: {
+    question: 'What do Advanced settings change?',
+    answer:
+      'They adjust map display and movement limits, score thresholds, and crew/EVA limits. Changes apply for this ' +
+      'session; reset or reload to restore defaults.',
+  },
+  scoreBands: {
+    question: 'How do score bands work?',
+    answer:
+      'Each criterion earns 100, 70, 40 or 0 points; the Overall score is their mean. Sunlight is the share of the ' +
+      'selected mission period with the Sun above local terrain.',
   },
   pits: {
     question: 'What are lunar pits?',

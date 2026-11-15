@@ -13,6 +13,7 @@ import {
 } from '../lib/advancedSettings'
 import { DEFAULT_FOOTPRINT, type Footprint } from '../lib/requirements'
 import { FootprintEditor } from './FootprintEditor'
+import { InfoTip } from './InfoTip'
 
 const DEFAULT_RADIUS_KM = 500
 const MIN_RADIUS_KM = 10
@@ -121,7 +122,7 @@ export function SettingsDialog({
           </fieldset>
 
           <details className="settings-advanced">
-            <summary>Advanced settings</summary>
+            <summary>Advanced settings <InfoTip topic="advancedSettings" /></summary>
             <div className="settings-advanced-content">
               <fieldset className="advanced-section">
                 <legend>Map display</legend>
@@ -137,7 +138,7 @@ export function SettingsDialog({
               </fieldset>
 
               <fieldset className="advanced-section">
-                <legend>Landing suitability score</legend>
+                <legend>Landing suitability score <InfoTip topic="scoreBands" /></legend>
                 <p className="muted">Class boundaries are applied from recommended through feasible and difficult.</p>
                 <div className="advanced-criteria-grid">
                   <div className="advanced-criterion-group">
