@@ -25,7 +25,6 @@ import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
 import { WelcomeModal } from './components/WelcomeModal'
 import { welcomeHidden } from './lib/welcomeStorage'
 import { Tutorial } from './components/Tutorial'
-import { BasicsDialog } from './components/BasicsDialog'
 import { INSIGHTS_BUTTON } from './content/insights'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
@@ -278,8 +277,8 @@ export default function App() {
   const [iceError, setIceError] = useState<string>()
   const [pitsVisible, setPitsVisible] = useState(false)
   const [pitsError, setPitsError] = useState<string>()
-  // welcome screen / tutorial / basics ("Insights"); the welcome opens on start unless the user hid it
-  const [insights, setInsights] = useState<'welcome' | 'tutorial' | 'basics' | null>(() => (welcomeHidden() ? null : 'welcome'))
+  // welcome screen / tutorial ("Insights"); the welcome opens on start unless the user hid it
+  const [insights, setInsights] = useState<'welcome' | 'tutorial' | null>(() => (welcomeHidden() ? null : 'welcome'))
 
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
@@ -1512,11 +1511,9 @@ export default function App() {
       )}
       {!ready && <div className="loading">Loading the Moon…</div>}
       {insights === 'welcome' && (
-        <WelcomeModal onStartTutorial={() => setInsights('tutorial')} onLearnBasics={() => setInsights('basics')}
-          onClose={() => setInsights(null)} />
+        <WelcomeModal onStartTutorial={() => setInsights('tutorial')} onClose={() => setInsights(null)} />
       )}
       {insights === 'tutorial' && <Tutorial onClose={() => setInsights(null)} />}
-      {insights === 'basics' && <BasicsDialog onBack={() => setInsights('welcome')} onClose={() => setInsights(null)} />}
     </div>
   )
 }

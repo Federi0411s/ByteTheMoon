@@ -2,6 +2,8 @@ import { cssGradient } from '../lib/colormaps'
 import type { LayerMeta } from '../lib/raster'
 import type { RadiationOverlayMetadata } from '../lib/radiation'
 import type { Footprint } from '../lib/requirements'
+import { InfoTip } from './InfoTip'
+import { INFO_FOR_LAYER } from '../content/insights'
 
 export interface LayerState {
   visible: boolean
@@ -90,10 +92,11 @@ export function LayerPanel({
 
   return (
     <section className="panel layer-menu">
-      <h2>Map controls</h2>
+      <h2 className="with-info">Map controls <InfoTip topic="dataSources" /></h2>
       <details className="menu-section" data-tour="landing-suitability">
         <summary className="menu-section-summary">
           <span>Landing suitability</span>
+          <InfoTip topic="landingSite" />
           <span className="menu-section-state">{suitabilityStatus}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
@@ -135,6 +138,7 @@ export function LayerPanel({
                 <label className="layer-head" title={l.description}>
                   <input type="checkbox" checked={s.visible} onChange={(e) => onChange(l.id, { ...s, visible: e.target.checked })} />
                   {l.title}
+                  {INFO_FOR_LAYER[l.id] && <InfoTip topic={INFO_FOR_LAYER[l.id]} />}
                 </label>
                 {s.visible && (
                   <>
@@ -153,6 +157,7 @@ export function LayerPanel({
       <details className="menu-section" data-tour="radiation">
         <summary className="menu-section-summary">
           <span>Radiation</span>
+          <InfoTip topic="radiation" />
           <span className="menu-section-state">{radiationStatus}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
@@ -212,6 +217,7 @@ export function LayerPanel({
       <details className="menu-section" data-tour="water-ice">
         <summary className="menu-section-summary">
           <span>Water ice South Pole</span>
+          <InfoTip topic="ice" />
           <span className="menu-section-state">{iceError ? 'Error' : iceVisible ? 'On' : 'Off'}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
