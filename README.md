@@ -31,8 +31,8 @@ Without a token, or if Cesium ion fails, the app falls back to the NASA Moon Tre
 Heatmaps are computed in the browser from a global LOLA elevation pyramid (see [How the heatmaps are computed](#how-the-heatmaps-are-computed)):
 
 - **Levels 0–5** (666 m/px and coarser, 134 MB) ship with the app in `web/public/data/dem`.
-- **Levels 6–7** (333 and 167 m/px, 1.67 GB) are too large for git. `pipeline/dem_tiles.py` writes them to `$MOON_DATA/dem_fine`, and `npm run dev` serves them at `/dem-fine` automatically.
-- **In production**, upload `dem_fine/` to a static bucket that allows cross-origin requests (e.g. Cloudflare R2 with CORS open). Set its base URL in `VITE_DEM_FINE_URL`; tiles are fetched as `{z}/{x}/{y}.webp`. If it is not set, the app falls back to the 666 m tiles everywhere.
+- **Levels 6–7** (333 and 167 m/px, about 1.8 GB) are too large for git. `pipeline/dem_tiles.py` writes them to `$MOON_DATA/dem_fine`, and `npm run dev` serves them at `/dem-fine` automatically.
+- **In production**, the fine tiles (about 7.8 GB / 130k files: `dem_fine` 1.8 GB, `slope_fine` 2.4 GB, `sky_fine` 0.9 GB, `horizon_fine` 2.7 GB) are hosted in the Cloudflare R2 bucket `bytethemoon-tiles`, one folder each, with the public r2.dev URL and CORS open for GET/HEAD. Set `VITE_DEM_FINE_URL` to the `dem_fine` folder's URL; tiles are fetched as `{z}/{x}/{y}.webp`. If it is not set, the app falls back to the 666 m tiles everywhere.
 - On the **Moon Trek fallback**, **LOLA 3D elevation relief** builds terrain meshes from the shipped DEM tiles on demand and colorizes the same visible area. It is off by default to keep startup rendering light, and can be toggled in the basemap panel. Optional fine DEM tiles are used only when configured; otherwise the terrain stops at the shipped 666 m/px level. Polar mesh edges use a shared pole height to avoid spikes where longitude lines converge. The Cesium ion basemap supplies its own 3D terrain mesh.
 
 ### Precomputed layers (time-independent)
@@ -40,7 +40,7 @@ Heatmaps are computed in the browser from a global LOLA elevation pyramid (see [
 Layers that depend only on the terrain are precomputed at full resolution and drawn straight from tiles,
 with no computation in the browser. They share the elevation pyramid's tile layout: the coarse levels ship in
 `web/public/data/<name>` (slope 0–4, about 60 MB; sky view 0–5), and the finer ones, down to 167 m/px, go to
-`$MOON_DATA/<name>_fine` and a bucket:
+`$MOON_DATA/<name>_fine` and the R2 bucket `bytethemoon-tiles`:
 
 | Layer | Tiles | Made by |
 |---|---|---|

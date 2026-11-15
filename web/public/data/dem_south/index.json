@@ -1,0 +1,54 @@
+{
+ "projection": "polar-stereographic-south",
+ "radiusM": 1737400.0,
+ "halfExtentM": 304000.0,
+ "basePixelM": 80.0,
+ "tileSize": 256,
+ "format": "webp",
+ "encoding": "u16",
+ "scale": 0.5,
+ "offset": -10000.0,
+ "source": "LOLA LDEM_80S_80M (PDS), 2x2 block means",
+ "levels": {
+  "1": {
+   "pixelM": 160.0,
+   "width": 3800,
+   "height": 3800,
+   "tilesX": 15,
+   "tilesY": 15,
+   "MB": 11.0
+  },
+  "2": {
+   "pixelM": 320.0,
+   "width": 1900,
+   "height": 1900,
+   "tilesX": 8,
+   "tilesY": 8,
+   "MB": 3.4
+  },
+  "3": {
+   "pixelM": 640.0,
+   "width": 950,
+   "height": 950,
+   "tilesX": 4,
+   "tilesY": 4,
+   "MB": 1.0
+  },
+  "4": {
+   "pixelM": 1280.0,
+   "width": 475,
+   "height": 475,
+   "tilesX": 2,
+   "tilesY": 2,
+   "MB": 0.3
+  },
+  "5": {
+   "pixelM": 2560.0,
+   "width": 238,
+   "height": 238,
+   "tilesX": 1,
+   "tilesY": 1,
+   "MB": 0.1
+  }
+ }
+}

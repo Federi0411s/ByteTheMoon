@@ -14,7 +14,7 @@
  * Treating terrain and Earth occultations as independent is exact unless the Earth sets behind the
  * same ridge during an eclipse (rare). No temperature derating, dust or degradation.
  */
-import { discFraction, horizonAt, type HorizonMask } from './analysis'
+import { sunVisibleOver, type HorizonMask } from './analysis'
 import { azEl, EARTH_RADIUS_KM, earthPosition, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
 
 const D2R = Math.PI / 180
@@ -63,7 +63,8 @@ export function powerAt(eph: Ephemeris, site: { lat: number; lon: number; height
   const sunP = sunPosition(eph, tMs), earthP = earthPosition(eph, tMs)
   const s = azEl(topo, sunP)
   const rs = Math.asin((SUN_RADIUS_KM * 1000) / s.distM) // rad
-  const terrainFrac = discFraction(s.el - horizonAt(mask, s.az), rs / D2R)
+  // share of the Sun's light over the terrain (limb-darkened disc, oblique horizon: lib/sunDisc.ts)
+  const terrainFrac = sunVisibleOver(mask, s.az, s.el, rs / D2R)
 
   // Earth in front of the Sun?
   const e = azEl(topo, earthP)

@@ -9,9 +9,9 @@
  * The surface is tilted by the local terrain gradient from the elevation raster when one covers the site
  * (as the heatmaps do with the DEM slope); otherwise it is flat. The site's own horizon mask gives the shadows.
  */
-import { horizonAt, type HorizonMask } from './analysis'
+import { sunVisibleOver, type HorizonMask } from './analysis'
 import { MOON_RADIUS_M, type RasterField } from './raster'
-import { sunPosition, topoFrame, type Ephemeris } from './ephemeris'
+import { SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
 
 const SIGMA = 5.670374419e-8, S0 = 1361, EPS = 0.95
 const A0 = 0.12, A_A = 0.06, A_B = 0.25
@@ -27,7 +27,6 @@ const VOL = new Float64Array(NZ).map((_, i) => (i === 0 ? DZ[0] / 2 : i === NZ -
 const cp = (t: number) => CP[0] + t * (CP[1] + t * (CP[2] + t * (CP[3] + t * CP[4])))
 const albedo = (incDeg: number) => A0 + A_A * (incDeg / 45) ** 3 + A_B * (incDeg / 90) ** 8
 const SPIN_UP_S = 3 * 29.53 * 86400
-const SUN_RADIUS_DEG = 0.27
 const AU_M = 149_597_870_700
 const R2D = 180 / Math.PI
 
@@ -76,6 +75,8 @@ export interface SiteThermalSeries {
   stepH: number
   /** 1 where the Sun is (mostly) above the terrain horizon */
   sunlit: Uint8Array
+  /** share of the Sun's light above the terrain horizon per step (0..1, lib/sunDisc.ts): light-weighted sunlit % */
+  light: Float32Array
   /** surface temperature, °C */
   tC: Float64Array
 }
@@ -98,7 +99,7 @@ export function siteThermalSeries(eph: Ephemeris, site: { lat: number; lon: numb
     }
   }
   const n = Math.max(1, Math.floor((end - start) / stepMs) + 1)
-  const Q = new Float64Array(n), sunlit = new Uint8Array(n)
+  const Q = new Float64Array(n), sunlit = new Uint8Array(n), light = new Float32Array(n)
   for (let j = 0; j < n; j++) {
     const p = sunPosition(eph, start + j * stepMs)
     const v = [p[0] - topo.pos[0], p[1] - topo.pos[1], p[2] - topo.pos[2]]
@@ -108,14 +109,14 @@ export function siteThermalSeries(eph: Ephemeris, site: { lat: number; lon: numb
     let az = Math.atan2((v[0] * topo.east[0] + v[1] * topo.east[1] + v[2] * topo.east[2]) / d,
       (v[0] * topo.north[0] + v[1] * topo.north[1] + v[2] * topo.north[2]) / d) * R2D
     if (az < 0) az += 360
-    // visible part of the solar disc above the terrain horizon (same linear rule as the worker)
-    const x = (el - horizonAt(mask, az)) / (2 * SUN_RADIUS_DEG) + 0.5
-    const vis = x <= 0 ? 0 : x >= 1 ? 1 : x
+    // share of the Sun's light above the terrain horizon (same disc model as the worker: lib/sunDisc.ts)
+    const vis = sunVisibleOver(mask, az, el, Math.asin((SUN_RADIUS_KM * 1000) / d) * R2D)
     sunlit[j] = vis > 0.5 ? 1 : 0
+    light[j] = vis
     if (cosInc <= 0 || !vis) continue
     const au = d / AU_M
     Q[j] = (1 - albedo(Math.acos(Math.min(1, cosInc)) * R2D)) * (S0 / (au * au)) * cosInc * vis
   }
   const tK = surfaceTemperature(Q, stepMs / 1000)
-  return { stepH: stepMs / 3600_000, sunlit, tC: tK.map((k) => k - 273.15) }
+  return { stepH: stepMs / 3600_000, sunlit, light, tC: tK.map((k) => k - 273.15) }
 }

@@ -16,6 +16,8 @@ export interface ScoreConfig {
   maxSlope: number
   /** landing ellipse / circle over which the max slope is taken */
   footprint: Footprint
+  /** the map is drawn within this radius (km) of the selected site / point */
+  radiusKm: number
   opacity: number
 }
 
@@ -124,7 +126,7 @@ export function LayerPanel({
                 <input type="checkbox" checked={score.enabled} onChange={(e) => onScore({ ...score, enabled: e.target.checked })} />
                 Show score heatmap
               </label>
-              <p className="muted">Combines temperature, radiation, slope, telecommunications and the sunlight percentage during the selected mission period with equal weight. Drawn within 500 km of the selected site or point (select one first), at the highest resolution available there.</p>
+              <p className="muted">Combines temperature, radiation, slope, telecommunications and the sunlight percentage during the selected mission period with equal weight. Drawn within {score.radiusKm} km of the selected site or point (radius in Settings) (select one first), at the highest resolution available there.</p>
               {score.enabled && <Legend colormap="viridis" min={0} max={100} units="score" />}
             </div>
           )}

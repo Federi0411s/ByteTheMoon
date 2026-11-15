@@ -14,6 +14,10 @@ import {
 import { DEFAULT_FOOTPRINT, type Footprint } from '../lib/requirements'
 import { FootprintEditor } from './FootprintEditor'
 
+const DEFAULT_RADIUS_KM = 500
+const MIN_RADIUS_KM = 10
+const MAX_RADIUS_KM = 2000
+
 function NumberField({
   label,
   value,
@@ -40,26 +44,32 @@ function NumberField({
 export function SettingsDialog({
   settings,
   footprint,
+  mapRadiusKm,
   display,
   onSave,
   onCancel,
 }: {
   settings: AdvancedSettings
   footprint: Footprint
+  /** radius (km) of the landing-suitability map around the selected site */
+  mapRadiusKm: number
   /** movement slope limit, reachable-area distance and map display options */
   display: DisplaySettings
-  onSave: (settings: AdvancedSettings, footprint: Footprint, display: DisplaySettings) => void
+  onSave: (settings: AdvancedSettings, footprint: Footprint, mapRadiusKm: number, display: DisplaySettings) => void
   onCancel: () => void
 }) {
   const [draft, setDraft] = useState(() => copyAdvancedSettings(settings))
   const [draftFootprint, setDraftFootprint] = useState(() => ({ ...footprint }))
+  const [draftRadius, setDraftRadius] = useState(mapRadiusKm)
   const [draftDisplay, setDraftDisplay] = useState(() => ({ ...display }))
+  const radiusError = !(draftRadius >= MIN_RADIUS_KM && draftRadius <= MAX_RADIUS_KM)
+    ? `Map radius must be between ${MIN_RADIUS_KM} and ${MAX_RADIUS_KM} km.` : null
   const moveError = !(draftDisplay.moveSlopeDeg >= MOVE_SLOPE_MIN_DEG && draftDisplay.moveSlopeDeg <= MOVE_SLOPE_MAX_DEG)
     ? `Movement maximum slope must be between ${MOVE_SLOPE_MIN_DEG}° and ${MOVE_SLOPE_MAX_DEG}°.` : null
   const reachRadiusError = !(draftDisplay.reachRadiusKm >= REACH_RADIUS_MIN_KM && draftDisplay.reachRadiusKm <= REACH_RADIUS_MAX_KM)
     ? `Reachable-area distance must be between ${REACH_RADIUS_MIN_KM} and ${REACH_RADIUS_MAX_KM} km.` : null
   const advancedErrors = [...validateAdvancedSettings(draft), ...(reachRadiusError ? [reachRadiusError] : [])]
-  const errors = [...advancedErrors, ...(moveError ? [moveError] : [])]
+  const errors = [...advancedErrors, ...(radiusError ? [radiusError] : []), ...(moveError ? [moveError] : [])]
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -93,6 +103,13 @@ export function SettingsDialog({
           <fieldset className="advanced-section">
             <legend>Landing footprint</legend>
             <FootprintEditor fp={draftFootprint} onChange={setDraftFootprint} radioName="settings-footprint-shape" />
+          </fieldset>
+
+          <fieldset className="advanced-section">
+            <legend>Landing suitability map</legend>
+            <NumberField label="Radius around the selected site" value={draftRadius} unit="km" onChange={setDraftRadius} />
+            {radiusError && <p className="advanced-errors" role="alert">{radiusError}</p>}
+            <p className="muted">The map is computed only inside this circle, at the best resolution available. Larger circles take longer.</p>
           </fieldset>
 
           <fieldset className="advanced-section">
@@ -203,11 +220,11 @@ export function SettingsDialog({
         </div>
 
         <footer className="advanced-footer">
-          <button type="button" onClick={() => { setDraft(copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS)); setDraftFootprint({ ...DEFAULT_FOOTPRINT }); setDraftDisplay({ ...DEFAULT_DISPLAY_SETTINGS }) }}>Reset to default</button>
+          <button type="button" onClick={() => { setDraft(copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS)); setDraftFootprint({ ...DEFAULT_FOOTPRINT }); setDraftRadius(DEFAULT_RADIUS_KM); setDraftDisplay({ ...DEFAULT_DISPLAY_SETTINGS }) }}>Reset to default</button>
           <span className="advanced-spacer" />
           <button type="button" onClick={onCancel}>Cancel</button>
           <button type="button" className="advanced-save" disabled={errors.length > 0}
-            onClick={() => onSave(copyAdvancedSettings(draft), { ...draftFootprint }, { ...draftDisplay })}>Save settings</button>
+            onClick={() => onSave(copyAdvancedSettings(draft), { ...draftFootprint }, draftRadius, { ...draftDisplay })}>Save settings</button>
         </footer>
       </section>
     </div>

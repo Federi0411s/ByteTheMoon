@@ -13,7 +13,7 @@
  *   { type: 'tile', id, z, x, y, n, demMax, thermal?, g?, polar?, landing? }
  *        polar = pole sign (-1 / +1): x, y are then the indices of a polar block (lib/heatGrid.ts), sampled
  *        on an n x n lattice of the polar stereographic plane instead of a lon/lat grid
- *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
+ *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, link, linkGap, sunlit, dark }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
  *           t* empty unless thermal was requested: the regolith model is the expensive part)
  *   { type: 'horizon', id, lat, lon, azStepDeg }   -> { id, elevDeg: Float32Array, demLevel }       (radians in, degrees out)
  *
@@ -30,9 +30,8 @@
 import { DemSampler, demLevelFor, demPixelM } from './dem'
 import { fromPolar, heatGrid, polarBlockSize } from './heatGrid'
 import { HorizonSampler, MAX_TILES_PER_JOB } from './horizonTiles'
+import { discEdgeAz, sunVisible } from './sunDisc'
 import type { EquipotTable } from './equipot'
-import { scoreLandingCell } from './landingScore'
-import type { AdvancedSettings } from './advancedSettings'
 
 const R = 1737400
 const R2D = 180 / Math.PI
@@ -43,6 +42,7 @@ const STEPS = 40
 const MAX_DIST = 200_000
 const OBSERVER_H = 2
 const MAX_LAT = (89.99 / 180) * Math.PI // the exact pole has no azimuths
+const SITE_MAX_LAT = (89.9999 / 180) * Math.PI
 
 let dem: DemSampler
 let hzs: HorizonSampler | null = null
@@ -53,6 +53,15 @@ let dsn = new Float64Array(0)
 let version = 0
 let windowStart = 0
 let windowEnd = 0
+
+// Adaptive horizons (see refineHorizon): where the Sun or the Earth passes close to the coarse NAZ
+// horizon during the window, rays are traced every 1 deg (FINE_NAZ) with FINE_STEPS steps toward those
+// directions only. hzN is the resolution of the horizon array the lookups below are reading.
+const FINE_NAZ = 360
+const FINE_STEPS = 96
+/** a body this close to the coarse horizon (deg, plus its own disc) triggers refinement */
+const ADAPT_MARGIN_DEG = 1.5
+let hzN = NAZ
 
 const sinAz = new Float64Array(NAZ), cosAz = new Float64Array(NAZ)
 for (let a = 0; a < NAZ; a++) {
@@ -181,9 +190,9 @@ function visibleFraction(body: Float32Array, F: Frame, hz: Float32Array, off: nu
     if (el - hMin <= -r) continue
     let az = Math.atan2(sx * ex + sy * ey, sx * nx + sy * ny + sz * nz) * R2D
     if (az < 0) az += 360
-    const f = (az / 360) * NAZ
+    const f = (az / 360) * hzN
     const i0 = f | 0, w = f - i0
-    const h = hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % NAZ] * w
+    const h = hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % hzN] * w
     const v = (el - h) / (2 * r) + 0.5
     acc += v <= 0 ? 0 : v >= 1 ? 1 : v
   }
@@ -191,16 +200,24 @@ function visibleFraction(body: Float32Array, F: Frame, hz: Float32Array, off: nu
 }
 
 // ---- surface charging (EQUIPOT; same model as lunar_charging.ChargingModel, terrain horizon) ----
-const SUN_RADIUS_DEG = 0.27 // as in lunar_charging.py
+const SUN_RADIUS_DEG = 0.27 // as in lunar_charging.py (charging's sunlit test only)
+const SUN_RADIUS_1AU_DEG = (Math.asin(695700 / 149597870.7) * 180) / Math.PI // apparent solar radius at 1 AU
 let eq: EquipotTable | null = null
 let chargeThreshold = -100
 
+/** Piecewise-linear lookup (xs ascending); binary search: it runs every time step of every sample. */
 function interp(x: number, xs: number[], ys: number[]) {
+  const n = xs.length
   if (x <= xs[0]) return ys[0]
-  for (let i = 1; i < xs.length; i++) {
-    if (x <= xs[i]) return ys[i - 1] + ((ys[i] - ys[i - 1]) * (x - xs[i - 1])) / (xs[i] - xs[i - 1])
+  if (x > xs[n - 1]) return ys[n - 1]
+  // smallest i with x <= xs[i] (as the former linear scan)
+  let lo = 1, hi = n - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (x <= xs[mid]) hi = mid
+    else lo = mid + 1
   }
-  return ys[ys.length - 1]
+  return ys[lo - 1] + ((ys[lo] - ys[lo - 1]) * (x - xs[lo - 1])) / (xs[lo] - xs[lo - 1])
 }
 
 /** Local frame (up, east, north) + surface normal m (from the terrain gradient, as in pipeline/charging.terrain_geometry). */
@@ -221,14 +238,45 @@ function frame(lon: number, lat: number, gE: number, gN: number): Frame {
 function horizonToward(hz: Float32Array, off: number, east: number, north: number) {
   let az = Math.atan2(east, north) * R2D
   if (az < 0) az += 360
-  const f = (az / 360) * NAZ
+  const f = (az / 360) * hzN
   const i0 = f | 0, w = f - i0
-  return hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % NAZ] * w
+  return hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % hzN] * w
 }
+
+/** Horizon elevation (deg) at azimuth azDeg (clockwise from north), linear between the hzN azimuths. */
+function horizonAtAz(hz: Float32Array, off: number, azDeg: number) {
+  const f = ((((azDeg / 360) * hzN) % hzN) + hzN) % hzN
+  const i0 = f | 0, w = f - i0
+  return hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % hzN] * w
+}
+
+/**
+ * Visible share of the Sun's light (lib/sunDisc.ts: limb-darkened disc, horizon line across the disc)
+ * for the Sun at elevation el, radius r (deg), direction (east, north) in the local frame. Only called
+ * when the disc is within the horizon's range (callers handle the fully visible / hidden cases).
+ */
+function sunLight(hz: Float32Array, off: number, el: number, r: number, east: number, north: number) {
+  let az = Math.atan2(east, north) * R2D
+  if (az < 0) az += 360
+  const w = discEdgeAz(el, r)
+  return sunVisible(el, r, horizonAtAz(hz, off, az), horizonAtAz(hz, off, az - w), horizonAtAz(hz, off, az + w))
+}
+
+/**
+ * [sinHi, sinLo]: a Sun with sin(elevation) >= sinHi is fully above the horizon (el - hMax >= 2r) and
+ * one with sin(elevation) <= sinLo fully below it (el - hMin <= -2r), for any disc radius r <= rMax (deg).
+ */
+function sinBounds(hMin: number, hMax: number, rMax: number): [number, number] {
+  const hi = hMax + 2 * rMax, lo = hMin - 2 * rMax
+  return [hi >= 90 ? Infinity : Math.sin(hi / R2D), lo <= -90 ? -Infinity : Math.sin(lo / R2D)]
+}
+/** largest apparent solar radius (deg) of the window's Sun samples / regular thermal steps */
+let sunRMax = 0.3
+let thermalRMax = 0.3
 
 function hzRange(hz: Float32Array, off: number): [number, number] {
   let lo = Infinity, hi = -Infinity
-  for (let a = 0; a < NAZ; a++) {
+  for (let a = 0; a < hzN; a++) {
     const v = hz[off + a]
     if (v < lo) lo = v
     if (v > hi) hi = v
@@ -243,34 +291,40 @@ const sunOut = { frac: NaN, cMean: NaN, cMin: NaN, cBelow: NaN, sunlitPct: NaN, 
  * One pass over the window's Sun positions for a point: the Sun's visible fraction (as
  * visibleFraction) and the EQUIPOT surface charging statistics. Both need the Sun's elevation and,
  * near the horizon, the horizon height toward the Sun, so each is computed once per time step.
- * Same arithmetic as computing them separately (results are identical).
+ * Same arithmetic as computing them separately (results are identical). charging = false skips the
+ * charging part (the landing map doesn't use it; it was ~half of this loop's time).
  */
-function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number) {
+function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, charging = true) {
   const T = sun.length / 4
   if (!T) {
     sunOut.frac = sunOut.cMean = sunOut.cMin = sunOut.cBelow = sunOut.sunlitPct = sunOut.longestDarkH = NaN
     return
   }
   const cosTail = eq ? Math.cos(eq.tailHalfAngleDeg / R2D) : 0
-  let acc = 0, sum = 0, min = Infinity, below = 0, lit = 0, darkStart = NaN, longestDarkMs = 0
+  let acc = 0, sum = 0, min = Infinity, below = 0, darkStart = NaN, longestDarkMs = 0
   let previousVisible = NaN, previousTime = windowStart
+  // sin(elevation) bounds outside which the Sun is surely fully visible / hidden for every step (largest
+  // disc of the window): decided without asin, which is otherwise the bulk of the loop
+  const [sinHi, sinLo] = sinBounds(hMin, hMax, sunRMax)
+  const needEl = charging && !!eq
   for (let j = 0; j < T; j++) {
     const o = j * 4
     const sx = sun[o], sy = sun[o + 1], sz = sun[o + 2], r = sun[o + 3]
-    const el = Math.asin(sx * F.ux + sy * F.uy + sz * F.uz) * R2D
+    const se = sx * F.ux + sy * F.uy + sz * F.uz
+    let el = needEl ? Math.asin(se) * R2D : NaN
     let h = NaN // horizon height toward the Sun, looked up only when needed
-    // visible fraction (partial disc, linear in height)
+    // visible share of the Sun's light (limb-darkened disc over the terrain horizon, lib/sunDisc.ts);
+    // the 2r margin covers an oblique horizon line across the disc
     let visible = 0
-    if (el - hMax >= r) visible = 1
-    else if (!(el - hMin <= -r)) {
-      h = horizonToward(hz, off, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
-      const v = (el - h) / (2 * r) + 0.5
-      visible = v <= 0 ? 0 : v >= 1 ? 1 : v
+    if (se >= sinHi) visible = 1
+    else if (se > sinLo) {
+      if (el !== el) el = Math.asin(se) * R2D
+      if (el - hMax >= 2 * r) visible = 1
+      else if (!(el - hMin <= -2 * r)) visible = sunLight(hz, off, el, r, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
     }
     acc += visible
     const t = sunTimes[j]
     const isLit = visible > 0.5
-    if (isLit) lit++
     if (j === 0) {
       if (!isLit) darkStart = windowStart
     } else if ((previousVisible > 0.5) !== isLit) {
@@ -284,7 +338,7 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
     }
     previousVisible = visible
     previousTime = t
-    if (!eq) continue
+    if (!eq || !charging) continue
     // surface charging
     const inTail = sx * earth[o] + sy * earth[o + 1] + sz * earth[o + 2] > cosTail
     let above: boolean
@@ -308,9 +362,10 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
   }
   if (Number.isFinite(darkStart)) longestDarkMs = Math.max(longestDarkMs, windowEnd - darkStart)
   sunOut.frac = acc / T
-  sunOut.sunlitPct = (100 * lit) / T
+  // light-weighted sunlit % (an hour at 30 % of the Sun's light counts 0.3 h), as the site panel
+  sunOut.sunlitPct = (100 * acc) / T
   sunOut.longestDarkH = longestDarkMs / 3600_000
-  if (eq) { sunOut.cMean = sum / T; sunOut.cMin = min; sunOut.cBelow = below / T } else sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN
+  if (eq && charging) { sunOut.cMean = sum / T; sunOut.cMin = min; sunOut.cBelow = below / T } else sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN
 }
 
 // ---- regolith temperature: Hayne et al. 2017 1D model (constants as in pipeline/lunar_thermal.py) ----
@@ -328,8 +383,14 @@ const DZ = new Float64Array(NZ - 1).map((_, i) => DEPTH[i + 1] - DEPTH[i])
 const RHO = new Float64Array(NZ).map((_, i) => RHO_D - (RHO_D - RHO_S) * Math.exp(-DEPTH[i] / H_PARAM))
 const KC = new Float64Array(NZ).map((_, i) => K_D - ((K_D - K_S) * (RHO_D - RHO[i])) / (RHO_D - RHO_S))
 const VOL = new Float64Array(NZ).map((_, i) => (i === 0 ? DZ[0] / 2 : i === NZ - 1 ? DZ[NZ - 2] / 2 : (DZ[i - 1] + DZ[i]) / 2))
-const cp = (t: number) => CP[0] + t * (CP[1] + t * (CP[2] + t * (CP[3] + t * CP[4])))
-const albedo = (incDeg: number) => A0 + A_A * (incDeg / 45) ** 3 + A_B * (incDeg / 90) ** 8
+const RHO_VOL = RHO.map((rho, i) => rho * VOL[i])
+const HALF_INV_DZ = DZ.map((dz) => 0.5 / dz)
+const [CP0, CP1, CP2, CP3, CP4] = CP
+const cp = (t: number) => CP0 + t * (CP1 + t * (CP2 + t * (CP3 + t * CP4)))
+const albedo = (incDeg: number) => {
+  const a = incDeg / 45, b = incDeg / 90, b2 = b * b, b4 = b2 * b2
+  return A0 + A_A * a * a * a + A_B * b4 * b4
+}
 
 let thermalSun = new Float32Array(0) // per regular step: unit dir xyz + Sun distance (AU)
 let thermalCount = new Uint8Array(0) // per step: 1 = counted in the statistics, 0 = warm-up
@@ -343,60 +404,84 @@ const Tc = new Float64Array(NZ), Kn = new Float64Array(NZ)
 const alpha = new Float64Array(NZ), beta = new Float64Array(NZ), G = new Float64Array(NZ - 1), C = new Float64Array(NZ)
 
 function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, series?: Float32Array, seriesOff = 0): [number, number, number] {
+  if (!thermalSun.length) return [NaN, NaN, NaN]
+  return solveThermal(absorbedFlux(F, hz, off, hMin, hMax), series, seriesOff)
+}
+
+/** Absorbed solar flux (W/m2) per regular thermal step into qBuf; returns its mean over the steps. */
+function absorbedFlux(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number): number {
   const T = thermalSun.length / 4
-  if (!T) return [NaN, NaN, NaN]
-  const r = SUN_RADIUS_DEG
-  // absorbed flux per step (partial disc above the terrain horizon, incidence on the local slope)
+  // absorbed flux per step (share of the Sun's light above the terrain horizon, lib/sunDisc.ts, and
+  // incidence on the local slope)
   if (qBuf.length < T) qBuf = new Float64Array(T)
   const Q = qBuf
   Q.fill(0, 0, T)
-  let qMean = 0
+  let qMean = 0, lit = 0
+  const [sinHi, sinLo] = sinBounds(hMin, hMax, thermalRMax) // as in sunAndCharging
   for (let j = 0; j < T; j++) {
     const o = j * 4
     const sx = thermalSun[o], sy = thermalSun[o + 1], sz = thermalSun[o + 2], au = thermalSun[o + 3]
     const cosInc = sx * F.mx + sy * F.my + sz * F.mz
     if (cosInc <= 0) continue
-    const el = Math.asin(sx * F.ux + sy * F.uy + sz * F.uz) * R2D
+    const se = sx * F.ux + sy * F.uy + sz * F.uz
     let vis: number
-    if (el - hMax >= r) vis = 1
-    else if (el - hMin <= -r) vis = 0
+    if (se >= sinHi) vis = 1
+    else if (se <= sinLo) vis = 0
     else {
-      const v = (el - horizonToward(hz, off, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)) / (2 * r) + 0.5
-      vis = v <= 0 ? 0 : v >= 1 ? 1 : v
+      const el = Math.asin(se) * R2D
+      const r = SUN_RADIUS_1AU_DEG / au
+      if (el - hMax >= 2 * r) vis = 1
+      else if (el - hMin <= -2 * r) vis = 0
+      else vis = sunLight(hz, off, el, r, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
     }
     if (!vis) continue
     const inc = Math.acos(Math.min(1, cosInc)) * R2D
     Q[j] = (1 - albedo(inc)) * (S0 / (au * au)) * cosInc * vis
     qMean += Q[j] / T
+    lit++
   }
+  fluxLitFraction = lit / T
+  return qMean
+}
+/** share of the steps with any absorbed flux in the last absorbedFlux() call */
+let fluxLitFraction = 0
+
+/** Regolith column driven by the flux in qBuf (absorbedFlux): [mean, min, max] surface temperature (K). */
+function solveThermal(qMean: number, series?: Float32Array, seriesOff = 0): [number, number, number] {
+  const T = thermalSun.length / 4
+  const Q = qBuf
   // start near the long-term mean temperature (~0.74 x the mean-flux radiative equilibrium)
   Tc.fill(Math.max(30, 0.74 * Math.pow(qMean / (EPS * SIGMA), 0.25)))
   const spin = Math.ceil(SPIN_UP_S / thermalDt)
   let sum = 0, min = Infinity, max = -Infinity, n = 0
+  // (hot loop, ~3000 steps x 25 nodes per sample: no `**` (a pow() call each, which made it 2.3x
+  // slower), divisions hoisted into constants / one reciprocal per node)
+  const invH = 1 / thermalDt
   for (let s = -spin; s < T; s++) {
     const q = Q[((s % T) + T) % T] // initial spin-up cycles through the start of the series
-    const h = thermalDt
     for (let i = 0; i < NZ; i++) {
-      C[i] = (RHO[i] * cp(Tc[i]) * VOL[i]) / h
-      Kn[i] = KC[i] * (1 + CHI * (Tc[i] / 350) ** 3) // conductivity of node i (once per step)
+      const t = Tc[i], r = t * (1 / 350)
+      C[i] = RHO_VOL[i] * cp(t) * invH
+      Kn[i] = KC[i] * (1 + CHI * r * r * r) // conductivity of node i (once per step)
     }
-    for (let i = 0; i < NZ - 1; i++) G[i] = (0.5 * (Kn[i] + Kn[i + 1])) / DZ[i]
+    for (let i = 0; i < NZ - 1; i++) G[i] = (Kn[i] + Kn[i + 1]) * HALF_INV_DZ[i]
     // bottom-up elimination: T'[i] = alpha[i] + beta[i] * T'[i-1]
-    let D = C[NZ - 1] + G[NZ - 2]
-    alpha[NZ - 1] = (C[NZ - 1] * Tc[NZ - 1] + Q_GEO) / D
-    beta[NZ - 1] = G[NZ - 2] / D
+    let invD = 1 / (C[NZ - 1] + G[NZ - 2])
+    alpha[NZ - 1] = (C[NZ - 1] * Tc[NZ - 1] + Q_GEO) * invD
+    beta[NZ - 1] = G[NZ - 2] * invD
     for (let i = NZ - 2; i >= 1; i--) {
-      D = C[i] + G[i - 1] + G[i] - G[i] * beta[i + 1]
-      alpha[i] = (C[i] * Tc[i] + G[i] * alpha[i + 1]) / D
-      beta[i] = G[i - 1] / D
+      invD = 1 / (C[i] + G[i - 1] + G[i] - G[i] * beta[i + 1])
+      alpha[i] = (C[i] * Tc[i] + G[i] * alpha[i + 1]) * invD
+      beta[i] = G[i - 1] * invD
     }
     // surface: C0 (T0' - T0) = q - eps sigma T0'^4 - G0 (T0' - alpha1 - beta1 T0')  -> Newton from above
     const a1 = alpha[1], b1 = beta[1], c0 = C[0], g0 = G[0]
     const lin = c0 + g0 * (1 - b1), rhs = q + c0 * Tc[0] + g0 * a1
-    let t0 = Math.max(Tc[0], Math.pow(Math.max(rhs, 0) / (EPS * SIGMA), 0.25))
+    let t0 = Math.max(Tc[0], Math.sqrt(Math.sqrt(Math.max(rhs, 0) / (EPS * SIGMA))))
     for (let it = 0; it < 30; it++) {
-      const f = EPS * SIGMA * t0 ** 4 + lin * t0 - rhs
-      const d = f / (4 * EPS * SIGMA * t0 ** 3 + lin)
+      const t2 = t0 * t0
+      const f = EPS * SIGMA * t2 * t2 + lin * t0 - rhs
+      const d = f / (4 * EPS * SIGMA * t2 * t0 + lin)
       t0 -= d
       if (Math.abs(d) < 1e-3) break
     }
@@ -478,7 +563,9 @@ async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Prom
   const zs = demLevelFor(smp.spacing, demMax)
   // zoomed out: precomputed horizons of the level matching the sample spacing (unless that takes too
   // many tiles, e.g. the thin geographic tiles around a pole, or they can't be loaded)
-  const pre = hzs ? hzs.levelFor(smp.spacing) : -1
+  // (not inside the polar caps: the stored horizons were traced on the global DEM, which is wrong
+  // near the poles; there the live horizons read the polar DEMs, see lib/dem.ts)
+  const pre = hzs && !(south < dem.polarCapLat) && !(north > dem.polarCapLatNorth) ? hzs.levelFor(smp.spacing) : -1
   if (pre >= 0) {
     const key = `${smp.key}/h${pre}/${zs}/${footprintRadiusM}`
     const hit = hzCache.get(key)
@@ -567,11 +654,20 @@ function maxFootprintSlope(lon: number, lat: number, baseSlope: number, level: n
   return max
 }
 
-function stationLinkStats(F: Frame, hz: Float32Array, off: number, siteHeight: number): [number, number] {
+/**
+ * DSN link statistics for one point: share of the window with at least one station in direct view
+ * (station above its own horizon, Earth station above the point's terrain horizon) and the longest
+ * gap (h). Same test as before, without the transcendental functions where they can't change the
+ * answer: the station's own elevation >= 0 is the sign of a dot product, and el >= horizon is decided
+ * from sin(el) against the sines of the horizon's min / max; asin + atan2 only inside that band.
+ */
+function stationLinkStats(F: Frame, hz: Float32Array, off: number, siteHeight: number, hMin: number, hMax: number): [number, number] {
   const T = earth.length / 4
   if (!T || dsn.length < T * 18) return [NaN, NaN]
   const siteX = F.ux * (R + siteHeight), siteY = F.uy * (R + siteHeight), siteZ = F.uz * (R + siteHeight)
   const stepH = (windowEnd - windowStart) / T / 3600_000
+  const sinLo = Math.sin(hMin / R2D), sinHi = Math.sin(hMax / R2D)
+  const { ux, uy, uz, ex, ey, nx, ny, nz } = F
   let linked = 0, gap = 0, longest = 0
   for (let j = 0; j < T; j++) {
     let any = false
@@ -579,28 +675,98 @@ function stationLinkStats(F: Frame, hz: Float32Array, off: number, siteHeight: n
     for (let station = 0; station < 3 && !any; station++) {
       const o = base + station * 6
       const dx = dsn[o] - siteX, dy = dsn[o + 1] - siteY, dz = dsn[o + 2] - siteZ
-      const dist = Math.hypot(dx, dy, dz)
-      const el = Math.asin((dx * F.ux + dy * F.uy + dz * F.uz) / dist) * R2D
-      let az = Math.atan2(dx * F.ex + dy * F.ey, dx * F.nx + dy * F.ny + dz * F.nz) * R2D
-      if (az < 0) az += 360
-      const h = horizonToward(hz, off, Math.sin(az / R2D), Math.cos(az / R2D))
-      const stationEl = Math.asin(((siteX - dsn[o]) * dsn[o + 3] + (siteY - dsn[o + 1]) * dsn[o + 4] + (siteZ - dsn[o + 2]) * dsn[o + 5]) / dist) * R2D
-      any = el >= h && stationEl >= 0
+      // the point must be above the station's horizon (station elevation of the Moon >= 0)
+      if (-(dx * dsn[o + 3] + dy * dsn[o + 4] + dz * dsn[o + 5]) < 0) continue
+      const sinEl = (dx * ux + dy * uy + dz * uz) / Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (sinEl >= sinHi) { any = true; break }
+      if (sinEl < sinLo) continue
+      any = Math.asin(sinEl) * R2D >= horizonToward(hz, off, dx * ex + dy * ey, dx * nx + dy * ny + dz * nz)
     }
-    if (any) { linked++; gap = 0 } else gap++
-    longest = Math.max(longest, gap)
+    if (any) { linked++; gap = 0 } else if (++gap > longest) longest = gap
   }
   return [(100 * linked) / T, longest * stepH]
+}
+
+const fineMark = new Uint8Array(FINE_NAZ)
+const fineSin = new Float64Array(FINE_NAZ), fineCos = new Float64Array(FINE_NAZ), fineOut = new Float32Array(FINE_NAZ)
+
+/** Marks the 1-deg azimuth bins where `body` (T x [xyz, radius deg]) comes within the margin of the coarse horizon. */
+function markNearHorizon(body: Float32Array, F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number): number {
+  const T = body.length / 4
+  let marked = 0
+  // sin(elevation) outside [lo, hi] can't be near any part of the horizon (largest disc: 0.3 deg Sun, 1 deg Earth)
+  const pad = ADAPT_MARGIN_DEG + 2
+  const sHi = hMax + pad >= 90 ? 2 : Math.sin((hMax + pad) / R2D), sLo = hMin - pad <= -90 ? -2 : Math.sin((hMin - pad) / R2D)
+  for (let j = 0; j < T; j++) {
+    const o = j * 4
+    const sx = body[o], sy = body[o + 1], sz = body[o + 2], r = body[o + 3]
+    const se = sx * F.ux + sy * F.uy + sz * F.uz
+    if (se > sHi || se < sLo) continue
+    const el = Math.asin(se) * R2D
+    let az = Math.atan2(sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz) * R2D
+    if (az < 0) az += 360
+    if (Math.abs(el - horizonAtAz(hz, off, az)) > ADAPT_MARGIN_DEG + 2 * r) continue
+    // the disc spans about r / cos(el) of azimuth: mark it plus one bin each side
+    const w = Math.ceil(r / Math.max(Math.cos(el / R2D), 0.05)) + 1
+    for (let d = -w; d <= w; d++) {
+      const b = ((Math.floor(az) + d) % FINE_NAZ + FINE_NAZ) % FINE_NAZ
+      if (!fineMark[b]) { fineMark[b] = 1; marked++ }
+    }
+  }
+  return marked
+}
+
+/**
+ * Adaptive horizon of one sample: where the Sun or the Earth passes within ADAPT_MARGIN_DEG (plus its
+ * disc) of the coarse NAZ horizon during the window, the horizon is traced every 1 deg with a denser
+ * ray (FINE_STEPS) toward those directions only, so a peak between two coarse azimuths can no longer
+ * hide; the other directions keep the coarse values (interpolated to 1 deg). A Sun high above the
+ * horizon or deep below it triggers nothing. Returns a FINE_NAZ horizon, or null when nothing needed
+ * refining (or the elevation tiles for the dense ray aren't available).
+ */
+function refineHorizon(lon: number, lat: number, F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, ray: Ray, demMax: number): Float32Array | null {
+  fineMark.fill(0)
+  let marked = markNearHorizon(sun, F, hz, off, hMin, hMax)
+  if (earth.length) marked += markNearHorizon(earth, F, hz, off, hMin, hMax)
+  if (!marked) return null
+  const out = new Float32Array(FINE_NAZ)
+  let m = 0
+  for (let b = 0; b < FINE_NAZ; b++) {
+    out[b] = horizonAtAz(hz, off, b)
+    if (fineMark[b]) {
+      const a = (b / R2D)
+      fineSin[m] = Math.sin(a)
+      fineCos[m] = Math.cos(a)
+      m++
+    }
+  }
+  horizon(lon, lat, ray, demMax, fineOut, m, fineSin, fineCos)
+  if (fineOut[0] !== fineOut[0]) return null
+  for (let b = 0, k = 0; b < FINE_NAZ; b++) if (fineMark[b]) out[b] = fineOut[k++]
+  return out
+}
+
+/** adaptive regolith model of the landing map (see tile()): max relative spread of the neighbours' k, max lit-share difference */
+const ADAPT_K_TOL = 0.01
+const ADAPT_LIT_TOL = 0.02
+
+/** Landing-score request: per-sample criteria for the suitability map (classified per pixel on the main thread). */
+interface LandingRequest {
+  /** steepest-slope-in-footprint from the DEM, only when the slope pyramid is not available: [a m, b m, azimuth deg] */
+  footprint?: [number, number, number]
+  /** [lon rad, lat rad, radius m]: samples farther than this (plus 3 sample spacings) are skipped (NaN) */
+  clip?: [number, number, number]
 }
 
 async function tile(m: {
   id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean
   thermalSeriesIndices?: number[]; g?: number; polar?: number
-  landing?: { footprint: [number, number, number]; gcr: number; scoreSettings: AdvancedSettings }
+  landing?: LandingRequest
 }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
   const smp = m.polar ? polarSamples(m.z, m.x, m.y, m.n, m.polar) : geoSamples(m.z, m.x, m.y, m.n, m.g ?? 1)
-  const footprintRadiusM = m.landing ? Math.max(m.landing.footprint[0], m.landing.footprint[1]) : 0
+  const fp = m.landing?.footprint
+  const footprintRadiusM = fp ? Math.max(fp[0], fp[1]) : 0
   const t = await terrain(smp, demMax, footprintRadiusM)
   const { nx, ny } = smp, N = nx * ny
   const s = new Float32Array(N), e = new Float32Array(N)
@@ -613,66 +779,118 @@ async function tile(m: {
   tSeries.fill(NaN)
   const dark = new Float32Array(N) // longest continuous night in the window (h)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
-  const landingScore = new Float32Array(m.landing ? N : 0)
+  // landing criteria (empty unless requested): DSN link % and longest gap (h), sunlit % of the window
+  const L = m.landing ? N : 0
+  const link = new Float32Array(L), linkGap = new Float32Array(L), sunlit = new Float32Array(L)
   const slope = t.slope.slice()
+  // Landing map: the regolith model (most of the cost) runs exactly on every other sample (tile edges
+  // included, so neighbouring tiles agree); the samples between are predicted from their own absorbed
+  // flux, T = k (q + q_geo)^(1/4), with k interpolated from the exact neighbours, where those agree
+  // (k within ADAPT_K_TOL, lit-time share within ADAPT_LIT_TOL of the sample's own); elsewhere (shadow
+  // edges, PSRs, data gaps) they are solved exactly too.
+  const adaptive = !!m.landing && !!m.thermal && !seriesIndices.length && nx >= 3 && ny >= 3
+  const coarse = (i: number, n: number) => (i & 1) === 0 || i === n - 1
+  const qm = new Float64Array(adaptive ? N : 0), litF = new Float32Array(adaptive ? N : 0)
+  const pending: number[] = []
+  // skip samples well outside the score circle (3 spacings: the upsampling reads up to 2 samples away)
+  const clip = m.landing?.clip
+  const clipCos = clip ? Math.cos(Math.min(Math.PI, (clip[2] + 3 * smp.spacing) / R)) : -2
+  const clipSin0 = clip ? Math.sin(clip[1]) : 0, clipCos0 = clip ? Math.cos(clip[1]) : 0
+  // adaptive horizons: the dense ray's elevation tiles stay pinned while the samples are processed
+  const fineRay = makeRay(demMax, FINE_STEPS)
+  const fineHold: number[] = []
+  const zs = demLevelFor(smp.spacing, demMax)
+  if (smp.polar) await ensureForSamples(smp, fineRay, zs, fineHold)
+  else await ensureFor(smp.box[0], smp.box[1], smp.box[2], smp.box[3], fineRay, zs, fineHold)
+  const fine = new Map<number, Float32Array>() // refined horizon per sample (for the second pass below)
+  /** horizon array, offset and range to use for sample c (refined where it matters); sets hzN */
+  const hzFor = (c: number, F: Frame): [Float32Array, number, number, number] => {
+    hzN = NAZ
+    const off = c * NAZ
+    const [hMin, hMax] = hzRange(t.hz, off)
+    const f = fine.get(c) ?? refineHorizon(smp.lon[c], smp.lat[c], F, t.hz, off, hMin, hMax, fineRay, demMax)
+    if (!f) return [t.hz, off, hMin, hMax]
+    fine.set(c, f)
+    hzN = FINE_NAZ
+    const [fMin, fMax] = hzRange(f, 0)
+    return [f, 0, fMin, fMax]
+  }
+  try {
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const c = j * nx + i
       const lon = smp.lon[c], lat = smp.lat[c]
-      if (t.hz[c * NAZ] !== t.hz[c * NAZ]) { // no elevation here (see horizon): leave the point transparent
+      const outside = clip !== undefined && clipSin0 * Math.sin(lat) + clipCos0 * Math.cos(lat) * Math.cos(lon - clip[0]) < clipCos
+      if (outside || t.hz[c * NAZ] !== t.hz[c * NAZ]) { // no elevation here (see horizon): leave the point transparent
         s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = dark[c] = NaN
         if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
-        if (m.landing) landingScore[c] = slope[c] = NaN
+        if (m.landing) link[c] = linkGap[c] = sunlit[c] = slope[c] = NaN
         continue
       }
-      const off = c * NAZ
       const F = frame(lon, lat, t.gE[c], t.gN[c])
-      const [hMin, hMax] = hzRange(t.hz, off)
-      sunAndCharging(F, t.hz, off, hMin, hMax)
+      const [hzc, off, hMin, hMax] = hzFor(c, F)
+      sunAndCharging(F, hzc, off, hMin, hMax, !m.landing) // (the score doesn't use the charging part)
       s[c] = sunOut.frac
       cMean[c] = sunOut.cMean
       cMin[c] = sunOut.cMin
       cBelow[c] = sunOut.cBelow
       dark[c] = sunOut.longestDarkH
-      e[c] = visibleFraction(earth, F, t.hz, off, hMin, hMax)
+      e[c] = m.landing ? NaN : visibleFraction(earth, F, hzc, off, hMin, hMax) // (the score uses the DSN link instead)
       let sky = 0
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
       fSky[c] = sky / NAZ / 2
       const seriesIndex = seriesIndexByCell.get(c)
-      if (m.thermal && (!seriesIndices.length || seriesIndex !== undefined)) {
-        [tMean[c], tMin[c], tMax[c]] = thermal(F, t.hz, off, hMin, hMax, seriesIndex === undefined ? undefined : tSeries, (seriesIndex ?? 0) * steps)
+      if (adaptive && steps) {
+        qm[c] = absorbedFlux(F, hzc, off, hMin, hMax)
+        litF[c] = fluxLitFraction
+        if (coarse(i, nx) && coarse(j, ny)) [tMean[c], tMin[c], tMax[c]] = solveThermal(qm[c])
+        else pending.push(c)
+      } else if (m.thermal && (!seriesIndices.length || seriesIndex !== undefined)) {
+        [tMean[c], tMin[c], tMax[c]] = thermal(F, hzc, off, hMin, hMax, seriesIndex === undefined ? undefined : tSeries, (seriesIndex ?? 0) * steps)
       }
-      if (m.landing && m.thermal) {
-        const maxSlope = maxFootprintSlope(lon, lat, t.slope[c], t.slopeLevel, m.landing.footprint)
-        const [linkPct, longestLinkGapH] = stationLinkStats(F, t.hz, off, t.elev[c])
-        const doseRate = (20.2 * fSky[c] + 6.2 * (1 - fSky[c])) * m.landing.gcr
-        const values = [tMean[c], tMin[c], tMax[c], doseRate, linkPct, longestLinkGapH, sunOut.sunlitPct, maxSlope]
-        if (values.every(Number.isFinite)) {
-          landingScore[c] = scoreLandingCell({
-            tMeanC: tMean[c] - 273.15,
-            doseRateUGyH: doseRate,
-            periodHours: (windowEnd - windowStart) / 3600_000,
-            maxSlopeDeg: maxSlope,
-            linkPct,
-            longestLinkGapH,
-            sunlitPct: sunOut.sunlitPct,
-          }, m.landing.scoreSettings)
-          slope[c] = maxSlope
-        } else {
-          landingScore[c] = slope[c] = NaN
-        }
-      } else if (m.landing) {
-        landingScore[c] = slope[c] = NaN
+      if (m.landing) {
+        sunlit[c] = sunOut.sunlitPct
+        ;[link[c], linkGap[c]] = stationLinkStats(F, hzc, off, t.elev[c], hMin, hMax)
+        slope[c] = fp ? maxFootprintSlope(lon, lat, t.slope[c], t.slopeLevel, fp) : NaN
       }
     }
   }
+  for (const c of pending) {
+    const i = c % nx, j = (c - i) / nx
+    const i0 = coarse(i, nx) ? i : i - 1, i1 = coarse(i, nx) ? i : i + 1
+    const j0 = coarse(j, ny) ? j : j - 1, j1 = coarse(j, ny) ? j : j + 1
+    const corners = [j0 * nx + i0, j0 * nx + i1, j1 * nx + i0, j1 * nx + i1]
+    let ok = true, kMin = Infinity, kMax = -Infinity
+    const k = [0, 0, 0, 0]
+    for (let q = 0; q < 4 && ok; q++) {
+      const cc = corners[q]
+      k[q] = tMean[cc] / Math.sqrt(Math.sqrt(qm[cc] + Q_GEO))
+      if (!(k[q] === k[q]) || Math.abs(litF[cc] - litF[c]) > ADAPT_LIT_TOL) ok = false
+      else { kMin = Math.min(kMin, k[q]); kMax = Math.max(kMax, k[q]) }
+    }
+    if (ok && kMax - kMin <= ADAPT_K_TOL * kMin) {
+      const wx = i1 > i0 ? (i - i0) / (i1 - i0) : 0, wy = j1 > j0 ? (j - j0) / (j1 - j0) : 0
+      const kHat = (k[0] * (1 - wx) + k[1] * wx) * (1 - wy) + (k[2] * (1 - wx) + k[3] * wx) * wy
+      tMean[c] = kHat * Math.sqrt(Math.sqrt(qm[c] + Q_GEO))
+      tMin[c] = tMax[c] = NaN // not predicted (the score uses the mean only)
+      continue
+    }
+    const lon = smp.lon[c], lat = smp.lat[c]
+    const F = frame(lon, lat, t.gE[c], t.gN[c])
+    const [hzc, off, hMin, hMax] = hzFor(c, F)
+    ;[tMean[c], tMin[c], tMax[c]] = solveThermal(absorbedFlux(F, hzc, off, hMin, hMax))
+  }
+  } finally {
+    hzN = NAZ
+    dem.unpin(fineHold)
+  }
   const elev = t.elev.slice()
-  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore, dark]
+  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, link, linkGap, sunlit, dark]
   const tTimes = seriesIndices.length ? thermalTimes.slice() : undefined
   ;(self as unknown as Worker).postMessage(
     {
       id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky,
-      landingScore, dark,
+      link, linkGap, sunlit, dark,
       thermal: !!m.thermal,
       ...(seriesIndices.length ? { tSeries, tTimes, tSeriesIndices: seriesIndices } : {}),
     },
@@ -683,7 +901,9 @@ async function tile(m: {
 async function siteHorizon(m: { id: number; lat: number; lon: number; azStepDeg: number }) {
   const demMax = dem.maxLevel
   const ray = makeRay(demMax, 220, 0.5) // much denser than tiles: this is the site's own panorama
-  const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, m.lat))
+  // the site's own panorama: clamp only at 89.9999 deg (11 m from the pole), not MAX_LAT (89.99, ~300 m),
+  // which on Shackleton's rim moved a site at the pole down onto the crater wall
+  const lat = Math.max(-SITE_MAX_LAT, Math.min(SITE_MAX_LAT, m.lat))
   const hold: number[] = []
   try {
     await ensureFor(m.lon, lat, m.lon, lat, ray, demMax, hold)
@@ -724,6 +944,11 @@ self.onmessage = (ev: MessageEvent) => {
     thermalCount = m.thermalCount
     thermalTimes = m.thermalTimes
     version = m.version
+    sunRMax = 0
+    for (let j = 3; j < sun.length; j += 4) sunRMax = Math.max(sunRMax, sun[j])
+    let auMin = Infinity
+    for (let j = 3; j < thermalSun.length; j += 4) auMin = Math.min(auMin, thermalSun[j])
+    thermalRMax = auMin < Infinity ? SUN_RADIUS_1AU_DEG / auMin : 0.3
   } else if (m.type === 'tile') {
     tile(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))
   } else if (m.type === 'horizon') {

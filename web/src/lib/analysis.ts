@@ -17,6 +17,7 @@ import {
   EARTH_RADIUS_KM,
   SUN_RADIUS_KM,
 } from './ephemeris'
+import { discEdgeAz, sunVisible } from './sunDisc'
 
 export interface HorizonMask {
   azStepDeg: number
@@ -85,7 +86,7 @@ export interface TimelineSample {
   sunEl: number
   earthAz: number
   earthEl: number
-  sunVisibleFrac: number // 0..1 of the solar disc above the terrain horizon
+  sunVisibleFrac: number // 0..1 share of the Sun's (limb-darkened) light above the terrain horizon, lib/sunDisc.ts
   earthVisibleFrac: number
 }
 
@@ -95,6 +96,12 @@ export function discFraction(dh: number, r: number): number {
   if (dh <= -r) return 0
   const x = dh / r // area of circular segment, exact
   return 1 - (Math.acos(x) - x * Math.sqrt(1 - x * x)) / Math.PI
+}
+
+/** Visible share of the Sun's light over a horizon mask (lib/sunDisc.ts: limb-darkened disc, oblique horizon). */
+export function sunVisibleOver(mask: HorizonMask | undefined, azDeg: number, elDeg: number, rDeg: number): number {
+  const w = discEdgeAz(elDeg, rDeg)
+  return sunVisible(elDeg, rDeg, horizonAt(mask, azDeg), horizonAt(mask, azDeg - w), horizonAt(mask, azDeg + w))
 }
 
 export function computeTimeline(
@@ -118,7 +125,7 @@ export function computeTimeline(
       sunEl: s.el,
       earthAz: e.az,
       earthEl: e.el,
-      sunVisibleFrac: discFraction(s.el - horizonAt(mask, s.az), rs),
+      sunVisibleFrac: sunVisibleOver(mask, s.az, s.el, rs),
       earthVisibleFrac: discFraction(e.el - horizonAt(mask, e.az), re),
     })
   }
@@ -189,9 +196,10 @@ export interface SiteSummary {
 
 export interface TimelineSummaryIndex {
   samples: TimelineSample[]
-  sunlitPrefix: Uint32Array
+  /** light-weighted: sum of the Sun's visible share (an hour at 30 % counts 0.3 h) */
+  sunlitPrefix: Float64Array
   earthVisiblePrefix: Uint32Array
-  bothVisiblePrefix: Uint32Array
+  bothVisiblePrefix: Float64Array
   nextSunsetIndex: Int32Array
   nextEarthsetIndex: Int32Array
   longestDarkSuffix: Uint32Array
@@ -200,9 +208,9 @@ export interface TimelineSummaryIndex {
 
 export function indexTimeline(tl: TimelineSample[]): TimelineSummaryIndex {
   const n = tl.length
-  const sunlitPrefix = new Uint32Array(n + 1)
+  const sunlitPrefix = new Float64Array(n + 1)
   const earthVisiblePrefix = new Uint32Array(n + 1)
-  const bothVisiblePrefix = new Uint32Array(n + 1)
+  const bothVisiblePrefix = new Float64Array(n + 1)
   const nextSunsetIndex = new Int32Array(n + 1)
   const nextEarthsetIndex = new Int32Array(n + 1)
   const longestDarkSuffix = new Uint32Array(n + 1)
@@ -214,9 +222,11 @@ export function indexTimeline(tl: TimelineSample[]): TimelineSummaryIndex {
     const sample = tl[i]
     const sunlit = sample.sunVisibleFrac > 0.5
     const earthVisible = sample.earthVisibleFrac > 0.5
-    sunlitPrefix[i] = sunlitPrefix[i + 1] + Number(sunlit)
+    // sunlit % weighted by the share of the Sun's light visible (an hour at 30 % counts 0.3 h);
+    // nights (longest night, next sunset) are still "less than half the light visible"
+    sunlitPrefix[i] = sunlitPrefix[i + 1] + sample.sunVisibleFrac
     earthVisiblePrefix[i] = earthVisiblePrefix[i + 1] + Number(earthVisible)
-    bothVisiblePrefix[i] = bothVisiblePrefix[i + 1] + Number(sunlit && earthVisible)
+    bothVisiblePrefix[i] = bothVisiblePrefix[i + 1] + (earthVisible ? sample.sunVisibleFrac : 0)
     nextSunsetIndex[i] = sample.sunVisibleFrac <= 0.5 ? i : nextSunsetIndex[i + 1]
     nextEarthsetIndex[i] = sample.earthVisibleFrac <= 0.5 ? i : nextEarthsetIndex[i + 1]
     darkRun = sunlit ? 0 : darkRun + 1
@@ -265,7 +275,7 @@ export function summarize(tl: TimelineSample[]): SiteSummary {
 }
 
 /**
- * Longest night (Sun mostly hidden: less than half the disc above the terrain horizon) among the nights
+ * Longest night (Sun mostly hidden: less than half of its light above the terrain horizon) among the nights
  * that overlap [start, end], each measured over its FULL length: nights cut by the window edges are
  * followed up to `padMs` before / after (within the loaded ephemeris), so a short window that starts
  * or ends in the middle of a night does not report a fraction of it. Hours.

@@ -11,7 +11,7 @@
  "publicMaxLevel": 2,
  "fineMaxLevel": 5,
  "demMaxLevel": 7,
- "source": "Terrain horizons from the LOLA global DEM (32 azimuths, 40 steps to 200 km, DEM down to level 7, observer 2 m)",
+ "source": "Terrain horizons from the LOLA global DEM (32 azimuths, 40 steps to 200 km, DEM down to level 7, observer 2 m; inside the polar caps (|lat| > 80.3 deg) heights from the LOLA polar DEMs LDEM_80S_80M / LDEM_80N_80M)",
  "levels": {
   "0": {
    "tiles": 2,
@@ -19,23 +19,23 @@
   },
   "1": {
    "tiles": 8,
-   "MB": 10.4
+   "MB": 10.3
   },
   "2": {
    "tiles": 32,
-   "MB": 40.5
+   "MB": 40.2
   },
   "3": {
    "tiles": 128,
-   "MB": 154.2
+   "MB": 152.4
   },
   "4": {
    "tiles": 512,
-   "MB": 569.7
+   "MB": 559.1
   },
   "5": {
    "tiles": 2048,
-   "MB": 2026.9
+   "MB": 1969.0
   }
  }
 }

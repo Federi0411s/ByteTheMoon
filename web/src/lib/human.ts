@@ -77,7 +77,10 @@ export function assessHuman(
     run = sunlit[i] && inRange ? run + 1 : 0
     windowH = Math.max(windowH, run * stepH)
   }
-  const sunlitPct = n ? (100 * lit) / n : 0
+  // daylight share weighted by the share of the Sun's light visible (walks themselves need > half of it)
+  let light = 0
+  for (let i = 0; i < n; i++) light += series.light ? series.light[i] : sunlit[i]
+  const sunlitPct = n ? (100 * light) / n : 0
   const daylight: HumanAssessment['daylight'] = lit === 0
     ? { status: 'no', value: '0%', note: 'never sunlit' }
     : { status: sunlitPct < 30 ? 'limited' : 'ok', value: `${Math.round(sunlitPct)}%`, note: 'of the period, walks only then' }

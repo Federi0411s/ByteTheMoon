@@ -12,14 +12,13 @@
  * cached, so the next request for that tile simply recomputes it.
  */
 import { EARTH_RADIUS_KM, SUN_RADIUS_KM, earthPosition, sunPosition, type Ephemeris } from './ephemeris'
-import type { DemConfig } from './dem'
+import type { DemConfig, PolarDemConfig } from './dem'
 import type { HorizonConfig } from './horizonTiles'
 import { fineUrlFor } from './pyramid'
 import type { HorizonMask } from './analysis'
 import { DATA_URL } from './data'
 import { loadEquipot, type EquipotTable } from './equipot'
 import { dsnStationGeometry } from './dsn'
-import type { AdvancedSettings } from './advancedSettings'
 
 export interface HeatTile {
   /** sample grid (edges included, row 0 = north): see lib/heatGrid.ts */
@@ -44,16 +43,26 @@ export interface HeatTile {
   fSky: Float32Array
   /** longest continuous night in the window (hours; Sun more than half hidden) */
   dark: Float32Array
-  /** Landing-score criteria; empty unless requested */
-  landingScore: Float32Array
+  /** Landing-score criteria (empty unless requested): DSN link % of the window, longest link gap (h), sunlit % */
+  link: Float32Array
+  linkGap: Float32Array
+  sunlit: Float32Array
 }
 
+/**
+ * Landing-suitability request. The worker returns the raw criteria per sample; the score classes are
+ * applied per pixel on the main thread, so thresholds, slope limit and (with the slope pyramid)
+ * footprint changes only repaint, without recomputing anything.
+ */
 export interface LandingHeatOptions {
-  /** semi-major m, semi-minor m, azimuth clockwise from north */
-  footprint: [number, number, number]
-  gcr: number
-  scoreSettings: AdvancedSettings
+  /** steepest slope in the footprint from the DEM (semi-major m, semi-minor m, azimuth clockwise from north): only without the slope pyramid */
+  footprint?: [number, number, number]
+  /** [lon rad, lat rad, radius m]: skip samples outside this circle (only for tiles not wholly inside it) */
+  clip?: [number, number, number]
 }
+
+const landingKey = (l?: LandingHeatOptions) =>
+  l ? `/L${l.footprint?.join(',') ?? ''}/${l.clip?.map((v) => v.toPrecision(7)).join(',') ?? ''}` : ''
 
 interface DemIndex {
   scale: number
@@ -102,6 +111,8 @@ interface Job {
   msg: Record<string, unknown>
   affinity: number // preferred worker (its horizon cache)
   wanted: () => boolean
+  /** lower = sooner (re-evaluated whenever work is handed out); unset = newest first, before prioritised jobs */
+  priority?: () => number
   resolve: (d: unknown) => void
   fail: () => void
   seq: number
@@ -138,8 +149,9 @@ export class HeatEngine {
     this.dem = dem
     this.hz = hz
     this.equipot = loadEquipot()
-    // at most 4: each worker holds its own elevation cache (~30 MB) and horizon cache; the mission engine has a pool too
-    const k = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 2))
+    // all cores but two (main thread, Cesium), at most 6: each worker holds its own elevation cache
+    // (~30 MB) and horizon cache. The landing-suitability map is pure CPU per tile, so it scales with them.
+    const k = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 2))
     for (let i = 0; i < k; i++) this.slots.push(this.spawn())
   }
 
@@ -196,7 +208,24 @@ export class HeatEngine {
         fineMaxLevel: ix.fineMaxLevel,
         scale: ix.scale,
         offset: ix.offset,
+        polar: await HeatEngine.loadPolarDem(origin, 'dem_south'),
+        polarNorth: await HeatEngine.loadPolarDem(origin, 'dem_north'),
       }, await HeatEngine.loadHorizons(origin))
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Polar DEM tiles of one cap (pipeline/polar_dem_tiles.py: dem_south, or dem_north with --pole north);
+   * null if not generated (then the global DEM is used there too).
+   */
+  private static async loadPolarDem(origin: string, folder: 'dem_south' | 'dem_north'): Promise<PolarDemConfig | null> {
+    try {
+      const r = await fetch(`${DATA_URL}/${folder}/index.json`)
+      if (!r.ok || !(r.headers.get('content-type') ?? '').includes('json')) return null
+      const j = await r.json()
+      return { url: `${origin}/${folder}`, halfExtentM: j.halfExtentM, basePixelM: j.basePixelM, scale: j.scale, offset: j.offset, levels: j.levels }
     } catch {
       return null
     }
@@ -294,37 +323,61 @@ export class HeatEngine {
     return Math.abs(h) % this.slots.length
   }
 
-  private enqueue<T>(msg: Record<string, unknown>, affinityKey: string, wanted: () => boolean = () => true): Promise<T | null> {
+  private enqueue<T>(msg: Record<string, unknown>, affinityKey: string, wanted: () => boolean = () => true, priority?: () => number): Promise<T | null> {
     return new Promise<T | null>((resolve) => {
-      this.queue.push({ msg, affinity: this.hash(affinityKey), wanted, resolve: resolve as (d: unknown) => void, fail: () => resolve(null), seq: ++this.seq })
+      this.queue.push({ msg, affinity: this.hash(affinityKey), wanted, priority, resolve: resolve as (d: unknown) => void, fail: () => resolve(null), seq: ++this.seq })
       this.pump()
     })
   }
 
-  /** Hand queued requests to free workers: newest first, preferring each job's own worker. */
+  /**
+   * Hand queued requests to free workers. Jobs without a priority go first, newest first, preferring
+   * each job's own worker (pass 0), else any worker (pass 1). Then prioritised jobs (the landing map:
+   * nearest the selected point first, tiles on screen before the rest), lowest value first; priorities
+   * are re-read on every call, so a camera move re-orders whatever is still queued.
+   */
   private pump() {
     for (let i = this.queue.length - 1; i >= 0; i--) {
       if (!this.queue[i].wanted()) this.queue.splice(i, 1)[0].fail()
+    }
+    if (!this.queue.length) return
+    const dispatch = (slot: Slot, pick: number) => {
+      const job = this.queue.splice(pick, 1)[0]
+      const id = job.seq
+      const timer = setTimeout(() => {
+        console.warn('heatmap worker stuck, restarting it')
+        this.restart(slot)
+      }, TILE_TIMEOUT_MS)
+      slot.inflight.set(id, { job, timer })
+      slot.worker.postMessage({ ...job.msg, id })
     }
     for (let pass = 0; pass < 2 && this.queue.length; pass++) {
       for (let w = 0; w < this.slots.length; w++) {
         const slot = this.slots[w]
         while (slot.inflight.size < MAX_INFLIGHT && this.queue.length) {
-          // pass 0: newest job routed to this worker; pass 1: steal the newest job of any worker
+          // pass 0: newest unprioritised job routed to this worker; pass 1: steal the newest of any worker
           let pick = -1
           for (let i = this.queue.length - 1; i >= 0; i--) {
-            if (pass === 1 || this.queue[i].affinity === w) { pick = i; break }
+            const q = this.queue[i]
+            if (!q.priority && (pass === 1 || q.affinity === w)) { pick = i; break }
           }
           if (pick < 0) break
-          const job = this.queue.splice(pick, 1)[0]
-          const id = job.seq
-          const timer = setTimeout(() => {
-            console.warn('heatmap worker stuck, restarting it')
-            this.restart(slot)
-          }, TILE_TIMEOUT_MS)
-          slot.inflight.set(id, { job, timer })
-          slot.worker.postMessage({ ...job.msg, id })
+          dispatch(slot, pick)
         }
+      }
+    }
+    const free = this.slots.filter((s) => s.inflight.size < MAX_INFLIGHT)
+    if (!free.length || !this.queue.length) return
+    // prioritised jobs: evaluate each priority once, then hand out the best ones
+    const ranked: { job: Job; p: number }[] = []
+    for (const job of this.queue) if (job.priority) ranked.push({ job, p: job.priority() })
+    if (!ranked.length) return
+    ranked.sort((a, b) => a.p - b.p || b.job.seq - a.job.seq)
+    let r = 0
+    for (const slot of free) {
+      while (slot.inflight.size < MAX_INFLIGHT && r < ranked.length) {
+        const pick = this.queue.indexOf(ranked[r++].job)
+        if (pick >= 0) dispatch(slot, pick)
       }
     }
   }
@@ -341,18 +394,18 @@ export class HeatEngine {
    * `wanted` lets the caller drop the request while it is still queued (e.g. its layer was removed).
    * Resolves null on failure; failures are not cached.
    */
-  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, landing?: LandingHeatOptions, thermalSeriesIndices?: number[]): Promise<HeatTile | null> {
+  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, landing?: LandingHeatOptions, thermalSeriesIndices?: number[], priority?: () => number): Promise<HeatTile | null> {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
     // per-cell temperature series (site panels, reports) are one-off answers: computed fresh, never cached
     const series = thermalSeriesIndices?.length ? thermalSeriesIndices : undefined
-    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}/${JSON.stringify(landing.scoreSettings)}` : ''
     return this.request(
-      `${z}/${x}/${y}/${n}/${demMax}/g${g}${landingKey}`,
+      `${z}/${x}/${y}/${n}/${demMax}/g${g}${landingKey(landing)}`,
       { type: 'tile', z, x, y, n, demMax, thermal, g, landing, thermalSeriesIndices: series },
       `${z}/${x}/${y}/${g}`,
       thermal,
       wanted,
       !series,
+      priority,
     )
   }
 
@@ -361,18 +414,19 @@ export class HeatEngine {
    * the polar stereographic plane (lib/heatGrid.ts), row 0 = top (largest y). Same caching and
    * failure rules as tile().
    */
-  polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, landing?: LandingHeatOptions): Promise<HeatTile | null> {
-    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}/${JSON.stringify(landing.scoreSettings)}` : ''
+  polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, landing?: LandingHeatOptions, priority?: () => number): Promise<HeatTile | null> {
     return this.request(
-      `P${p}/${z}/${bx}/${by}/${n}/${demMax}${landingKey}`,
+      `P${p}/${z}/${bx}/${by}/${n}/${demMax}${landingKey(landing)}`,
       { type: 'tile', z, x: bx, y: by, n, demMax, thermal, polar: p, landing },
       `P${p}/${z}/${bx}/${by}`,
       thermal,
       wanted,
+      true,
+      priority,
     )
   }
 
-  private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true): Promise<HeatTile | null> {
+  private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true, priority?: () => number): Promise<HeatTile | null> {
     const key = `${this.version}/${id}/${thermal ? 't' : ''}`
     let hitKey = key
     let p = cacheable ? this.cache.get(key) : undefined
@@ -388,7 +442,7 @@ export class HeatEngine {
     const wanters = new Set<() => boolean>([wanted ?? (() => true)])
     if (cacheable) this.wanters.set(key, wanters)
     const anyWanted = () => { for (const w of wanters) if (w()) return true; return false }
-    p = this.enqueue<HeatTile & { version: number; error?: string }>(msg, affinityKey, anyWanted)
+    p = this.enqueue<HeatTile & { version: number; error?: string }>(msg, affinityKey, anyWanted, priority)
       .then((d) => {
         if (cacheable) this.wanters.delete(key)
         const ok = d && !d.error && d.version === version

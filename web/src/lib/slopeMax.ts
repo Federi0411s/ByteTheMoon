@@ -11,6 +11,9 @@
  * never downloads street-level tiles) at which the footprint spans a bounded number of cells. Zoomed out,
  * or very near the poles (where geographic pixels get thin), coarser pixels make the check stricter
  * than the footprint itself; it tightens as you zoom in.
+ *
+ * The answer is per pyramid cell (down to 167 m), so the score map's slope criterion and slope limit
+ * are drawn at that resolution, independently of the (coarser) heatmap sample grid.
  */
 import type { PyramidIndex } from './pyramid'
 
@@ -24,7 +27,7 @@ const CACHE_TILES = 320 // 64 KB each
 /** levels whose tiles needed for one map tile exceed this are skipped (a coarser one is used) */
 const MAX_TILES_PER_LEVEL = 48
 const FETCH_TIMEOUT_MS = 20_000
-/** latitude bands per map tile in checkerBanded */
+/** latitude bands per map tile in levelsBanded */
 const MAX_BANDS = 6
 
 /** raw max-slope DN per pixel (0 = no data); null = tile missing */
@@ -136,13 +139,13 @@ export class SlopeMaxTiles {
   }
 
   /**
-   * As checker(), but the tile is split into latitude bands in which cos(latitude) varies by at most
-   * 2x, each checked at its own level. checker() picks one level per tile from its most poleward
+   * As levels(), but the tile is split into latitude bands in which cos(latitude) varies by at most
+   * 2x, each checked at its own level. levels() picks one level per tile from its most poleward
    * latitude, so a tile reaching the pole (every polar-row tile at every zoom) fell back to the coarsest
    * level, 21 km cells, and the polar regions were almost entirely excluded. Now only the band touching
    * the pole is coarse, over a few km. At most MAX_BANDS bands per tile.
    */
-  async checkerBanded(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, limitDeg: number): Promise<(lon: number, lat: number) => boolean> {
+  async levelsBanded(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, thresholds: number[]): Promise<(lon: number, lat: number) => number> {
     const [west, south, east, north] = rect
     // split points: latitudes where cos halves, going poleward from the equator-most edge
     const eqEdge = south <= 0 && north >= 0 ? 0 : Math.min(Math.abs(south), Math.abs(north))
@@ -153,31 +156,40 @@ export class SlopeMaxTiles {
       if (lat >= polEdge) break
       cuts.push(lat)
     }
-    if (!cuts.length) return this.checker(rect, z, a, b, azDeg, limitDeg)
+    if (!cuts.length) return this.levels(rect, z, a, b, azDeg, thresholds)
     // bands as [s, n] in signed latitude
     const bounds = [...new Set([south, north, ...cuts.flatMap((l) => [l, -l]).filter((l) => l > south && l < north)])].sort((x, y) => x - y)
     const bands: [number, number][] = []
     for (let i = 0; i + 1 < bounds.length; i++) bands.push([bounds[i], bounds[i + 1]])
-    const checks = await Promise.all(bands.map(([s, n]) => this.checker([west, s, east, n], z, a, b, azDeg, limitDeg)))
+    const checks = await Promise.all(bands.map(([s, n]) => this.levels([west, s, east, n], z, a, b, azDeg, thresholds)))
     return (lon, lat) => {
       for (let i = 0; i < bands.length; i++) if (lat <= bands[i][1] || i === bands.length - 1) return checks[i](lon, lat)
-      return false
+      return -1
     }
   }
 
+  /** (lon, lat) -> true where the steepest slope in the footprint is <= limitDeg (false if steeper or unknown). */
+  async checkerBanded(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, limitDeg: number): Promise<(lon: number, lat: number) => boolean> {
+    const lv = await this.levelsBanded(rect, z, a, b, azDeg, [limitDeg])
+    return (lon, lat) => lv(lon, lat) === 0
+  }
+
   /**
-   * Checker for one map tile (rect radians [w, s, e, n], level z): returns (lon, lat) -> true where the
-   * steepest slope inside the footprint (semi-axes a >= b m, major axis azDeg clockwise from north)
-   * centred there is <= limitDeg. False where it is steeper or unknown (no data).
+   * Classifier for one map tile (rect radians [w, s, e, n], level z): returns (lon, lat) -> how many of
+   * `thresholds` (degrees, ascending) the steepest slope inside the footprint (semi-axes a >= b m,
+   * major axis azDeg clockwise from north) centred there exceeds, 0..thresholds.length; -1 = no data.
+   * One pass answers every score class boundary and the slope limit at once.
    *
-   * Works on the pyramid cells of one level L for the whole tile: cells steeper than the limit are
-   * marked, prefix sums along each row give "any steep cell in columns i..j" in O(1), and the ellipse
-   * is a column interval per kernel row, so each cell costs one lookup per kernel row. The footprint
-   * is centred on the cell holding the point; cells count when their centre lies within the ellipse
-   * grown by half a cell diagonal (i.e. cells it touches).
+   * Works on the pyramid cells of one level L for the whole tile: per threshold, cells steeper than it
+   * are marked and prefix sums along each row give "any such cell in columns i..j" in O(1); the
+   * ellipse is a column interval per kernel row, so each cell costs one lookup per kernel row and
+   * threshold (highest threshold first: the first one exceeded decides). The footprint is centred on
+   * the cell holding the point; cells count when their centre lies within the ellipse grown by half a
+   * cell diagonal (i.e. cells it touches).
    */
-  async checker(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, limitDeg: number): Promise<(lon: number, lat: number) => boolean> {
+  async levels(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, thresholds: number[]): Promise<(lon: number, lat: number) => number> {
     const [west, south, east, north] = rect
+    const K = thresholds.length
     const nearPole = Math.max(Math.abs(south), Math.abs(north))
     let L = SlopeMaxTiles.levelFor(nearPole, a, Math.min(this.maxLevel, Math.max(0, z)))
     for (; ; L--) {
@@ -194,13 +206,14 @@ export class SlopeMaxTiles {
       const ir0 = Math.max(0, or0 - mRow), ir1 = Math.min(rows - 1, or1 + mRow)
       const ic0 = oc0 - mCol, ic1 = oc1 + mCol
       if (!(await this.loadCells(L, ir0, ir1, ic0, ic1)) && L > 0) continue
-      const nR = ir1 - ir0 + 1, nC = ic1 - ic0 + 1
-      // prefix sums per input row: steep cells and cells with data
-      const steep = new Int32Array(nR * (nC + 1)), data = new Int32Array(nR * (nC + 1))
-      const limitDn = (limitDeg - this.p.offset) / this.p.scale // v = offset + scale * dn
+      const nR = ir1 - ir0 + 1, nC = ic1 - ic0 + 1, W = nC + 1, plane = nR * W
+      // prefix sums per input row: cells with data, and per threshold the cells steeper than it
+      const data = new Int32Array(plane)
+      const steep = new Int32Array(K * plane) // [threshold][row][col]
+      const limitDn = thresholds.map((t) => (t - this.p.offset) / this.p.scale) // v = offset + scale * dn
       let missing = false
       for (let r = 0; r < nR && !missing; r++) {
-        const row = ir0 + r, o = r * (nC + 1)
+        const row = ir0 + r, o = r * W
         let lastKey = -1, tile: Tile | undefined
         for (let c = 0; c < nC; c++) {
           const col = (((ic0 + c) % cols) + cols) % cols
@@ -208,11 +221,14 @@ export class SlopeMaxTiles {
           if (k !== lastKey) { tile = this.tiles.get(k); lastKey = k }
           if (tile === undefined) { missing = true; break }
           const dn = tile === null ? 0 : tile[((row & 255) << 8) | (col & 255)]
-          steep[o + c + 1] = steep[o + c] + (dn > limitDn ? 1 : 0)
           data[o + c + 1] = data[o + c] + (dn > 0 ? 1 : 0)
+          for (let q = 0; q < K; q++) {
+            const so = q * plane + o
+            steep[so + c + 1] = steep[so + c] + (dn > limitDn[q] ? 1 : 0)
+          }
         }
       }
-      if (missing) { if (L > 0) continue; return () => false }
+      if (missing) { if (L > 0) continue; return () => -1 }
       // ellipse -> column interval per kernel row (offsets in cells), per output row (cos varies)
       const az = (azDeg * Math.PI) / 180
       const ux = Math.sin(az), uy = Math.cos(az), vx = Math.cos(az), vy = -Math.sin(az)
@@ -220,7 +236,7 @@ export class SlopeMaxTiles {
       const qb1 = 2 * ((ux * uy) / (A * A) + (vx * vy) / (B * B))
       const qc1 = (uy * uy) / (A * A) + (vy * vy) / (B * B)
       const oR = or1 - or0 + 1, oC = oc1 - oc0 + 1
-      const ok = new Uint8Array(oR * oC)
+      const out = new Int8Array(oR * oC)
       for (let r = 0; r < oR; r++) {
         const row = or0 + r
         const lo: number[] = [], hi: number[] = [], rr: number[] = []
@@ -237,23 +253,31 @@ export class SlopeMaxTiles {
           if (dr === 0) { l = Math.min(l, 0); u = Math.max(u, 0) }
           l = Math.max(l, -mCol); u = Math.min(u, mCol)
           if (l > u) continue
-          lo.push(l); hi.push(u); rr.push(ir * (nC + 1))
+          lo.push(l); hi.push(u + 1); rr.push(ir * W)
         }
+        const nk = rr.length
         for (let c = 0; c < oC; c++) {
           const ci = oc0 + c - ic0 // input column of this output cell
-          let any = false, bad = false
-          for (let k = 0; k < rr.length; k++) {
-            const o = rr[k], i0 = ci + lo[k], i1 = ci + hi[k] + 1
-            if (steep[o + i1] - steep[o + i0] > 0) { bad = true; break }
-            if (!any && data[o + i1] - data[o + i0] > 0) any = true
+          let level = -1
+          for (let k = 0; k < nk; k++) {
+            const o = rr[k] + ci
+            if (data[o + hi[k]] - data[o + lo[k]] > 0) { level = 0; break }
           }
-          ok[r * oC + c] = !bad && any ? 1 : 0
+          // highest threshold first: the first one exceeded anywhere in the footprint decides
+          for (let q = K - 1; q >= 0 && level === 0; q--) {
+            const base = q * plane + ci
+            for (let k = 0; k < nk; k++) {
+              const o = base + rr[k]
+              if (steep[o + hi[k]] - steep[o + lo[k]] > 0) { level = q + 1; break }
+            }
+          }
+          out[r * oC + c] = level
         }
       }
       return (lon, lat) => {
         const r = Math.min(oR - 1, Math.max(0, Math.floor((Math.PI / 2 - lat) / pix) - or0))
         const c = Math.min(oC - 1, Math.max(0, Math.floor((lon + Math.PI) / pix) - oc0))
-        return ok[r * oC + c] === 1
+        return out[r * oC + c]
       }
     }
   }
