@@ -144,7 +144,7 @@ export function SitePanel({
       </div>
       <div className="site-legend">
         <span><i className="marker-dot past" aria-hidden="true" />Past missions</span>
-        <span><i className="marker-dot future" aria-hidden="true" />Future candidates</span>
+        <span><i className="marker-dot future" aria-hidden="true" />Artemis mission LS</span>
         <span><i className="marker-dot saved" aria-hidden="true" />My landing sites</span>
         <span><i className="marker-dot selected" aria-hidden="true" />Selected point</span>
       </div>
