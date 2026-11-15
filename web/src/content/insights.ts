@@ -1,10 +1,10 @@
-// All the text of the welcome screen, the tutorial and "Learn the basics", in one place so it is
+// All the text of the welcome screen, the tutorial and the (i) explanations, in one place so it is
 // easy to correct. The `target` of a tutorial step is a CSS selector of the interface element the
 // step talks about (highlighted when it is on screen; the card is centred otherwise).
 
 export const INSIGHTS_BUTTON = {
   label: 'Insights',
-  title: 'Reopen the welcome screen, the tutorial and the basics',
+  title: 'Reopen the welcome screen and the tutorial',
 }
 
 export const WELCOME = {
@@ -13,7 +13,7 @@ export const WELCOME = {
     'ByteTheMoon helps you explore the lunar south pole and compare candidate landing sites using terrain, ' +
     'illumination, Earth visibility, temperature, surface charging, radiation and water ice data.',
   startTutorial: 'Start tutorial',
-  learnBasics: 'Learn the basics',
+  infoHint: 'Tip: the (i) icons next to the map controls explain each topic in a few words.',
   skip: 'Skip',
   doNotShowAgain: 'Do not show this again',
 }
@@ -40,9 +40,7 @@ export const TUTORIAL = {
     },
     {
       title: 'Map layers',
-      body:
-        'Open Map layers to switch data layers on and off: sunlight, Earth visibility, permanent shadow, slope, ' +
-        'elevation, temperature and surface charging. Each layer shows one factor that matters for a safe landing.',
+      body: 'Open Map layers to switch data layers on and off. Each layer shows one factor that matters for a safe landing.',
       target: '[data-tour="map-layers"]',
     },
     {
@@ -81,72 +79,86 @@ export const TUTORIAL = {
   ] satisfies TutorialStep[],
 }
 
-export const BASICS = {
-  title: 'Learn the basics',
-  back: 'Back',
-  close: 'Close',
-  sections: [
-    {
-      question: 'Why the south pole?',
-      answer:
-        'Some ridges near the south pole are sunlit for most of the year, which is good for solar power, while ' +
-        'nearby craters never see the Sun and can trap water ice for billions of years.',
-    },
-    {
-      question: 'What is a permanently shadowed region (PSR)?',
-      answer:
-        'A crater floor or depression that never receives direct sunlight because the Sun is always low on the ' +
-        'horizon. PSRs are among the coldest places in the Solar System (below about −230 °C).',
-    },
-    {
-      question: 'Why is water ice important?',
-      answer: 'Ice is a key resource, but it lies in cold, dark craters.',
-    },
-    {
-      question: 'Why does slope matter?',
-      answer:
-        'A lander can tip over or fail to land safely on steep terrain, so flat areas (a few degrees of slope) ' +
-        'are preferred.',
-    },
-    {
-      question: 'Why must Earth be visible?',
-      answer:
-        'Without a relay satellite, a lander can only talk to Earth when Earth is above the local horizon. Hills ' +
-        'and crater rims can block it.',
-    },
-    {
-      question: 'Why does radiation change from place to place?',
-      answer:
-        'The Moon has no magnetic field or atmosphere, so cosmic rays (and solar particles during solar storms) ' +
-        'reach the ground; nearby crater walls and hills block part of the sky and reduce the dose.',
-    },
-    {
-      question: 'What is surface charging?',
-      answer:
-        'Sunlight knocks electrons off the surface and makes it slightly positive; in shadow, electrons from the ' +
-        'solar wind charge it negatively, down to about −100 V or more. Strong charging can damage electronics ' +
-        'and lift dust.',
-    },
-    {
-      question: 'How cold and hot does it get?',
-      answer:
-        'Even sunlit polar ridges are cold: they peak at roughly −120 °C to −10 °C and get much colder when ' +
-        'shadowed. The darkest crater floors stay around −230 °C or colder all year.',
-    },
-    {
-      question: 'What makes a good landing site?',
-      answer:
-        'A good landing site is a compromise: gentle slope, long sunlight, Earth in view for communications, and ' +
-        'close to (but not inside) ice-rich craters.',
-    },
-    {
-      question: 'Where do the data come from?',
-      answer:
-        'NASA LRO: LOLA (topography, long-term sunlight, Earth visibility and permanent shadow), Diviner ' +
-        '(temperature and ice stability), LROC (imagery and the lunar pit catalog, Wagner & Robinson 2021). ' +
-        'NASA NAIF SPICE with the JPL DE440 ephemeris (Sun and Earth positions). ESA SPENVIS and the EQUIPOT ' +
-        'model (surface charging); Chang’e 4 LND measurements (radiation calibration); Hayne et al. 2017 ' +
-        '(regolith temperature model). Basemaps: NASA Moon Trek and JAXA Kaguya.',
-    },
-  ],
+// Short explanations shown by the (i) icons next to the controls they are about (see INFO_FOR_LAYER
+// and the InfoTip uses in LayerPanel).
+export const INFO = {
+  southPole: {
+    question: 'Why the south pole?',
+    answer:
+      'Some ridges near the south pole are sunlit for most of the year, which is good for solar power, while ' +
+      'nearby craters never see the Sun and can trap water ice for billions of years.',
+  },
+  psr: {
+    question: 'What is a permanently shadowed region (PSR)?',
+    answer:
+      'A crater floor or depression that never receives direct sunlight because the Sun is always low on the ' +
+      'horizon. PSRs are among the coldest places in the Solar System (below about −230 °C).',
+  },
+  ice: {
+    question: 'Why is water ice important?',
+    answer: 'Ice is a key resource, but it lies in cold, dark craters.',
+  },
+  slope: {
+    question: 'Why does slope matter?',
+    answer:
+      'A lander can tip over or fail to land safely on steep terrain, so flat areas (a few degrees of slope) ' +
+      'are preferred.',
+  },
+  earth: {
+    question: 'Why must Earth be visible?',
+    answer:
+      'Without a relay satellite, a lander can only talk to Earth when Earth is above the local horizon. Hills ' +
+      'and crater rims can block it.',
+  },
+  radiation: {
+    question: 'Why does radiation change from place to place?',
+    answer:
+      'The Moon has no magnetic field or atmosphere, so cosmic rays (and solar particles during solar storms) ' +
+      'reach the ground; nearby crater walls and hills block part of the sky and reduce the dose.',
+  },
+  charging: {
+    question: 'What is surface charging?',
+    answer:
+      'Sunlight knocks electrons off the surface and makes it slightly positive; in shadow, electrons from the ' +
+      'solar wind charge it negatively, down to about −100 V or more. Strong charging can damage electronics ' +
+      'and lift dust.',
+  },
+  temperature: {
+    question: 'How cold and hot does it get?',
+    answer:
+      'Even sunlit polar ridges are cold: they peak at roughly −120 °C to −10 °C and get much colder when ' +
+      'shadowed. The darkest crater floors stay around −230 °C or colder all year.',
+  },
+  landingSite: {
+    question: 'What makes a good landing site?',
+    answer:
+      'A good landing site is a compromise: gentle slope, long sunlight, Earth in view for communications, and ' +
+      'close to (but not inside) ice-rich craters.',
+  },
+  dataSources: {
+    question: 'Where do the data come from?',
+    answer:
+      'NASA LRO: LOLA (topography, long-term sunlight, Earth visibility and permanent shadow), Diviner ' +
+      '(temperature and ice stability), LROC (imagery and the lunar pit catalog, Wagner & Robinson 2021). ' +
+      'NASA NAIF SPICE with the JPL DE440 ephemeris (Sun and Earth positions). ESA SPENVIS and the EQUIPOT ' +
+      'model (surface charging); Chang’e 4 LND measurements (radiation calibration); Hayne et al. 2017 ' +
+      '(regolith temperature model). Basemaps: NASA Moon Trek and JAXA Kaguya.',
+  },
+} satisfies Record<string, { question: string; answer: string }>
+
+export type InfoTopic = keyof typeof INFO
+
+/** Map layers (overlays/index.json ids) that get an (i) icon, and which explanation it shows. */
+export const INFO_FOR_LAYER: Record<string, InfoTopic> = {
+  sun_avg: 'southPole',
+  earth_avg: 'earth',
+  earth_visibility: 'earth',
+  psr: 'psr',
+  slope: 'slope',
+  charging_mean: 'charging',
+  charging_min: 'charging',
+  charging_frac_below: 'charging',
+  thermal_mean: 'temperature',
+  thermal_min: 'temperature',
+  thermal_max: 'temperature',
 }

@@ -5,6 +5,7 @@
  *   dem    pipeline/dem_tiles.py    elevation, u16 (R*256 + G), B = 255 valid
  *   slope  pipeline/slope_tiles.py  slope (deg), u8x2: R = mean, G = max of the 118 m slopes inside
  *   sky    pipeline/sky_view.py     visible-sky fraction, u8 grey (radiation dose)
+ *   horizon pipeline/horizon_tiles.py 32 horizon angles per pixel (read by the heatmap workers, lib/horizonTiles.ts)
  *
  * Levels 0..publicMaxLevel ship with the app (public/data/<name>); finer ones come from a bucket.
  * Fine URL: VITE_<NAME>_FINE_URL, else VITE_DEM_FINE_URL with "dem_fine" -> "<name>_fine", else in
@@ -12,7 +13,7 @@
  */
 import { DATA_URL } from './data'
 
-export type PyramidName = 'dem' | 'slope' | 'sky'
+export type PyramidName = 'dem' | 'slope' | 'sky' | 'horizon'
 
 export interface PyramidIndex {
   name: PyramidName
@@ -30,6 +31,7 @@ const ENV: Record<PyramidName, string | undefined> = {
   dem: import.meta.env.VITE_DEM_FINE_URL as string | undefined,
   slope: import.meta.env.VITE_SLOPE_FINE_URL as string | undefined,
   sky: import.meta.env.VITE_SKY_FINE_URL as string | undefined,
+  horizon: import.meta.env.VITE_HORIZON_FINE_URL as string | undefined,
 }
 
 export function fineUrlFor(name: PyramidName): string | null {

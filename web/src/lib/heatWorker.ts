@@ -4,7 +4,7 @@
  * grid of sample points from the global elevation pyramid (lib/dem.ts) and the Sun/Earth ephemeris.
  *
  * Messages (main -> worker):
- *   { type: 'init', cfg: DemConfig }
+ *   { type: 'init', cfg: DemConfig, hz?: HorizonConfig }   hz: precomputed horizons (lib/horizonTiles.ts), if generated
  *   { type: 'window', version, window, sun, earth, dsn, thermalTimes }               time window and Sun/Earth + DSN sample geometry
  *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
@@ -20,13 +20,16 @@
  * Sample points include the tile edges (lon = west + i*(east-west)/(n-1)), so neighbouring tiles share
  * their border samples and the bilinearly interpolated heatmap is seamless.
  *
- * Horizon: for each of NAZ (32) azimuths, march outward on the great circle with geometrically growing
+ * Horizons: zoomed-out jobs (samples >= 666 m apart) read them from the precomputed horizon pyramid
+ * (lib/horizonTiles.ts, same model) when it is available; closer ones compute them live:
+ * for each of NAZ (32) azimuths, march outward on the great circle with geometrically growing
  * steps, reading the DEM at a level matched to the step size (fine near the point, coarse far away),
  * and keep the highest elevation angle including the Moon's curvature. Horizons are cached per tile,
  * so a new time window only redoes the (cheap) time integration.
  */
 import { DemSampler, demLevelFor, demPixelM } from './dem'
 import { fromPolar, heatGrid, polarBlockSize } from './heatGrid'
+import { HorizonSampler, MAX_TILES_PER_JOB } from './horizonTiles'
 import type { EquipotTable } from './equipot'
 import { scoreLandingCell } from './landingScore'
 import type { AdvancedSettings } from './advancedSettings'
@@ -42,6 +45,7 @@ const OBSERVER_H = 2
 const MAX_LAT = (89.99 / 180) * Math.PI // the exact pole has no azimuths
 
 let dem: DemSampler
+let hzs: HorizonSampler | null = null
 let sun = new Float32Array(0)
 let earth = new Float32Array(0)
 let dsn = new Float64Array(0)
@@ -78,9 +82,9 @@ function makeRay(demMax: number, steps = STEPS, d0Factor = 0.75): Ray {
 }
 
 /** Fetch the DEM tiles a set of points needs, for every level the ray uses (plus `extra` level). */
-async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray, extra: number, hold: number[], extraRadiusM = 0) {
+async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray | null, extra: number, hold: number[], extraRadiusM = 0) {
   const reach = new Map<number, number>() // level -> max distance at which it is used
-  for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
+  if (ray) for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
   reach.set(extra, Math.max(reach.get(extra) ?? 0, demPixelM(extra) * 2, extraRadiusM))
   const jobs: Promise<unknown>[] = []
   for (const [z, d] of reach) {
@@ -103,9 +107,9 @@ async function ensureFor(west: number, south: number, east: number, north: numbe
  * around the pole is the whole ring, which at the finest levels meant hundreds of elevation tiles
  * no ray ever reads. Each level's tiles are taken within its reach of each sample instead.
  */
-async function ensureForSamples(smp: Samples, ray: Ray, extra: number, hold: number[], extraRadiusM = 0) {
+async function ensureForSamples(smp: Samples, ray: Ray | null, extra: number, hold: number[], extraRadiusM = 0) {
   const reach = new Map<number, number>()
-  for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
+  if (ray) for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
   reach.set(extra, Math.max(reach.get(extra) ?? 0, demPixelM(extra) * 2, extraRadiusM))
   const jobs: Promise<unknown>[] = []
   for (const [z, d] of reach) {
@@ -451,13 +455,33 @@ function polarSamples(z: number, bx: number, by: number, n: number, p: number): 
 }
 
 async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Promise<Terrain> {
+  const [west, south, east, north] = smp.box
+  // slope/elevation at the sample spacing (coarse tiles -> coarse, honest slopes)
+  const zs = demLevelFor(smp.spacing, demMax)
+  // zoomed out: precomputed horizons of the level matching the sample spacing (unless that takes too
+  // many tiles, e.g. the thin geographic tiles around a pole, or they can't be loaded)
+  const pre = hzs ? hzs.levelFor(smp.spacing) : -1
+  if (pre >= 0) {
+    const key = `${smp.key}/h${pre}/${zs}/${footprintRadiusM}`
+    const hit = hzCache.get(key)
+    if (hit) return hit
+    const list = hzs!.tilesFor(smp.lon, smp.lat, pre)
+    if (list.length <= MAX_TILES_PER_JOB && (await hzs!.ensure(list))) {
+      const hold: number[] = []
+      try {
+        // only the elevation for slope / height is still read here
+        if (smp.polar) await ensureForSamples(smp, null, zs, hold, footprintRadiusM)
+        else await ensureFor(west, south, east, north, null, zs, hold, footprintRadiusM)
+        return computeTerrain(key, smp, demMax, null, zs, pre)
+      } finally {
+        dem.unpin(hold)
+      }
+    }
+  }
   const key = `${smp.key}/${demMax}/${footprintRadiusM}`
   const hit = hzCache.get(key)
   if (hit) return hit
-  const [west, south, east, north] = smp.box
   const ray = makeRay(demMax)
-  // slope/elevation at the sample spacing (coarse tiles -> coarse, honest slopes)
-  const zs = demLevelFor(smp.spacing, demMax)
   const hold: number[] = []
   try {
     if (smp.polar) await ensureForSamples(smp, ray, zs, hold, footprintRadiusM)
@@ -468,7 +492,8 @@ async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Prom
   }
 }
 
-function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray, zs: number): Terrain {
+/** Horizons (live from `ray`, or precomputed level `pre` >= 0), slope, elevation and gradient per sample. */
+function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray | null, zs: number, pre = -1): Terrain {
   const { nx, ny } = smp, N = nx * ny
   const hz = new Float32Array(N * NAZ)
   const slope = new Float32Array(N), elev = new Float32Array(N)
@@ -479,7 +504,8 @@ function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray, zs:
     for (let i = 0; i < nx; i++) {
       const c = j * nx + i
       const lon = smp.lon[c], lat = smp.lat[c]
-      horizon(lon, lat, ray, demMax, tmp)
+      if (pre >= 0) hzs!.sample(lon, lat, pre, tmp)
+      else horizon(lon, lat, ray!, demMax, tmp)
       hz.set(tmp, c * NAZ)
       // gradient from central differences over one DEM pixel of level zs (east, north)
       const dLat = ds / R, dLon = dLat / Math.max(Math.cos(lat), 1e-6)
@@ -660,7 +686,10 @@ async function siteHorizon(m: { id: number; lat: number; lon: number; azStepDeg:
 
 self.onmessage = (ev: MessageEvent) => {
   const m = ev.data
-  if (m.type === 'init') dem = new DemSampler(m.cfg)
+  if (m.type === 'init') {
+    dem = new DemSampler(m.cfg)
+    hzs = m.hz ? new HorizonSampler(m.hz) : null
+  }
   else if (m.type === 'equipot') {
     eq = m.table
     chargeThreshold = m.threshold

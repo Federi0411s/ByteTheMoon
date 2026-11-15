@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { WELCOME } from '../content/insights'
 import { setWelcomeHidden, welcomeHidden } from '../lib/welcomeStorage'
 
-export function WelcomeModal({ onStartTutorial, onLearnBasics, onClose }: {
+export function WelcomeModal({ onStartTutorial, onClose }: {
   onStartTutorial: () => void
-  onLearnBasics: () => void
   onClose: () => void
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -24,9 +23,9 @@ export function WelcomeModal({ onStartTutorial, onLearnBasics, onClose }: {
         <p>{WELCOME.text}</p>
         <div className="insights-actions">
           <button type="button" className="report-primary" onClick={onStartTutorial}>{WELCOME.startTutorial}</button>
-          <button type="button" onClick={onLearnBasics}>{WELCOME.learnBasics}</button>
           <button type="button" onClick={onClose}>{WELCOME.skip}</button>
         </div>
+        <p className="insights-hint">{WELCOME.infoHint}</p>
         <label className="insights-check">
           <input type="checkbox" checked={hidden}
             onChange={(e) => { setHidden(e.target.checked); setWelcomeHidden(e.target.checked) }} />

@@ -552,9 +552,23 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .insights-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .insights-spacer { flex: 1; }
 .insights-check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-.insights-basics { gap: 8px; }
-.insights-basics .menu-section-summary span:first-child { font-weight: 600; }
-.insights-answer { margin: 0; padding: 0 12px 12px; color: var(--text); font-size: 13px; line-height: 1.5; }
+.insights-hint { margin: 0 !important; color: var(--muted) !important; font-size: 12px !important; }
+/* (i) explanation next to a control; the pop-up looks like the Landing score .info-box */
+.info-tip {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 16px; height: 16px; padding: 0; margin-left: 6px; vertical-align: middle;
+  border-radius: 50%; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.06);
+  color: var(--muted); font: italic 600 10px/1 Georgia, 'Times New Roman', serif; cursor: help;
+}
+.info-tip:hover, .info-tip:focus-visible, .info-tip[aria-expanded='true'] { color: var(--accent); border-color: var(--accent); outline: none; }
+.info-tip-pop {
+  position: fixed; z-index: 30; display: grid; gap: 4px; pointer-events: none;
+  padding: 8px 10px; border-radius: 6px; background: #0b1020; border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); color: var(--text); font-size: 12px; line-height: 1.5;
+}
+.info-tip-pop b { font-weight: 600; }
+.panel h2.with-info { display: flex; align-items: center; }
+.menu-section-summary .info-tip { margin-left: -2px; }
 .tutorial-layer { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
 .tutorial-dim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
 .tutorial-highlight {
