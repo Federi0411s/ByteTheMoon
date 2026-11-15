@@ -8,7 +8,7 @@ Method:
   - Horizons: lunar_horizon.HorizonModel (ray marching with Moon curvature), only over the azimuth
     window the Earth sweeps for each point (libration), not the full 360 degrees.
   - Earth: SPICE apparent Earth position in MOON_ME (web/public/data/ephemeris.json), with the
-    site->Earth parallax; the visible fraction of the Earth disc counts (as in horizon_grid.py).
+    site->Earth parallax; the visible fraction of the Earth disc counts (as in the web heatmap worker, web/src/lib/heatWorker.ts).
 
 Outputs (same grid as charging_points.csv: 4 km, 80S-90S square, polar stereographic):
   web/public/data/overlays/earth_visibility.png   u8 layer + entry in overlays/index.json

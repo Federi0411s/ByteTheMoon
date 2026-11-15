@@ -55,7 +55,6 @@ export function MissionPanel({
                 {status.state === 'computing' && ' · computing averages…'}
                 {status.state === 'loading' && ' · loading horizon grid…'}
                 {status.state === 'ready' && ` · sunlight & Earth averages for this period${status.detail ? ` (${status.detail})` : ''}`}
-                {status.state === 'unavailable' && ' · horizon grid missing: run pipeline/horizon_grid.py'}
                 {status.state === 'outside' && ` · outside the loaded window ${fmtDate(range[0])} – ${fmtDate(range[1])}: heatmaps cover the whole window`}
               </span>
             </span>

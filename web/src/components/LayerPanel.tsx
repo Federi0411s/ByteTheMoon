@@ -91,6 +91,9 @@ export function LayerPanel({
   onPitsVisible,
   pitsError,
   slopeExact,
+  guided,
+  onGuided,
+  guidedAvailable,
 }: {
   layers: LayerMeta[]
   state: Record<string, LayerState>
@@ -113,8 +116,12 @@ export function LayerPanel({
   pitsVisible: boolean
   onPitsVisible: (visible: boolean) => void
   pitsError?: string
-  /** true: max slope from the 40 m LDSM (pipeline layer slope_max); false: approximated from the 100 m slope layer */
+  /** true: steepest slope from the slope pyramid's max channel (lib/slopeMax.ts); false: the engine's sampled (average) slope */
   slopeExact: boolean
+  /** DEM-guided upsampling of the computed heatmaps (sharper edges); off = plain bilinear */
+  guided: boolean
+  onGuided: (on: boolean) => void
+  guidedAvailable: boolean
 }) {
   const shown = layers.filter((l) => l.display !== false)
   const activeLayers = shown.filter((l) => state[l.id]?.visible).length
@@ -133,6 +140,12 @@ export function LayerPanel({
         <div className="menu-section-body">
           <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
           {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
+          {guidedAvailable && (
+            <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
+              <input type="checkbox" checked={guided} onChange={(e) => onGuided(e.target.checked)} />
+              <span>Terrain-guided sharpening</span>
+            </label>
+          )}
           {shown.map((l) => {
             const s = state[l.id] ?? { visible: false, opacity: 0.55 }
             return (
@@ -206,8 +219,8 @@ export function LayerPanel({
                   Transparent where the steepest slope inside the footprint ({footprintLabel(score.footprint)}) centred on
                   that point exceeds the limit.{' '}
                   {slopeExact
-                    ? 'Slope: LOLA LDSM 40 m (max per 100 m cell).'
-                    : 'Approximate: from the 100 m (averaged) slope layer, so steep spots may be underestimated. Re-run pipeline/overlays.py for the 40 m version.'}
+                    ? 'Slope: steepest of the LOLA 118 m slopes in the footprint. Zoomed out (or very near the poles) coarser cells are used, which can only make the check stricter; it tightens as you zoom in.'
+                    : 'Approximate: from the sampled (averaged) slope, so steep spots may be underestimated. Run pipeline/slope_tiles.py for the steepest-slope check.'}
                 </p>
               )}
             </div>
