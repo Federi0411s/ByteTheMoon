@@ -31,7 +31,7 @@ import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './c
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
 import type { SiteEnv } from './components/EnvPanel'
-import { computeTimeline, summarize } from './lib/analysis'
+import { computeTimeline, longestFullNightH, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade } from './lib/raster'
 import { DEFAULT_FOOTPRINT, SLOPE_MAX_DEG, footprintAxes, footprintLabel } from './lib/requirements'
@@ -1198,7 +1198,13 @@ export default function App() {
     return samples
   }, [selected, ephemeris, scorePeriod, analysisPeriodInWindow])
   const summaryStart = landingDay !== undefined ? scorePeriod[0] : t
-  const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= summaryStart)) : undefined), [timeline, summaryStart])
+  const summary = useMemo(() => {
+    if (!timeline.length || !selected || !ephemeris) return undefined
+    const s = summarize(timeline.filter((x) => x.t >= summaryStart))
+    // longest night measured over its full length, even when the period starts / ends inside it
+    const step = timeline.length > 1 ? timeline[1].t - timeline[0].t : 3600_000
+    return { ...s, longestDarkH: longestFullNightH(ephemeris, selected, selected.horizon, summaryStart, scorePeriod[1], step) }
+  }, [timeline, summaryStart, selected, ephemeris, scorePeriod])
   const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
   // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
