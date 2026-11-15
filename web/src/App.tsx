@@ -37,6 +37,7 @@ import {
   EPHEMERIS_LAST_SELECTABLE_YEAR,
   EPHEMERIS_START_YEAR,
   EPHEMERIS_WINDOW_YEARS,
+  loadEphemerisRange,
   loadEphemerisWindow,
   sunPosition,
 } from './lib/ephemeris'
@@ -48,7 +49,7 @@ import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
 import { siteThermalSeries } from './lib/regolith'
 import { combine, scoreRadiation, scoreSlope, scoreSunlight, scoreTelecom, scoreTemperature } from './lib/landingScore'
-import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
+import { DEFAULT_PANEL, powerAt, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
 import { TechnicalReportDialog } from './components/TechnicalReportDialog'
@@ -234,7 +235,6 @@ export default function App() {
   const [stepMs, setStepMs] = useState(3600_000)
   const [selected, setSelected] = useState<Site>()
   const [showSiteMarkers, setShowSiteMarkers] = useState(true)
-  const [windowDays, setWindowDays] = useState(30)
   const [sitePanelExpanded, setSitePanelExpanded] = useState(false)
   const [inspect, setInspect] = useState<{ lat: number; lon: number; values: { title: string; value: string }[] }>()
   const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
@@ -262,6 +262,7 @@ export default function App() {
   const [terrainViewLoading, setTerrainViewLoading] = useState(false)
   const [terrainViewError, setTerrainViewError] = useState<string>()
   const [reportOpen, setReportOpen] = useState(false)
+  const ephemerisRequest = useRef(0)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const terrainCamera = useRef<{ position: Cartesian3; direction: Cartesian3; up: Cartesian3 } | null>(null)
@@ -675,17 +676,29 @@ export default function App() {
 
   // ---- mission period: recompute sunlight / Earth averages over [start, end] (debounced) ----
   const missionValid = mission.start !== undefined && mission.end !== undefined && mission.end > mission.start
-  // the period must lie inside the loaded 5-year ephemeris window (interpolation clamps at its edges)
+  const landingDay = mission.landingDayEnabled && mission.landingDay !== undefined
+    ? Math.floor(mission.landingDay / DAY) * DAY
+    : undefined
   const missionInWindow = missionValid && mission.start! >= timeRange[0] && mission.end! <= timeRange[1]
+  const periodLabel = landingDay !== undefined
+    ? 'landing day'
+    : missionValid ? 'mission period' : 'loaded period (no mission period set)'
+  const scorePeriod = useMemo<[number, number]>(
+    () => landingDay !== undefined
+      ? [landingDay, landingDay + DAY]
+      : missionValid ? [mission.start!, mission.end!] : timeRange,
+    [landingDay, missionValid, mission.start, mission.end, timeRange],
+  )
+  const analysisPeriodInWindow = scorePeriod[0] >= timeRange[0] && scorePeriod[1] <= timeRange[1]
   const navigationRange = useMemo<[number, number]>(
-    () => missionInWindow ? [mission.start!, mission.end!] : timeRange,
-    [missionInWindow, mission.start, mission.end, timeRange],
+    () => analysisPeriodInWindow ? scorePeriod : timeRange,
+    [analysisPeriodInWindow, scorePeriod, timeRange],
   )
   useEffect(() => {
     setT((current) => Math.min(Math.max(current, navigationRange[0]), navigationRange[1]))
   }, [navigationRange])
 
-  // ---- global heatmap engine + its averaging window (mission period, else the whole loaded window) ----
+  // ---- global heatmap engine + its averaging window ----
   useEffect(() => {
     if (!ready) return
     let engine: HeatEngine | null = null
@@ -700,11 +713,11 @@ export default function App() {
     return () => { disposed = true; engine?.dispose() }
   }, [ready])
   useEffect(() => {
-    if (!heat || !ephemeris) return
-    const [a, b] = missionInWindow ? [mission.start!, mission.end!] : timeRange
+    if (!heat || !ephemeris || !analysisPeriodInWindow) return
+    const [a, b] = scorePeriod
     const id = setTimeout(() => { heat.setWindow(ephemeris, a, b); setHeatVersion(heat.version) }, 200)
     return () => clearTimeout(id)
-  }, [heat, ephemeris, timeRange, missionInWindow, mission.start, mission.end])
+  }, [heat, ephemeris, analysisPeriodInWindow, scorePeriod])
 
   useEffect(() => {
     if (!heat || !selected || selected.horizon) return
@@ -731,6 +744,8 @@ export default function App() {
     return () => { cancelled = true }
   }, [heat, heatVersion, selected])
   const siteEnvReady = siteEnv && siteEnv.key === siteEnvKey ? siteEnv : undefined
+  const heatWindowMatchesPeriod = !heat || (heat.window[0] === scorePeriod[0] && heat.window[1] === scorePeriod[1])
+  const siteEnvForPeriod = heatWindowMatchesPeriod ? siteEnvReady : undefined
 
   // Refined area around the selected site (~15 km around it): every layer is computed there from the
   // finest elevation tiles, sampled at their own resolution, once the view is close enough (map tile
@@ -801,10 +816,10 @@ export default function App() {
     if (iceVisible) active.push({ id: '__ice', title: 'Water ice', source: 'Diviner PRP cold traps (Paige et al. 2010)', opacity: 1 })
     return active
   }, [displayLayers, layerState, score, radiationVisible, radiationMode, radiationOpacity, iceVisible])
-  const reportPeriod: [number, number] = missionValid && missionInWindow
-    ? [mission.start!, mission.end!]
-    : timeRange
-  const reportPeriodSource = missionValid && missionInWindow ? 'Configured Mission period' : 'Loaded ephemeris window'
+  const reportPeriod = scorePeriod
+  const reportPeriodSource = landingDay !== undefined
+    ? 'Landing day'
+    : missionValid ? 'Configured mission period' : 'Loaded ephemeris window'
 
   // ---- map layers (one ImageryLayer per visible layer; rebuilt when the period or the focus changes) ----
   const layerKeys = useRef<Record<string, string>>({})
@@ -1162,41 +1177,46 @@ export default function App() {
   }, [ready, bundle, inspectCustomPoint, inspectPit])
 
   // ---- site analysis ----
-  const dayStart = Math.floor(t / DAY) * DAY
   const timeline = useMemo(() => {
-    if (!selected || !ephemeris) return []
-    const step = windowDays > 90 ? 6 * 3600_000 : 3600_000
-    return computeTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step)
-  }, [selected, ephemeris, dayStart, windowDays])
-  const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= t)) : undefined), [timeline, t])
-  const now = useMemo(() => (selected && ephemeris ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t])
+    if (!selected || !ephemeris || !analysisPeriodInWindow) return []
+    const duration = scorePeriod[1] - scorePeriod[0]
+    const step = duration > 90 * DAY ? 6 * 3600_000 : 3600_000
+    const samples = computeTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], step)
+    if (samples.length && samples[samples.length - 1].t < scorePeriod[1]) {
+      samples.push(...computeTimeline(ephemeris, selected, selected.horizon, scorePeriod[1], scorePeriod[1]))
+    }
+    return samples
+  }, [selected, ephemeris, scorePeriod, analysisPeriodInWindow])
+  const summaryStart = landingDay !== undefined ? scorePeriod[0] : t
+  const summary = useMemo(() => (timeline.length ? summarize(timeline.filter((s) => s.t >= summaryStart)) : undefined), [timeline, summaryStart])
+  const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
   // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
   const powerTl = useMemo(() => {
-    if (!selected || !ephemeris) return []
-    const step = windowDays <= 90 ? 3600_000 : 3 * 3600_000
-    return powerTimeline(ephemeris, selected, selected.horizon, dayStart, dayStart + windowDays * DAY, step, panel)
-  }, [selected, ephemeris, dayStart, windowDays, panel])
-  const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= t)), [powerTl, t])
-  const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
+    if (!selected || !ephemeris || !analysisPeriodInWindow) return []
+    const duration = scorePeriod[1] - scorePeriod[0]
+    const step = duration > 90 * DAY ? 3 * 3600_000 : 3600_000
+    const samples = powerTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], step, panel)
+    if (samples.length && samples[samples.length - 1].t < scorePeriod[1]) {
+      samples.push(powerAt(ephemeris, selected, selected.horizon, scorePeriod[1], panel))
+    }
+    return samples
+  }, [selected, ephemeris, scorePeriod, panel, analysisPeriodInWindow])
+  const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= summaryStart)), [powerTl, summaryStart])
+  const dsnNow = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
   // ---- landing score (lib/landingScore.ts): temperature, radiation, slope, telecom, sunlight ----
-  // The score refers to the same period as the global heatmaps (temperature, radiation): the mission
-  // period when one is set inside the loaded window, otherwise the whole loaded window.
-  const scorePeriod = useMemo<[number, number]>(
-    () => (missionInWindow ? [mission.start!, mission.end!] : timeRange),
-    [missionInWindow, mission.start, mission.end, timeRange],
-  )
-  // samples over the period: ~1 h even over the 5-year window (at most ~45 000), never finer than 15 min
+  // The score refers to the same period as the global heatmaps (temperature, radiation).
+  // Samples are capped at about 45 000 over long intervals and never finer than 15 min.
   const scoreStep = Math.max(900_000, Math.ceil((scorePeriod[1] - scorePeriod[0]) / 45_000 / 900_000) * 900_000)
   const dsnTl = useMemo(() => {
-    if (!selected || !ephemeris) return []
+    if (!selected || !ephemeris || !analysisPeriodInWindow) return []
     return dsnTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep)
-  }, [selected, ephemeris, scorePeriod, scoreStep])
+  }, [selected, ephemeris, scorePeriod, scoreStep, analysisPeriodInWindow])
   // hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
   const walkSeries = useMemo(() => {
-    if (!selected || !ephemeris) return undefined
+    if (!selected || !ephemeris || !analysisPeriodInWindow) return undefined
     return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], Math.max(3600_000, scoreStep), bundle?.fields.dem_south)
-  }, [selected, ephemeris, scorePeriod, scoreStep, bundle])
+  }, [selected, ephemeris, scorePeriod, scoreStep, bundle, analysisPeriodInWindow])
   // sunlight criterion: share of the period sunlit and longest night (Sun below the terrain horizon)
   const sunStats = useMemo(() => {
     if (!walkSeries) return undefined
@@ -1205,8 +1225,8 @@ export default function App() {
     return { pct: (100 * lit) / walkSeries.sunlit.length, longestDarkH: longest * walkSeries.stepH }
   }, [walkSeries])
   const landing = useMemo(() => {
-    if (!selected) return undefined
-    const env = siteEnvReady?.env ?? undefined
+    if (!selected || !analysisPeriodInWindow) return undefined
+    const env = siteEnvForPeriod?.env ?? undefined
     // slope: max inside the landing footprint (polar maps); elsewhere the global terrain slope at the point
     const fp = footprintSlope?.sampleNearest(selected.lon * D2R, selected.lat * D2R)
     const slope = fp !== undefined && Number.isFinite(fp)
@@ -1226,41 +1246,94 @@ export default function App() {
       telecom,
       sunStats ? scoreSunlight(sunStats.longestDarkH, sunStats.pct) : undefined,
     ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
-  }, [selected, siteEnvReady, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod])
+  }, [selected, siteEnvForPeriod, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow])
 
   // ---- crew outside the habitat: AxEMU suit + NASA-STD-3001 limits (lib/human.ts), same period ----
   const human = useMemo(() => {
-    const env = siteEnvReady?.env
-    if (!env || !walkSeries) return undefined
-    return assessHuman(env.doseUGyH, walkSeries, (scorePeriod[1] - scorePeriod[0]) / 86400_000, missionInWindow)
-  }, [siteEnvReady, walkSeries, scorePeriod, missionInWindow])
+    const env = siteEnvForPeriod?.env
+    if (!env || !walkSeries || !analysisPeriodInWindow) return undefined
+    return assessHuman(env.doseUGyH, walkSeries, (scorePeriod[1] - scorePeriod[0]) / 86400_000, missionInWindow || landingDay !== undefined)
+  }, [siteEnvForPeriod, walkSeries, scorePeriod, missionInWindow, landingDay, analysisPeriodInWindow])
 
-  const selectCalendarDate = async (nextTime: number) => {
-    const year = new Date(nextTime).getUTCFullYear()
-    if (year < EPHEMERIS_START_YEAR || year > EPHEMERIS_LAST_SELECTABLE_YEAR) return
-    if (year === new Date(timeRange[0]).getUTCFullYear()) {
-      setT(nextTime)
-      return
-    }
-
+  const loadEphemerisData = async (load: () => Promise<NonNullable<DataBundle['ephemeris']>>) => {
+    const request = ++ephemerisRequest.current
     setPlaying(false)
     setEphemerisBusy(true)
     setEphemerisError(undefined)
     try {
-      const nextEphemeris = await loadEphemerisWindow(DATA_URL, year)
+      const nextEphemeris = await load()
+      if (request !== ephemerisRequest.current) return false
       setEphemeris(nextEphemeris)
-      setTimeRange([Date.UTC(year, 0, 1), Date.UTC(year + EPHEMERIS_WINDOW_YEARS, 0, 1)])
-      setT(nextTime)
+      setTimeRange(ephemerisRange(nextEphemeris))
+      return true
     } catch (error) {
-      setEphemerisError(error instanceof Error ? error.message : String(error))
+      if (request === ephemerisRequest.current) setEphemerisError(error instanceof Error ? error.message : String(error))
+      return false
     } finally {
-      setEphemerisBusy(false)
+      if (request === ephemerisRequest.current) setEphemerisBusy(false)
     }
+  }
+
+  const cancelEphemerisLoad = () => {
+    ephemerisRequest.current++
+    setEphemerisBusy(false)
+    setEphemerisError(undefined)
+  }
+
+  const selectCalendarDate = async (nextTime: number) => {
+    const year = new Date(nextTime).getUTCFullYear()
+    if (year < EPHEMERIS_START_YEAR || year > EPHEMERIS_LAST_SELECTABLE_YEAR) return
+    if (nextTime >= timeRange[0] && nextTime <= timeRange[1]) {
+      cancelEphemerisLoad()
+      setT(nextTime)
+      return
+    }
+
+    if (await loadEphemerisData(() => loadEphemerisWindow(DATA_URL, year))) setT(nextTime)
+  }
+
+  const changeMission = (missionUpdate: Mission) => {
+    const next = { ...missionUpdate }
+    if (next.landingDayEnabled && next.landingDay !== undefined &&
+      next.start !== undefined && next.end !== undefined && next.end > next.start) {
+      const firstDay = Math.floor(next.start / DAY) * DAY
+      const lastDay = Math.floor(next.end / DAY) * DAY
+      next.landingDay = Math.min(Math.max(Math.floor(next.landingDay / DAY) * DAY, firstDay), lastDay)
+    }
+    setMission(next)
+
+    const withinLoadedRange = (start: number, end: number) => start >= timeRange[0] && end <= timeRange[1]
+    if (next.landingDayEnabled && next.landingDay !== undefined) {
+      const dayStart = Math.floor(next.landingDay / DAY) * DAY
+      const dayEnd = dayStart + DAY
+      if (withinLoadedRange(dayStart, dayEnd)) { cancelEphemerisLoad(); return }
+      const year = new Date(dayStart).getUTCFullYear()
+      void loadEphemerisData(() => loadEphemerisWindow(DATA_URL, year))
+      return
+    }
+    if (next.start !== undefined && next.end !== undefined && next.end > next.start) {
+      if (withinLoadedRange(next.start, next.end)) { cancelEphemerisLoad(); return }
+      void loadEphemerisData(() => loadEphemerisRange(DATA_URL, next.start!, next.end!))
+      return
+    }
+
+    const target = next.start ?? next.end
+    if (target !== undefined && !withinLoadedRange(target, target)) {
+      const year = new Date(target).getUTCFullYear()
+      if (year >= EPHEMERIS_START_YEAR && year <= EPHEMERIS_LAST_SELECTABLE_YEAR) {
+        void loadEphemerisData(() => loadEphemerisWindow(DATA_URL, year))
+        return
+      }
+    }
+    cancelEphemerisLoad()
   }
 
   const resetTimeline = () => {
     if (!bundle?.ephemeris) return
+    ephemerisRequest.current++
+    setEphemerisBusy(false)
     setPlaying(false)
+    setMission({})
     setEphemeris(bundle.ephemeris)
     setTimeRange([DEFAULT_TIME_START, DEFAULT_TIME_END])
     setT(DEFAULT_TIME_START)
@@ -1329,23 +1402,29 @@ export default function App() {
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
             <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
-              onGenerateReport={() => { setPlaying(false); setReportOpen(true) }} reportDisabled={!ephemeris}
+              onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}
+              reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}
-              now={now} nowMs={t} windowDays={windowDays} onWindowDays={setWindowDays} inspect={inspect}
+              now={now} nowMs={t}
+              periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
-              env={siteEnvKey ? { env: siteEnvReady?.env ?? undefined, loading: !siteEnvReady } : undefined}
+              env={analysisPeriodInWindow && siteEnvKey ? { env: siteEnvForPeriod?.env ?? undefined, loading: !siteEnvForPeriod } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
-              landing={landing ? { result: landing, period: scorePeriod, isMission: missionInWindow, human } : undefined}
+              landing={landing ? { result: landing, period: scorePeriod, periodLabel, human } : undefined}
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
           <aside className="side right">
             {bundle.ephemeris && (
-              <MissionPanel mission={mission} onChange={setMission} range={timeRange}
-                status={{ state: !missionValid ? 'idle' : !missionInWindow ? 'outside' : 'ready' }} />
+              <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
+                status={{
+                  state: ephemerisBusy ? 'loading'
+                    : !missionValid && landingDay === undefined ? 'idle'
+                      : analysisPeriodInWindow ? 'ready' : 'outside',
+                }} />
             )}
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!(heat && heatVersion)}
@@ -1370,7 +1449,7 @@ export default function App() {
           </aside>
           {bundle.ephemeris && ephemeris && (
             <TimeBar t={t} range={timeRange} navigationRange={navigationRange}
-              calendarRange={missionInWindow ? navigationRange : CALENDAR_RANGE} onChange={setT}
+              calendarRange={landingDay !== undefined ? navigationRange : missionInWindow ? navigationRange : CALENDAR_RANGE} onChange={setT}
               onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
               stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
               busy={ephemerisBusy} error={ephemerisError} mission={mission} onMission={setMission} />
@@ -1395,7 +1474,7 @@ export default function App() {
               ephemeris={ephemeris}
               heat={heat}
               panel={panel}
-              env={siteEnvReady?.env ?? undefined}
+              env={siteEnvForPeriod?.env ?? undefined}
               panoramaTimeline={timeline}
               panoramaNow={now}
               currentMs={t}

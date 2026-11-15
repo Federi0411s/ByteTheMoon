@@ -131,43 +131,6 @@ export function LayerPanel({
       <h2>Map controls</h2>
       <details className="menu-section">
         <summary className="menu-section-summary">
-          <span>Map layers</span>
-          <span className="menu-section-state">{activeLayers}/{shown.length} active</span>
-          <span className="menu-section-chevron" aria-hidden="true">›</span>
-        </summary>
-        <div className="menu-section-body">
-          <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
-          {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
-          {guidedAvailable && (
-            <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
-              <input type="checkbox" checked={guided} onChange={(e) => onGuided(e.target.checked)} />
-              <span>Terrain-guided sharpening</span>
-            </label>
-          )}
-          {shown.map((l) => {
-            const s = state[l.id] ?? { visible: false, opacity: 0.55 }
-            return (
-              <div key={l.id} className="layer">
-                <label className="layer-head" title={l.description}>
-                  <input type="checkbox" checked={s.visible} onChange={(e) => onChange(l.id, { ...s, visible: e.target.checked })} />
-                  {l.title}
-                </label>
-                {s.visible && (
-                  <>
-                    <input type="range" min={0} max={1} step={0.05} value={s.opacity} aria-label={`${l.title} opacity`}
-                      onChange={(e) => onChange(l.id, { ...s, opacity: Number(e.target.value) })} />
-                    <Legend colormap={l.colormap} min={l.min} max={l.max} units={l.units} />
-                    <p className="source">{l.source}</p>
-                  </>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </details>
-
-      <details className="menu-section">
-        <summary className="menu-section-summary">
           <span>Landing suitability</span>
           <span className="menu-section-state">{suitabilityStatus}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
@@ -214,6 +177,43 @@ export function LayerPanel({
               )}
             </div>
           )}
+        </div>
+      </details>
+
+      <details className="menu-section">
+        <summary className="menu-section-summary">
+          <span>Map layers</span>
+          <span className="menu-section-state">{activeLayers}/{shown.length} active</span>
+          <span className="menu-section-chevron" aria-hidden="true">›</span>
+        </summary>
+        <div className="menu-section-body">
+          <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
+          {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
+          {guidedAvailable && (
+            <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
+              <input type="checkbox" checked={guided} onChange={(e) => onGuided(e.target.checked)} />
+              <span>Terrain-guided sharpening</span>
+            </label>
+          )}
+          {shown.map((l) => {
+            const s = state[l.id] ?? { visible: false, opacity: 0.55 }
+            return (
+              <div key={l.id} className="layer">
+                <label className="layer-head" title={l.description}>
+                  <input type="checkbox" checked={s.visible} onChange={(e) => onChange(l.id, { ...s, visible: e.target.checked })} />
+                  {l.title}
+                </label>
+                {s.visible && (
+                  <>
+                    <input type="range" min={0} max={1} step={0.05} value={s.opacity} aria-label={`${l.title} opacity`}
+                      onChange={(e) => onChange(l.id, { ...s, opacity: Number(e.target.value) })} />
+                    <Legend colormap={l.colormap} min={l.min} max={l.max} units={l.units} />
+                    <p className="source">{l.source}</p>
+                  </>
+                )}
+              </div>
+            )
+          })}
         </div>
       </details>
 

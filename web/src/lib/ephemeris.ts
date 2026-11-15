@@ -118,6 +118,39 @@ export async function loadEphemerisWindow(baseUrl: string, startYear: number): P
   }
 }
 
+export async function loadEphemerisRange(baseUrl: string, startMs: number, endMs: number): Promise<Ephemeris> {
+  const minMs = Date.UTC(EPHEMERIS_START_YEAR, 0, 1)
+  const maxMs = Date.UTC(EPHEMERIS_LAST_SELECTABLE_YEAR + 1, 0, 1)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs < minMs || endMs <= startMs || endMs > maxMs) {
+    throw new RangeError('Unsupported ephemeris date range')
+  }
+
+  const firstYear = new Date(startMs).getUTCFullYear()
+  const lastYear = new Date(endMs).getUTCFullYear()
+  const firstChunkYear = EPHEMERIS_START_YEAR +
+    Math.floor((firstYear - EPHEMERIS_START_YEAR) / EPHEMERIS_WINDOW_YEARS) * EPHEMERIS_WINDOW_YEARS
+  const lastChunkYear = EPHEMERIS_START_YEAR +
+    Math.floor((lastYear - EPHEMERIS_START_YEAR) / EPHEMERIS_WINDOW_YEARS) * EPHEMERIS_WINDOW_YEARS
+  const chunkYears: number[] = []
+  for (let year = firstChunkYear; year <= lastChunkYear; year += EPHEMERIS_WINDOW_YEARS) chunkYears.push(year)
+
+  const combined = joinChunks(await Promise.all(chunkYears.map((year) => loadChunk(baseUrl, year))))
+  const startIndex = Math.max(0, Math.floor((startMs - combined.startMs) / combined.stepMs))
+  const endIndex = Math.min(combined.count - 1, Math.ceil((endMs - combined.startMs) / combined.stepMs))
+  if (startIndex >= endIndex || endIndex >= combined.count) {
+    throw new Error(`Ephemeris data does not cover ${new Date(startMs).getUTCFullYear()}-${new Date(endMs).getUTCFullYear()}`)
+  }
+  const valueStart = startIndex * 3
+  const valueEnd = (endIndex + 1) * 3
+  return {
+    ...combined,
+    startMs: combined.startMs + startIndex * combined.stepMs,
+    count: endIndex - startIndex + 1,
+    sun: combined.sun.slice(valueStart, valueEnd),
+    earth: combined.earth.slice(valueStart, valueEnd),
+  }
+}
+
 export function ephemerisRange(e: Ephemeris): [number, number] {
   return [e.startMs, e.startMs + (e.count - 1) * e.stepMs]
 }

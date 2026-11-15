@@ -55,7 +55,7 @@ export function TechnicalReportDialog({
     setError(undefined)
     try {
       if (heat && (heat.window[0] !== period[0] || heat.window[1] !== period[1])) {
-        throw new Error('The thermal model is still preparing the selected mission interval. Please try again in a moment.')
+        throw new Error('The thermal model is still preparing the selected analysis interval. Please try again in a moment.')
       }
       const [filterImages, temperatureTimeline] = await Promise.all([
         includeMap ? captureMap(site, overlays) : Promise.resolve([] as ReportFilterImage[]),
@@ -108,12 +108,12 @@ export function TechnicalReportDialog({
 
       <div className="report-dialog-body">
         <p className="muted">
-          The report includes a mission data table and temperature, power-generation and DSN-contact timelines for the UTC interval below.
+          The report includes a site data table and temperature, power-generation and DSN-contact timelines for the selected UTC interval below.
         </p>
         <p className="muted">Temperature and power are shown over time. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.</p>
 
         <section className="report-period">
-          <h3>Mission interval</h3>
+          <h3>Analysis interval</h3>
           <div className="report-date-row"><span>Start (UTC)</span><output>{fmtDateTime(period[0])}</output></div>
           <div className="report-date-row"><span>End (UTC)</span><output>{fmtDateTime(period[1])}</output></div>
           <p className="muted">Source: {periodSource}. Change dates in the Mission period panel before opening this report.</p>

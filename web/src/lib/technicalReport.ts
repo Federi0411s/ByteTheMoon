@@ -232,7 +232,7 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
   y += 5
 
   const spanMs = request.endMs - request.startMs
-  if (!(spanMs > 0)) throw new Error('The mission interval must have a positive duration.')
+  if (!(spanMs > 0)) throw new Error('The selected analysis interval must have a positive duration.')
   const timelineStep = Math.min(spanMs, Math.max(HOUR_MS, Math.ceil(spanMs / 12000)))
   const samples = computeTimeline(
     request.ephemeris,
@@ -262,17 +262,18 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
 
   const latHemisphere = request.site.lat < 0 ? 'S' : 'N'
   const lonHemisphere = request.site.lon < 0 ? 'W' : 'E'
-  section('Mission summary')
+  const landingDayReport = request.periodSource === 'Landing day'
+  section(landingDayReport ? 'Landing-day summary' : 'Mission summary')
   const rows: [string, string][] = [
     ['Coordinates', `${Math.abs(request.site.lat).toFixed(5)}° ${latHemisphere}, ${Math.abs(request.site.lon).toFixed(5)}° ${lonHemisphere}`],
     ['Site category / elevation', `${request.site.group} / ${request.site.heightM === undefined ? 'Unavailable' : `${request.site.heightM.toFixed(1)} m`}`],
-    ['Mission interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`],
+    [request.periodSource === 'Landing day' ? 'Landing day (UTC)' : 'Analysis interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`],
     ['Interval source', request.periodSource],
-    ['Mission duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
+    ['Analysis duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
     ['Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed'],
-    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of mission`],
-    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of mission`],
-    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of mission`],
+    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of interval`],
+    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of interval`],
+    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of interval`],
     ['Longest estimated night', `${stats.longestDarkHours.toFixed(1)} h`],
     ['Now: Sun elevation / visible', `${current ? `${current.sunEl.toFixed(1)}° / ${(current.sunVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
     ['Now: Earth elevation / visible', `${current ? `${current.earthEl.toFixed(1)}° / ${(current.earthVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
@@ -285,9 +286,9 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
     ['Energy / producing time', `${(powerSummary.energyWh / 1000).toFixed(2)} kWh / ${powerSummary.producingPct.toFixed(1)}%`],
     ['Longest power outage / eclipse', `${powerSummary.longestOutageHours.toFixed(1)} h / ${powerSummary.eclipseHours.toFixed(1)} h`],
     ['DSN link now', DSN_STATIONS.filter((station) => currentDsn.st[station.id]?.link).map((station) => station.name).join(', ') || 'No station in link'],
-    ['Any DSN contact during mission', `${dsnSummary.contactPct.toFixed(1)}% of mission`],
+    ['Any DSN contact during interval', `${dsnSummary.contactPct.toFixed(1)}% of interval`],
     ['DSN overlap (none / exactly 1 / exactly 2 / all 3)', `${dsnSummary.noStationPct.toFixed(1)}% / ${dsnSummary.oneStationPct.toFixed(1)}% / ${dsnSummary.twoStationPct.toFixed(1)}% / ${dsnSummary.allThreePct.toFixed(1)}%`],
-    ...DSN_STATIONS.map((station) => [`${station.name} ${station.antenna} contact time`, `${dsnSummary.stationPct[station.id].toFixed(1)}% of mission`] as [string, string]),
+    ...DSN_STATIONS.map((station) => [`${station.name} ${station.antenna} contact time`, `${dsnSummary.stationPct[station.id].toFixed(1)}% of interval`] as [string, string]),
     ['Longest estimated no-contact gap', `${dsnSummary.longestNoContactHours.toFixed(1)} h`],
   ]
   if (request.includeSiteDetails && request.site.note) rows.splice(4, 0, ['Site note', request.site.note])
@@ -312,8 +313,8 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
   y += panoramaHeight + 3
 
   newPage()
-  section('Mission timelines')
-  paragraph(`Temperature and power are plotted as mean curves against mission time. Temperature uses representative lunations for missions longer than one year, so its connecting line is a guide between sampled periods. DSN links are binary (0 = no link, 1 = link): the three station traces are separated into lanes so simultaneous links remain visible. A second chart sums them from 0 to 3. DSN sampling: ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`}; contact transitions are approximate at that resolution.`)
+  section(landingDayReport ? 'Landing-day timelines' : 'Mission timelines')
+  paragraph(`Temperature and power are plotted as mean curves against the selected interval. Temperature uses representative lunations for intervals longer than one year, so its connecting line is a guide between sampled periods. DSN links are binary (0 = no link, 1 = link): the three station traces are separated into lanes so simultaneous links remain visible. A second chart sums them from 0 to 3. DSN sampling: ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`}; contact transitions are approximate at that resolution.`)
   if (request.temperatureTimeline?.length) {
     reserve(60)
     addTemperatureChart(doc, request.temperatureTimeline, request.startMs, request.endMs, margin, y, contentWidth)
@@ -348,7 +349,7 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
       `${fmtDateTime(window.start)} – ${fmtDateTime(window.end)} UTC (${((window.end - window.start) / HOUR_MS).toFixed(1)} h)`,
     ]))
   } else {
-    paragraph('No interval with a sampled link from Goldstone, Madrid or Canberra was found. Increase sampling detail or choose another site/mission interval.')
+    paragraph('No interval with a sampled link from Goldstone, Madrid or Canberra was found. Increase sampling detail or choose another site/analysis interval.')
   }
 
   if (request.includeMap) {

@@ -84,8 +84,7 @@ export function SitePanel({
   summary,
   now,
   nowMs,
-  windowDays,
-  onWindowDays,
+  periodLabel,
   inspect,
   expanded,
   onToggleExpanded,
@@ -113,8 +112,7 @@ export function SitePanel({
   summary?: SiteSummary
   now?: TimelineSample
   nowMs: number
-  windowDays: number
-  onWindowDays: (d: number) => void
+  periodLabel: string
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
   expanded: boolean
   onToggleExpanded: () => void
@@ -126,7 +124,7 @@ export function SitePanel({
   dsn?: { now?: DsnSample }
   env?: { env?: SiteEnv; loading: boolean }
   power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
-  landing?: { result: LandingScore; period: [number, number]; isMission: boolean; human?: HumanAssessment }
+  landing?: { result: LandingScore; period: [number, number]; periodLabel: string; human?: HumanAssessment }
   terrainViewActive: boolean
   terrainViewLoading: boolean
   terrainViewError?: string
@@ -135,6 +133,7 @@ export function SitePanel({
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
     <section className="panel" id="landing-sites-panel">
+      {landing && <ScorePanel {...landing} />}
       <div className="site-panel-heading">
         <h2>Landing sites</h2>
         <button className="site-panel-expand" onClick={onToggleExpanded} aria-expanded={expanded} aria-controls="landing-sites-panel"
@@ -174,10 +173,6 @@ export function SitePanel({
 
       {selected && (
         <>
-          <button className="report-open-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
-            Generate technical report (PDF)
-          </button>
-          {reportDisabled && <p className="muted">A loaded ephemeris is required to generate a period report.</p>}
           {(selected.group === 'Custom' || selected.group === 'Saved') && (
             <SavedSiteEditor key={selected.id} site={selected} onSave={onSaveSite} onRemove={onRemoveSite} />
           )}
@@ -202,12 +197,7 @@ export function SitePanel({
             </div>
           )}
           <Panorama mask={selected.horizon} timeline={timeline} now={now} />
-          <div className="row">
-            <span className="muted">Window</span>
-            {[1, 3, 7, 30, 90, 365].map((d) => (
-              <button key={d} className={d === windowDays ? 'on' : ''} onClick={() => onWindowDays(d)}>{d} d</button>
-            ))}
-          </div>
+          <div className="row"><span className="muted">{periodLabel} · sunlight and Earth visibility</span></div>
           <TimelineBars timeline={timeline} nowMs={nowMs} />
           {summary && (
             <div className="kv-grid">
@@ -222,7 +212,10 @@ export function SitePanel({
           {env && <EnvPanel {...env} />}
           {dsn && <DsnPanel now={dsn.now} />}
           {power && <PowerPanel {...power} />}
-          {landing && <ScorePanel {...landing} />}
+          <button className="report-open-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
+            Generate technical report (PDF)
+          </button>
+          {reportDisabled && <p className="muted">Wait for the selected analysis interval data to finish loading before generating a report.</p>}
         </>
       )}
     </section>

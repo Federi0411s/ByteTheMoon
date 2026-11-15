@@ -51,6 +51,7 @@ export function TimeBar({
 }) {
   const missionRange = mission.start !== undefined && mission.end !== undefined &&
     navigationRange[0] === mission.start && navigationRange[1] === mission.end
+  const oneDayRange = navigationRange[1] - navigationRange[0] <= 86400_000
   return (
     <footer className="timebar">
       <button onClick={() => onPlay(!playing)} disabled={busy} aria-label={playing ? 'Pause' : 'Play'}>{playing ? '❚❚' : '▶'}</button>
@@ -73,7 +74,7 @@ export function TimeBar({
         disabled={busy}
         ariaLabel="Date and time (UTC)"
       />
-      <span className="muted time-range-label" title={missionRange ? 'Mission time range' : 'Current five-year timeline window'}>
+      <span className="muted time-range-label" title={missionRange ? 'Mission time range' : oneDayRange ? 'Selected analysis day' : 'Loaded ephemeris range'}>
         {missionRange
           ? `${fmtDateTime(navigationRange[0])} – ${fmtDateTime(navigationRange[1])}`
           : `${fmtDate(navigationRange[0])} – ${fmtDate(navigationRange[1])}`}

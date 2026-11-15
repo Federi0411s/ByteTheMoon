@@ -293,6 +293,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
   .app { overflow-y: auto; }
+  .timebar { position: static; flex-wrap: wrap; margin: 8px 12px; }
+  .time-col { flex: 1 1 100%; }
   .site-panel-expand { display: none; }
   .map-scale { position: relative; right: auto; bottom: auto; width: max-content; margin: 8px 12px 76px auto; }
   /* panels stack in normal flow here, so credits just sit above the time bar */
@@ -338,6 +340,16 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .mission-inputs { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .mission-inputs label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .mission-inputs input { min-width: 0; font-size: 13px; padding: 5px 6px; }
+.mission-landing-toggle { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; }
+.mission-landing-date { display: grid; gap: 4px; margin-top: 6px; }
+.mission-landing-date label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.mission-landing-date > p { margin: 0; }
+.iso-input-control { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.iso-input-control.iso-input-with-calendar { gap: 4px; }
+.iso-input-with-calendar .iso-input { flex: 1 1 auto; min-width: 0; }
+.iso-calendar-button { display: grid; flex: 0 0 32px; width: 32px; height: 30px; place-items: center; padding: 5px; }
+.iso-calendar-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.iso-date-picker { position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0 !important; opacity: 0; pointer-events: none; }
 .mission-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; }
 .mission-status b { color: var(--earth); }
 

@@ -75,14 +75,15 @@ function CriterionInfo({ id }: { id: CriterionResult['id'] }) {
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
 /** Landing score: one coloured bar per criterion, the human EVA check, the overall score, then the comments. */
-export function ScorePanel({ result, period, isMission, human }: { result: LandingScore; period: [number, number]; isMission: boolean; human?: HumanAssessment }) {
+export function ScorePanel({ result, period, periodLabel, human }: { result: LandingScore; period: [number, number]; periodLabel: string; human?: HumanAssessment }) {
   const { criteria, score, feasible, missing } = result
   const overallColor = !feasible ? CLASS_INFO['not-feasible'].color : score >= 85 ? CLASS_INFO.recommended.color : score >= 60 ? CLASS_INFO.feasible.color : CLASS_INFO.difficult.color
+  const periodText = periodLabel === 'landing day' ? day(period[0]) : `${day(period[0])} → ${day(period[1])}`
   return (
     <div className="dsn">
       <h3>Landing score</h3>
       <p className="muted">
-        Over the {isMission ? 'mission period' : 'loaded period (no mission period set)'}: {day(period[0])} → {day(period[1])}.
+        Over the {periodLabel}: {periodText}.
         Recommended 100 · Feasible 70 · Difficult 40 · Not feasible 0 points; the score is the mean.
       </p>
       {criteria.map((c) => {
