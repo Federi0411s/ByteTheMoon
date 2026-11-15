@@ -296,21 +296,35 @@ export class HeatEngine {
    */
   tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, thermalSeriesIndices?: number[]): Promise<HeatTile | null> {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
-    const seriesKey = thermalSeriesIndices?.length ? `/s${thermalSeriesIndices.join('.')}` : ''
-    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}${seriesKey}`
-    let p = this.cache.get(key)
+    // per-cell temperature series (site panels, reports) are one-off answers: computed fresh, never cached
+    const series = thermalSeriesIndices?.length ? thermalSeriesIndices : undefined
+    return this.request(`${z}/${x}/${y}/${n}/${demMax}/g${g}`, { type: 'tile', z, x, y, n, demMax, thermal, g, thermalSeriesIndices: series }, `${z}/${x}/${y}/${g}`, thermal, wanted, !series)
+  }
+
+  /**
+   * Values on polar block (bx, by) of level z around pole p (-1 south, +1 north): an n x n lattice of
+   * the polar stereographic plane (lib/heatGrid.ts), row 0 = top (largest y). Same caching and
+   * failure rules as tile().
+   */
+  polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean): Promise<HeatTile | null> {
+    return this.request(`P${p}/${z}/${bx}/${by}/${n}/${demMax}`, { type: 'tile', z, x: bx, y: by, n, demMax, thermal, polar: p }, `P${p}/${z}/${bx}/${by}`, thermal, wanted)
+  }
+
+  private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true): Promise<HeatTile | null> {
+    const key = `${this.version}/${id}/${thermal ? 't' : ''}`
+    let p = cacheable ? this.cache.get(key) : undefined
     // a tile computed with the regolith model also answers requests without it
-    if (!p && !thermal) p = this.cache.get(`${key}t`)
+    if (!p && cacheable && !thermal) p = this.cache.get(`${key}t`)
     if (p) return p
     const version = this.version
-    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, thermalSeriesIndices, g }, `${z}/${x}/${y}/${g}`, wanted)
+    p = this.enqueue<HeatTile & { version: number; error?: string }>(msg, affinityKey, wanted)
       .then((d) => {
         const ok = d && !d.error && d.version === version
-        if (!ok) this.cache.delete(key) // never keep a failure: the next request recomputes
+        if (!ok && cacheable) this.cache.delete(key) // never keep a failure: the next request recomputes
         if (d?.error) console.warn('heatmap tile failed:', d.error)
         return ok ? d : null
       })
-    if (!seriesKey) {
+    if (cacheable) {
       this.cache.set(key, p)
       this.order.push(key)
       while (this.order.length > 1500) this.cache.delete(this.order.shift()!)

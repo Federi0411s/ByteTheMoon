@@ -1,0 +1,50 @@
+{
+ "tiling": "geographic",
+ "tileSize": 256,
+ "format": "webp",
+ "encoding": "u8x2",
+ "channels": [
+  "mean",
+  "max"
+ ],
+ "scale": 0.25,
+ "offset": -0.25,
+ "units": "deg",
+ "publicMaxLevel": 4,
+ "fineMaxLevel": 7,
+ "source": "Slope from LOLA LDEM 118 m global, mean of native-resolution slope per pixel",
+ "levels": {
+  "0": {
+   "tiles": 2,
+   "MB": 0.2
+  },
+  "1": {
+   "tiles": 8,
+   "MB": 0.7
+  },
+  "2": {
+   "tiles": 32,
+   "MB": 2.9
+  },
+  "3": {
+   "tiles": 128,
+   "MB": 11.2
+  },
+  "4": {
+   "tiles": 512,
+   "MB": 42.3
+  },
+  "5": {
+   "tiles": 2048,
+   "MB": 149.9
+  },
+  "6": {
+   "tiles": 8192,
+   "MB": 498.9
+  },
+  "7": {
+   "tiles": 32768,
+   "MB": 1635.6
+  }
+ }
+}
