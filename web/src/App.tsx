@@ -37,7 +37,7 @@ import {
 } from './lib/ephemeris'
 import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
-import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
+import { LayerPanel, type LayerState, type ScoreConfig } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
@@ -219,7 +219,7 @@ export default function App() {
   const [ephemerisBusy, setEphemerisBusy] = useState(false)
   const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
-  const [score, setScore] = useState<ScoreWeights>({ enabled: false, sun: 0.5, earth: 0.3, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
+  const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
   const [t, setT] = useState(() => Math.floor(Date.now() / 1000) * 1000) // current UTC time, whole seconds (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
@@ -796,7 +796,7 @@ export default function App() {
       active.push({
         id: '__score',
         title: 'Landing suitability',
-        source: `Sunlight weight ${Math.round(score.sun * 100)}%, Earth visibility weight ${Math.round(score.earth * 100)}%, maximum slope ${score.maxSlope}°`,
+        source: `Equal-weight temperature, radiation, slope, telecommunications and power score; maximum slope ${score.maxSlope}°`,
         opacity: score.opacity,
       })
     }
@@ -879,11 +879,7 @@ export default function App() {
     })
   }, [ready, bundle, layerState, fields, heat, heatVersion, focus])
 
-  // ---- derived "landing suitability" heatmap, rebuilt when weights change ----
-  // Slope used here = MAX slope inside the chosen landing footprint (circle / ellipse) centred on each
-  // point (see lib/requirements.ts). Base raster: the pipeline layer slope_max (each 100 m pixel = max of
-  // the 40 m LDSM inside it); fallback: the 100 m slope layer (averaged, so steep spots are underestimated).
-  // Recomputed (debounced) when the footprint changes.
+  // ---- derived landing-suitability score across all five Landing Score criteria ----
   const [fpA, fpB, fpAz] = footprintAxes(score.footprint)
   const [fpKey, setFpKey] = useState(`${fpA},${fpB},${fpAz}`)
   useEffect(() => {
@@ -897,53 +893,28 @@ export default function App() {
     const [a, b, az] = fpKey.split(',').map(Number)
     return footprintMax(base, a, b, az)
   }, [bundle, fpKey])
-  const scoreFields = useMemo(() => {
-    if (!fields.sun_avg || !fields.earth_avg || !footprintSlope) return null
-    return { sun: fields.sun_avg, earth: fields.earth_avg, slope: footprintSlope, exact: !!fields.slope_max }
-  }, [fields, footprintSlope])
   useEffect(() => {
     const scene = sceneRef.current
-    if (!ready || !scene || (!scoreFields && !(heat && heatVersion))) return
+    if (!ready || !scene || !heat || !heatVersion) return
     const old = layerRefs.current.__score
     if (old) { removeLayer(scene, old); delete layerRefs.current.__score }
     if (!score.enabled) return
     const handle = setTimeout(() => {
       const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
-      const wSum = score.sun + score.earth || 1
-      // polar: 60 m LOLA maps + max slope inside the landing footprint.
-      // Returns NaN outside the polar maps (-> global estimate) and FAIL where the slope is too steep.
-      const FAIL = -1e9
-      const polarScore = scoreFields && ((lon: number, lat: number) => {
-        const { sun, earth, slope } = scoreFields
-        const sl = slope.sampleNearest(lon, lat)
-        if (Number.isNaN(sl)) return NaN
-        if (!(sl <= limit)) return FAIL
-        const s = sun.sampleBilinear(lon, lat), e = earth.sampleBilinear(lon, lat)
-        if (Number.isNaN(s) || Number.isNaN(e)) return NaN
-        return (score.sun * s + score.earth * e) / wSum
-      })
-      const provider = heat && heatVersion
-        ? new GlobalHeatProvider({
-          engine: heat,
-          // elsewhere: computed sun/Earth; slope at the tile's sample spacing (coarse when zoomed out)
-          value: (v) => (v.slope <= limit ? (score.sun * v.sun + score.earth * v.earth) / wSum : NaN),
-          polar: polarScore ? (lon, lat) => { const v = polarScore(lon, lat); return v === FAIL ? -Infinity : v } : undefined,
-          polarBelowLat: scoreFields?.sun.boundsRad()[3],
-          min: 0, max: 1, colormap: 'viridis', focus,
-          credit: 'Landing score: LOLA polar maps; elsewhere from the LOLA global DEM',
-        }) as unknown as FieldImageryProvider
-        : new FieldImageryProvider({
-          value: (lon, lat) => { const v = polarScore!(lon, lat); return v === FAIL ? NaN : v },
-          min: 0, max: 1, colormap: 'viridis',
-          boundsRad: scoreFields!.sun.boundsRad(),
-          maximumLevel: levelForResolution(Math.max(scoreFields!.sun.meta.resolutionM, scoreFields!.slope.meta.resolutionM)),
-        })
+      const provider = new GlobalHeatProvider({
+        engine: heat,
+        thermal: true,
+        landing: { footprint: [fpA, fpB, fpAz], panelMode: panel.mode, gcr: heat.gcr },
+        value: (v) => (Number.isFinite(v.landingScore) && v.slope <= limit ? v.landingScore : NaN),
+        min: 0, max: 100, colormap: 'viridis', focus,
+        credit: 'Landing suitability: equal-weight Landing Score criteria (thermal, radiation, LOLA slope, DSN and solar power)',
+      }) as unknown as FieldImageryProvider
       const layer = new ImageryLayer(asProvider(provider), { alpha: score.opacity })
       scene.overlays.add(layer)
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, scoreFields, score, heat, heatVersion, focus])
+  }, [ready, score, fpA, fpB, fpAz, panel.mode, heat, heatVersion, focus])
 
   // ---- polar raster radiation overlay ----
   useEffect(() => {
@@ -1372,14 +1343,13 @@ export default function App() {
                 status={{ state: missionState, detail: missionResult ? `${missionResult.samples} time steps, ${Math.round(missionResult.ms)} ms` : undefined }} />
             )}
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
-              score={score} onScore={setScore} scoreAvailable={!!scoreFields}
+              score={score} onScore={setScore} scoreAvailable={!!heat && !!heatVersion}
               radiationMetadata={radiationDisplayMeta}
               radiationLoading={radiationLoading} radiationError={radiationError}
               radiationVisible={radiationVisible} onRadiationVisible={setRadiationVisible}
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
-              iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
-              slopeExact={!!scoreFields?.exact} />
+              iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}

@@ -49,7 +49,8 @@ export function footprintAxes(fp: Footprint): [number, number, number] {
     return [r, r, 0]
   }
   const a = clampM(fp.semiMajorM), b = clampM(fp.semiMinorM)
-  return [Math.max(a, b), Math.min(a, b), ((fp.azimuthDeg % 180) + 180) % 180]
+  const azimuth = fp.azimuthDeg + (b > a ? 90 : 0)
+  return [Math.max(a, b), Math.min(a, b), ((azimuth % 180) + 180) % 180]
 }
 
 export function footprintLabel(fp: Footprint): string {

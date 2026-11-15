@@ -13,8 +13,8 @@ import { getLut } from '../lib/colormaps'
  * value(lon, lat) -> number. This is what makes the heatmaps interactive:
  *  - source rasters stay in their native (polar stereographic) projection, one PNG each;
  *  - each 256x256 geographic tile is re-projected on the fly (≈1–3 ms per tile);
- *  - derived layers (e.g. a landing-suitability score with user-chosen weights) are just a
- *    different value() function — change the weights, create a new provider, the globe re-tiles.
+ *  - derived layers are just a different value() function — update the inputs, create a new provider,
+ *    and the globe re-tiles.
  *
  * Works for both Cesium Moon 3D Tiles (tileset.imageryLayers) and a Globe (globe.imageryLayers).
  */

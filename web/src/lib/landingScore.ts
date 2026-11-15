@@ -130,3 +130,32 @@ export function combine(criteria: (CriterionResult | undefined)[], names: string
   const score = ok.length ? ok.reduce((s, c) => s + CLASS_INFO[c.cls].points, 0) / ok.length : 0
   return { criteria: ok, score, feasible: !ok.some((c) => c.cls === 'not-feasible'), missing }
 }
+
+export function scoreLandingCell(input: {
+  tMeanC: number
+  doseRateUGyH: number
+  periodHours: number
+  maxSlopeDeg: number
+  linkPct: number
+  longestLinkGapH: number
+  producingPct: number
+  longestPowerOutageH: number
+}): number {
+  const points = (cls: ScoreClass) => CLASS_INFO[cls].points
+  const t = input.tMeanC
+  const temperature: ScoreClass = t >= TEMP_BANDS_C.recommended ? 'recommended'
+    : t >= TEMP_BANDS_C.feasible ? 'feasible'
+      : t >= TEMP_BANDS_C.difficult ? 'difficult'
+        : 'not-feasible'
+  const totalDose = input.doseRateUGyH * input.periodHours
+  const radiation: ScoreClass = totalDose < 3e8 ? 'recommended' : totalDose < 1e9 ? 'feasible' : totalDose < 1e10 ? 'difficult' : 'not-feasible'
+  const slope: ScoreClass = input.maxSlopeDeg <= 5 ? 'recommended' : input.maxSlopeDeg <= 8 ? 'feasible' : input.maxSlopeDeg <= 10 ? 'difficult' : 'not-feasible'
+  const telecom: ScoreClass = input.linkPct >= 80 ? 'recommended' : input.linkPct >= 40 ? 'feasible' : input.linkPct >= 10 ? 'difficult' : 'not-feasible'
+  const outageDays = input.longestPowerOutageH / 24
+  const power: ScoreClass = input.producingPct <= 0 ? 'not-feasible'
+    : outageDays <= 3 ? 'recommended'
+      : outageDays <= 7 ? 'feasible'
+        : outageDays <= 20 ? 'difficult'
+          : 'not-feasible'
+  return (points(temperature) + points(radiation) + points(slope) + points(telecom) + points(power)) / 5
+}

@@ -5,13 +5,13 @@
  *
  * Messages (main -> worker):
  *   { type: 'init', cfg: DemConfig }
- *   { type: 'window', version, sun: Float32Array(T*4), earth: Float32Array(T*4) }   unit dir xyz (Moon-fixed) + angular radius (deg)
+ *   { type: 'window', version, window, sun, earth, dsn }                            time window and Sun/Earth + DSN sample geometry
  *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
  *        regular steps: Sun dir xyz + distance (AU); thermalCount marks the steps that enter the
  *        statistics (the rest are warm-up before each sampled stretch)
- *   { type: 'tile', id, z, x, y, n, demMax, thermal? }
- *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
+ *   { type: 'tile', id, z, x, y, n, demMax, thermal?, landing? }
+ *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
  *           t* empty unless thermal was requested: the regolith model is the expensive part)
  *   { type: 'horizon', id, lat, lon, azStepDeg }   -> { id, elevDeg: Float32Array, demLevel }       (radians in, degrees out)
  *
@@ -26,6 +26,7 @@
 import { DemSampler, demLevelFor, demPixelM } from './dem'
 import { heatGrid } from './heatGrid'
 import type { EquipotTable } from './equipot'
+import { scoreLandingCell } from './landingScore'
 
 const R = 1737400
 const R2D = 180 / Math.PI
@@ -40,7 +41,10 @@ const MAX_LAT = (89.99 / 180) * Math.PI // the exact pole has no azimuths
 let dem: DemSampler
 let sun = new Float32Array(0)
 let earth = new Float32Array(0)
+let dsn = new Float64Array(0)
 let version = 0
+let windowStart = 0
+let windowEnd = 0
 
 const sinAz = new Float64Array(NAZ), cosAz = new Float64Array(NAZ)
 for (let a = 0; a < NAZ; a++) {
@@ -71,10 +75,10 @@ function makeRay(demMax: number, steps = STEPS, d0Factor = 0.75): Ray {
 }
 
 /** Fetch the DEM tiles a set of points needs, for every level the ray uses (plus `extra` level). */
-async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray, extra: number, hold: number[]) {
+async function ensureFor(west: number, south: number, east: number, north: number, ray: Ray, extra: number, hold: number[], extraRadiusM = 0) {
   const reach = new Map<number, number>() // level -> max distance at which it is used
   for (let k = 0; k < ray.d.length; k++) reach.set(ray.level[k], Math.max(reach.get(ray.level[k]) ?? 0, ray.d[k]))
-  reach.set(extra, Math.max(reach.get(extra) ?? 0, demPixelM(extra) * 2))
+  reach.set(extra, Math.max(reach.get(extra) ?? 0, demPixelM(extra) * 2, extraRadiusM))
   const jobs: Promise<unknown>[] = []
   for (const [z, d] of reach) {
     const dLat = d / R + 1e-6
@@ -343,7 +347,7 @@ function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: nu
 }
 
 // ---- per-tile terrain cache (horizons, slope, elevation, gradient) ----
-interface Terrain { hz: Float32Array; slope: Float32Array; elev: Float32Array; gE: Float32Array; gN: Float32Array }
+interface Terrain { hz: Float32Array; slope: Float32Array; elev: Float32Array; gE: Float32Array; gN: Float32Array; slopeLevel: number }
 const hzCache = new Map<string, Terrain>()
 const hzOrder: string[] = []
 const HZ_CACHE = 80 // per worker; a 33 x 33 tile's horizons are ~140 KB
@@ -355,8 +359,8 @@ function tileRect(z: number, x: number, y: number, g = 1) {
   return { west, south: north - step, east: west + g * step, north }
 }
 
-async function terrain(z: number, x: number, y: number, n: number, demMax: number, g = 1): Promise<Terrain> {
-  const key = `${z}/${x}/${y}/${n}/${demMax}/${g}`
+async function terrain(z: number, x: number, y: number, n: number, demMax: number, g = 1, footprintRadiusM = 0): Promise<Terrain> {
+  const key = `${z}/${x}/${y}/${n}/${demMax}/${g}/${footprintRadiusM}`
   const hit = hzCache.get(key)
   if (hit) return hit
   const { west, south, east, north } = tileRect(z, x, y, g)
@@ -367,7 +371,7 @@ async function terrain(z: number, x: number, y: number, n: number, demMax: numbe
   const zs = demLevelFor(spacing, demMax)
   const hold: number[] = []
   try {
-    await ensureFor(west, south, east, north, ray, zs, hold)
+    await ensureFor(west, south, east, north, ray, zs, hold, footprintRadiusM)
     return computeTerrain(key, west, south, east, north, heatGrid(z, y, n, g), demMax, ray, zs)
   } finally {
     dem.unpin(hold)
@@ -398,23 +402,132 @@ function computeTerrain(key: string, west: number, south: number, east: number, 
       elev[c] = dem.sample(lon, lat, zs)
     }
   }
-  const out = { hz, slope, elev, gE, gN }
+  const out = { hz, slope, elev, gE, gN, slopeLevel: zs }
   hzCache.set(key, out)
   hzOrder.push(key)
   while (hzOrder.length > HZ_CACHE) hzCache.delete(hzOrder.shift()!)
   return out
 }
 
-async function tile(m: { id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean; g?: number }) {
+function sampleSlope(lon: number, lat: number, level: number): number {
+  const ds = demPixelM(level), dLat = ds / R, dLon = dLat / Math.max(Math.cos(lat), 1e-6)
+  const east = (dem.sample(lon + dLon, lat, level) - dem.sample(lon - dLon, lat, level)) / (2 * ds)
+  const north = (dem.sample(lon, lat + dLat, level) - dem.sample(lon, lat - dLat, level)) / (2 * ds)
+  return Math.atan(Math.hypot(east, north)) * R2D
+}
+
+function maxFootprintSlope(lon: number, lat: number, baseSlope: number, level: number, footprint: [number, number, number]): number {
+  const [a, b, azimuth] = footprint
+  const az = azimuth / R2D
+  let max = baseSlope
+  for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) {
+    const u = x / 2, v = y / 2
+    if (u * u + v * v > 1 || (!u && !v)) continue
+    const major = u * a, minor = v * b
+    const east = major * Math.sin(az) + minor * Math.cos(az)
+    const north = major * Math.cos(az) - minor * Math.sin(az)
+    const sampleLat = Math.max(-MAX_LAT, Math.min(MAX_LAT, lat + north / R))
+    const sampleLon = lon + east / (R * Math.max(Math.cos(lat), 1e-6))
+    const slope = sampleSlope(sampleLon, sampleLat, level)
+    if (Number.isFinite(slope)) max = Math.max(max, slope)
+  }
+  return max
+}
+
+function stationLinkStats(F: Frame, hz: Float32Array, off: number, siteHeight: number): [number, number] {
+  const T = earth.length / 4
+  if (!T || dsn.length < T * 18) return [NaN, NaN]
+  const siteX = F.ux * (R + siteHeight), siteY = F.uy * (R + siteHeight), siteZ = F.uz * (R + siteHeight)
+  const stepH = (windowEnd - windowStart) / T / 3600_000
+  let linked = 0, gap = 0, longest = 0
+  for (let j = 0; j < T; j++) {
+    let any = false
+    const base = j * 18
+    for (let station = 0; station < 3 && !any; station++) {
+      const o = base + station * 6
+      const dx = dsn[o] - siteX, dy = dsn[o + 1] - siteY, dz = dsn[o + 2] - siteZ
+      const dist = Math.hypot(dx, dy, dz)
+      const el = Math.asin((dx * F.ux + dy * F.uy + dz * F.uz) / dist) * R2D
+      let az = Math.atan2(dx * F.ex + dy * F.ey, dx * F.nx + dy * F.ny + dz * F.nz) * R2D
+      if (az < 0) az += 360
+      const h = horizonToward(hz, off, Math.sin(az / R2D), Math.cos(az / R2D))
+      const stationEl = Math.asin(((siteX - dsn[o]) * dsn[o + 3] + (siteY - dsn[o + 1]) * dsn[o + 4] + (siteZ - dsn[o + 2]) * dsn[o + 5]) / dist) * R2D
+      any = el >= h && stationEl >= 0
+    }
+    if (any) { linked++; gap = 0 } else gap++
+    longest = Math.max(longest, gap)
+  }
+  return [(100 * linked) / T, longest * stepH]
+}
+
+function discOverlap(r1: number, r2: number, d: number): number {
+  if (d >= r1 + r2) return 0
+  if (d <= Math.abs(r2 - r1)) return r2 >= r1 ? 1 : (r2 * r2) / (r1 * r1)
+  const a1 = r1 * r1 * Math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1))
+  const a2 = r2 * r2 * Math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2))
+  const k = 0.5 * Math.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
+  return (a1 + a2 - k) / (Math.PI * r1 * r1)
+}
+
+const powerValues = new Float64Array(3000)
+function powerStats(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, siteHeight: number, panelMode: 'tracking' | 'fixed'): [number, number] {
+  const T = sun.length / 4
+  if (!T) return [NaN, NaN]
+  const siteX = F.ux * (R + siteHeight), siteY = F.uy * (R + siteHeight), siteZ = F.uz * (R + siteHeight)
+  let peak = 0
+  for (let j = 0; j < T; j++) {
+    const o = j * 4
+    const sx = sun[o], sy = sun[o + 1], sz = sun[o + 2], sunRadius = sun[o + 3] / R2D
+    const earthRadius = earth[o + 3] / R2D
+    const sunDist = 695700_000 / Math.sin(sunRadius)
+    const earthDist = 6371_000 / Math.sin(earthRadius)
+    const svx = sx * sunDist - siteX, svy = sy * sunDist - siteY, svz = sz * sunDist - siteZ
+    const ex = earth[o] * earthDist - siteX, ey = earth[o + 1] * earthDist - siteY, ez = earth[o + 2] * earthDist - siteZ
+    const sd = Math.hypot(svx, svy, svz), ed = Math.hypot(ex, ey, ez)
+    const sunX = svx / sd, sunY = svy / sd, sunZ = svz / sd
+    const el = Math.asin(sunX * F.ux + sunY * F.uy + sunZ * F.uz)
+    const elDeg = el * R2D
+    const east = sunX * F.ex + sunY * F.ey
+    const north = sunX * F.nx + sunY * F.ny + sunZ * F.nz
+    let terrain = 0
+    if (elDeg - hMax >= sun[o + 3]) terrain = 1
+    else if (!(elDeg - hMin <= -sun[o + 3])) {
+      const v = (elDeg - horizonToward(hz, off, east, north)) / (2 * sun[o + 3]) + 0.5
+      terrain = v <= 0 ? 0 : v >= 1 ? 1 : v
+    }
+    const incidence = panelMode === 'tracking' ? 1 : Math.max(0, Math.sin(el))
+    const sep = Math.acos(Math.min(1, Math.max(-1, (svx * ex + svy * ey + svz * ez) / (sd * ed))))
+    const eclipse = discOverlap(sunRadius, earthRadius, sep)
+    const relativePower = terrain * (1 - eclipse) * incidence * Math.sin(sunRadius) ** 2
+    powerValues[j] = relativePower
+    peak = Math.max(peak, relativePower)
+  }
+  const on = peak * 0.01
+  const stepH = (windowEnd - windowStart) / T / 3600_000
+  let producing = 0, gap = 0, longest = 0
+  for (let j = 0; j < T; j++) {
+    if (powerValues[j] > on && peak > 0) { producing++; gap = 0 } else gap++
+    longest = Math.max(longest, gap)
+  }
+  return [(100 * producing) / T, longest * stepH]
+}
+
+async function tile(m: {
+  id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean; g?: number
+  landing?: { footprint: [number, number, number]; panelMode: 'tracking' | 'fixed'; gcr: number }
+}) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
   const g = m.g ?? 1
-  const t = await terrain(m.z, m.x, m.y, m.n, demMax, g)
+  const footprintRadiusM = m.landing ? Math.max(m.landing.footprint[0], m.landing.footprint[1]) : 0
+  const t = await terrain(m.z, m.x, m.y, m.n, demMax, g, footprintRadiusM)
   const { west, south, east, north } = tileRect(m.z, m.x, m.y, g)
   const { nx, ny } = heatGrid(m.z, m.y, m.n, g), N = nx * ny
   const s = new Float32Array(N), e = new Float32Array(N)
   const cMean = new Float32Array(N), cMin = new Float32Array(N), cBelow = new Float32Array(N)
   const tMean = new Float32Array(m.thermal ? N : 0), tMin = new Float32Array(m.thermal ? N : 0), tMax = new Float32Array(m.thermal ? N : 0)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
+  const landingScore = new Float32Array(m.landing ? N : 0)
+  const slope = t.slope.slice()
   for (let j = 0; j < ny; j++) {
     const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (ny - 1)))
     for (let i = 0; i < nx; i++) {
@@ -423,6 +536,7 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
       if (t.hz[c * NAZ] !== t.hz[c * NAZ]) { // no elevation here (see horizon): leave the point transparent
         s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = NaN
         if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
+        if (m.landing) landingScore[c] = slope[c] = NaN
         continue
       }
       const off = c * NAZ
@@ -438,12 +552,36 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
       fSky[c] = sky / NAZ / 2
       if (m.thermal) [tMean[c], tMin[c], tMax[c]] = thermal(F, t.hz, off, hMin, hMax)
+      if (m.landing && m.thermal) {
+        const maxSlope = maxFootprintSlope(lon, lat, t.slope[c], t.slopeLevel, m.landing.footprint)
+        const [linkPct, longestLinkGapH] = stationLinkStats(F, t.hz, off, t.elev[c])
+        const [producingPct, longestPowerOutageH] = powerStats(F, t.hz, off, hMin, hMax, t.elev[c], m.landing.panelMode)
+        const doseRate = (20.2 * fSky[c] + 6.2 * (1 - fSky[c])) * m.landing.gcr
+        const values = [tMean[c], tMin[c], tMax[c], doseRate, linkPct, longestLinkGapH, producingPct, longestPowerOutageH, maxSlope]
+        if (values.every(Number.isFinite)) {
+          landingScore[c] = scoreLandingCell({
+            tMeanC: tMean[c] - 273.15,
+            doseRateUGyH: doseRate,
+            periodHours: (windowEnd - windowStart) / 3600_000,
+            maxSlopeDeg: maxSlope,
+            linkPct,
+            longestLinkGapH,
+            producingPct,
+            longestPowerOutageH,
+          })
+          slope[c] = maxSlope
+        } else {
+          landingScore[c] = slope[c] = NaN
+        }
+      } else if (m.landing) {
+        landingScore[c] = slope[c] = NaN
+      }
     }
   }
-  const slope = t.slope.slice(), elev = t.elev.slice()
-  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky]
+  const elev = t.elev.slice()
+  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore]
   ;(self as unknown as Worker).postMessage(
-    { id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, thermal: !!m.thermal },
+    { id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore, thermal: !!m.thermal },
     arrays.map((a) => a.buffer),
   )
 }
@@ -480,6 +618,9 @@ self.onmessage = (ev: MessageEvent) => {
   } else if (m.type === 'window') {
     sun = m.sun
     earth = m.earth
+    dsn = m.dsn
+    windowStart = m.window[0]
+    windowEnd = m.window[1]
     thermalSun = m.thermalSun
     thermalDt = m.thermalDt
     thermalCount = m.thermalCount

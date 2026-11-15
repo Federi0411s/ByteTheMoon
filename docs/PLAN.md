@@ -39,7 +39,7 @@ IAU names + LOLA ─────────────────────
 | `psr` | Permanently shadowed regions | LOLA LPSR 60 m |
 | `slope` | Surface slope | LOLA LDSM 40 m |
 | `dem_south` | Elevation, 80°S–90°S, 240 m (also used for custom-site horizons) | LOLA LDEM 80 m |
-| (derived) landing score | `(w_sun·sun + w_earth·earth) / (w_sun + w_earth)`, transparent where the max slope inside the landing footprint > limit (≤ 10°) | computed live |
+| (derived) landing suitability | Equal-weight mean of the five Landing Score criteria: temperature, radiation, footprint slope, DSN telecommunications and solar power; transparent where max slope inside the chosen footprint exceeds the limit (≤ 10°) | computed per visible map tile; footprint slope uses a zoom-dependent 5 × 5 DEM sample grid |
 
 Adding a layer means adding one entry to `LAYERS` in `pipeline/overlays.py` and running it again. The UI picks it up automatically.
 
@@ -70,7 +70,7 @@ Done (scaffold):
 - [x] Moon Trek fallback streams a photo LOD stack: WAC ~100 m/px global, Kaguya ~21 m/px (60S-60N), NAC ~5 m/px polar caps, ~50 NAC site mosaics at 0.5-1.5 m/px
 - [x] Mission period (top-right inputs + draggable blue range under the timeline): every heatmap and the score cover the chosen window; when it is empty they cover the whole loaded 5-year window. South of 85°S the 60 m LOLA sun/Earth maps are rescaled by period/long-term, using a 1 km grid of horizon masks (pipeline/horizon_grid.py) and the SPICE ephemeris in Web Workers
 - [x] Global heatmaps (sunlight, Earth, PSR, slope, elevation, charging, temperature, radiation) computed in Web Workers for the selected period. The workers have a tile scheduler, cancellation, worker restart and fetch timeouts, so toggling layers never stalls them
-- [x] Interactive heatmaps (toggle, opacity, legend) and a live landing-score layer with weight sliders
+- [x] Interactive heatmaps (toggle, opacity, legend) and a five-criterion landing-suitability layer with fixed equal weighting
 - [x] Click to inspect all layer values; double-click to analyse a custom site (horizon computed in the browser)
 - [x] Time slider and play: the Sun lights the scene from its real direction; Sun/Earth markers
 - [x] Site panel: horizon panorama with Sun/Earth tracks, sunlit / Earth-visible timeline, % lit, % comms, time to sunset/Earthset, longest night

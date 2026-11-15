@@ -8,10 +8,8 @@ export interface LayerState {
   opacity: number
 }
 
-export interface ScoreWeights {
+export interface ScoreConfig {
   enabled: boolean
-  sun: number
-  earth: number
   /** max acceptable slope (deg) inside the landing footprint, 0.5..SLOPE_MAX_DEG; steeper -> transparent */
   maxSlope: number
   /** landing ellipse / circle over which the max slope is taken */
@@ -87,13 +85,12 @@ export function LayerPanel({
   iceVisible,
   onIceVisible,
   iceError,
-  slopeExact,
 }: {
   layers: LayerMeta[]
   state: Record<string, LayerState>
   onChange: (id: string, s: LayerState) => void
-  score: ScoreWeights
-  onScore: (s: ScoreWeights) => void
+  score: ScoreConfig
+  onScore: (s: ScoreConfig) => void
   scoreAvailable: boolean
   radiationMetadata: RadiationOverlayMetadata | null
   radiationLoading: boolean
@@ -107,8 +104,6 @@ export function LayerPanel({
   iceVisible: boolean
   onIceVisible: (visible: boolean) => void
   iceError?: string
-  /** true: max slope from the 40 m LDSM (pipeline layer slope_max); false: approximated from the 100 m slope layer */
-  slopeExact: boolean
 }) {
   const shown = layers.filter((l) => l.display !== false)
   const activeLayers = shown.filter((l) => state[l.id]?.visible).length
@@ -157,22 +152,13 @@ export function LayerPanel({
         </summary>
         <div className="menu-section-body">
           {!scoreAvailable ? (
-            <p className="muted">Needs the sunlight, Earth visibility and slope layers.</p>
+            <p className="muted">Needs the global elevation model and a loaded time window.</p>
           ) : (
             <div className="layer">
               <label className="layer-head">
                 <input type="checkbox" checked={score.enabled} onChange={(e) => onScore({ ...score, enabled: e.target.checked })} />
                 Show score heatmap
               </label>
-              {(['sun', 'earth'] as const).map((k) => (
-                <label key={k} className="slider">
-                  <span className="slider-label">
-                    <span>{{ sun: 'Sunlight (power)', earth: 'Earth visibility (comms)' }[k]}</span>
-                    <span className="slider-value">{Math.round(score[k] * 100)}%</span>
-                  </span>
-                  <input type="range" min={0} max={1} step={0.05} value={score[k]} onChange={(e) => onScore({ ...score, [k]: Number(e.target.value) })} />
-                </label>
-              ))}
               <FootprintEditor fp={score.footprint} onChange={(footprint) => onScore({ ...score, footprint })} />
               <label className="slider">
                 <span className="slider-label">
@@ -193,15 +179,12 @@ export function LayerPanel({
               <div className="legend-labels">
                 {SLOPE_CLASSES.map((c, i) => <span key={c.label}>{c.label} {i ? SLOPE_CLASSES[i - 1].upTo : 0}–{c.upTo}°</span>)}
               </div>
-              <p className="muted">The weights are relative and are normalized when calculating the score.</p>
-              {score.enabled && <Legend colormap="viridis" min={0} max={1} units="score" />}
+              <p className="muted">Combines temperature, radiation, slope, telecommunications and power with equal weight. Temporal values use the global heatmap sampling; a selected site shows its detailed score.</p>
+              {score.enabled && <Legend colormap="viridis" min={0} max={100} units="score" />}
               {score.enabled && (
                 <p className="source">
                   Transparent where the steepest slope inside the footprint ({footprintLabel(score.footprint)}) centred on
-                  that point exceeds the limit.{' '}
-                  {slopeExact
-                    ? 'Slope: LOLA LDSM 40 m (max per 100 m cell).'
-                    : 'Approximate: from the 100 m (averaged) slope layer, so steep spots may be underestimated. Re-run pipeline/overlays.py for the 40 m version.'}
+                  that point exceeds the limit. The heatmap uses a 5 × 5 sample grid over the footprint; resolution follows the current map zoom.
                 </p>
               )}
             </div>

@@ -16,6 +16,7 @@ import type { DemConfig } from './dem'
 import type { HorizonMask } from './analysis'
 import { DATA_URL } from './data'
 import { loadEquipot, type EquipotTable } from './equipot'
+import { dsnStationGeometry } from './dsn'
 
 export interface HeatTile {
   /** sample grid (edges included, row 0 = north): see lib/heatGrid.ts */
@@ -35,6 +36,15 @@ export interface HeatTile {
   tMax: Float32Array
   /** visible-sky fraction (radiation layer) */
   fSky: Float32Array
+  /** Landing-score criteria; empty unless requested */
+  landingScore: Float32Array
+}
+
+export interface LandingHeatOptions {
+  /** semi-major m, semi-minor m, azimuth clockwise from north */
+  footprint: [number, number, number]
+  panelMode: 'tracking' | 'fixed'
+  gcr: number
 }
 
 interface DemIndex {
@@ -198,6 +208,11 @@ export class HeatEngine {
       return out
     }
     const sun = pack(sunPosition, SUN_RADIUS_KM), earth = pack(earthPosition, EARTH_RADIUS_KM)
+    const dsn = new Float64Array(N * 18)
+    for (let j = 0; j < N; j++) {
+      const f = (j * 0.6180339887) % 1
+      dsn.set(dsnStationGeometry(eph, start + (j + f) * dt), j * 18)
+    }
 
     // Regolith model: needs a regular time series (thermal inertia). Windows up to a year are run
     // whole; longer ones as THERMAL_SEGMENTS lunations spread evenly over the window, each preceded
@@ -228,7 +243,7 @@ export class HeatEngine {
     this.window = [start, end]
     this.gcr = gcrFactor(start, end)
     this.version++
-    this.lastWindow = { type: 'window', version: this.version, sun, earth, thermalSun, thermalCount, thermalDt: dtS }
+    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, earth, dsn, thermalSun, thermalCount, thermalDt: dtS }
     for (const s of this.slots) s.worker.postMessage(this.lastWindow)
     this.cache.clear()
     this.order.length = 0
@@ -288,15 +303,16 @@ export class HeatEngine {
    * `wanted` lets the caller drop the request while it is still queued (e.g. its layer was removed).
    * Resolves null on failure; failures are not cached.
    */
-  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1): Promise<HeatTile | null> {
+  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, landing?: LandingHeatOptions): Promise<HeatTile | null> {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
-    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}`
+    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.panelMode}` : ''
+    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}${landingKey}`
     let p = this.cache.get(key)
     // a tile computed with the regolith model also answers requests without it
     if (!p && !thermal) p = this.cache.get(`${key}t`)
     if (p) return p
     const version = this.version
-    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, g }, `${z}/${x}/${y}/${g}`, wanted)
+    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, g, landing }, `${z}/${x}/${y}/${g}`, wanted)
       .then((d) => {
         const ok = d && !d.error && d.version === version
         if (!ok) this.cache.delete(key) // never keep a failure: the next request recomputes

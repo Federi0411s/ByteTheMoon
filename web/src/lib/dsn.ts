@@ -96,6 +96,22 @@ function stationEcef(s: Station): { pos: Vec3; up: Vec3 } {
 }
 const ECEF = Object.fromEntries(DSN_STATIONS.map((s) => [s.id, stationEcef(s)]))
 
+/** Absolute DSN station positions and local up vectors in the Moon-fixed frame at one time. */
+export function dsnStationGeometry(eph: Ephemeris, tMs: number): Float64Array {
+  const Mt = tr(moonFixedToIcrf(tMs)), Ef = earthFixedToIcrf(tMs)
+  const toMf = (v: Vec3) => apply(Mt, apply(Ef, v))
+  const earthMf = earthPosition(eph, tMs)
+  const out = new Float64Array(DSN_STATIONS.length * 6)
+  DSN_STATIONS.forEach((s, i) => {
+    const station = ECEF[s.id]
+    const pos = toMf(station.pos)
+    const up = toMf(station.up)
+    const o = i * 6
+    out.set([earthMf[0] + pos[0], earthMf[1] + pos[1], earthMf[2] + pos[2], up[0], up[1], up[2]], o)
+  })
+  return out
+}
+
 export type LinkBlock = 'ok' | 'terrain' | 'below-lunar-horizon' | 'below-station-horizon'
 
 export interface StationLink {

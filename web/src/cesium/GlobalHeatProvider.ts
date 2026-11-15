@@ -2,7 +2,7 @@ import { Credit, Ellipsoid, Event, GeographicTilingScheme, Rectangle } from 'ces
 import { getLut } from '../lib/colormaps'
 import { demPixelM } from '../lib/dem'
 import { heatGrid, tileGroup } from '../lib/heatGrid'
-import type { HeatEngine, HeatTile } from '../lib/heatEngine'
+import type { HeatEngine, HeatTile, LandingHeatOptions } from '../lib/heatEngine'
 
 /**
  * Whole-Moon heatmap layer computed on the fly (lib/heatEngine.ts + lib/heatWorker.ts).
@@ -20,6 +20,7 @@ export type HeatValues = {
   cMean: number; cMin: number; cBelow: number // EQUIPOT surface charging (V, V, fraction)
   tMean: number; tMin: number; tMax: number // regolith surface temperature (K), only with `thermal`
   fSky: number // visible-sky fraction (radiation)
+  landingScore: number
 }
 
 export interface GlobalHeatOptions {
@@ -45,6 +46,8 @@ export interface GlobalHeatOptions {
   contrast?: number
   /** also run the regolith temperature model (expensive: only for the temperature layers) */
   thermal?: boolean
+  /** calculate all Landing Score criteria for the suitability heatmap */
+  landing?: LandingHeatOptions
   /**
    * Refined area (e.g. around the selected site): from `minLevel` on, tiles touching it read the
    * finest elevation tiles (`demLevel`, downloaded on demand) and are sampled at that DEM's own
@@ -137,7 +140,7 @@ export class GlobalHeatProvider {
     }
     // near the poles, neighbouring tiles of the row share one computation (see tileGroup)
     const g = tileGroup(z, y), gx = Math.floor(x / g)
-    const t = await this.o.engine.tile(z, gx, y, n, demMax, !!this.o.thermal, this.wanted, g)
+    const t = await this.o.engine.tile(z, gx, y, n, demMax, !!this.o.thermal, this.wanted, g, this.o.landing)
     // failed or dropped: reject, so Cesium keeps showing the parent tile instead of a transparent hole
     if (!t) throw new Error(this.disposed ? 'layer removed' : 'heatmap tile failed')
     const px = new Uint8Array(TILE * TILE * 4)
@@ -156,7 +159,11 @@ export class GlobalHeatProvider {
     const nx = t.nx, kx = nx - 1, ky = t.ny - 1
     const dLon = (r.east - r.west) / TILE, dLat = (r.north - r.south) / TILE
     const bounded = this.rectangle !== Rectangle.MAX_VALUE
-    const v: HeatValues = { sun: 0, earth: 0, slope: 0, elev: 0, cMean: 0, cMin: 0, cBelow: 0, tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0 }
+    const v: HeatValues = {
+      sun: 0, earth: 0, slope: 0, elev: 0, cMean: 0, cMin: 0, cBelow: 0,
+      tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0,
+      landingScore: NaN,
+    }
     const hasT = t.tMean.length > 0
     const pick = (a: Float32Array, i: number, w00: number, w10: number, w01: number, w11: number) =>
       a[i] * w00 + a[i + 1] * w10 + a[i + nx] * w01 + a[i + nx + 1] * w11
@@ -183,6 +190,9 @@ export class GlobalHeatProvider {
           v.cMin = pick(t.cMin, idx, w00, w10, w01, w11)
           v.cBelow = pick(t.cBelow, idx, w00, w10, w01, w11)
           v.fSky = pick(t.fSky, idx, w00, w10, w01, w11)
+          if (this.o.landing) {
+            v.landingScore = pick(t.landingScore, idx, w00, w10, w01, w11)
+          }
           if (hasT) {
             v.tMean = pick(t.tMean, idx, w00, w10, w01, w11)
             v.tMin = pick(t.tMin, idx, w00, w10, w01, w11)
