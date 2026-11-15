@@ -249,6 +249,7 @@ function SavedSitesComparisonDialog({
 export function SavedSitesMenu({
   sites,
   onSelect,
+  onRemove,
   period,
   periodLabel,
   comparisonDisabledReason,
@@ -256,6 +257,7 @@ export function SavedSitesMenu({
 }: {
   sites: Site[]
   onSelect: (site: Site) => void
+  onRemove: (site: Site) => void
   period: [number, number]
   periodLabel: string
   comparisonDisabledReason?: string
@@ -280,11 +282,19 @@ export function SavedSitesMenu({
             <>
               <div className="saved-sites-list">
                 {sites.map((site) => (
-                  <button type="button" className="saved-site-link" key={site.id}
-                    onClick={() => { if (menuRef.current) menuRef.current.open = false; onSelect(site) }}>
-                    <i className="marker-dot saved" aria-hidden="true" />
-                    <span>{site.name}<small>{site.lat.toFixed(3)}°, {site.lon.toFixed(3)}°</small></span>
-                  </button>
+                  <div className="saved-site-row" key={site.id}>
+                    <button type="button" className="saved-site-link"
+                      onClick={() => { if (menuRef.current) menuRef.current.open = false; onSelect(site) }}>
+                      <i className="marker-dot saved" aria-hidden="true" />
+                      <span>{site.name}<small>{site.lat.toFixed(3)}°, {site.lon.toFixed(3)}°</small></span>
+                    </button>
+                    <button type="button" className="saved-site-menu-remove"
+                      aria-label={`Remove ${site.name} from saved landing sites`}
+                      title="Remove from saved landing sites"
+                      onClick={() => onRemove(site)}>
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
               <button type="button" className="saved-sites-compare-button" disabled={!canCompare}

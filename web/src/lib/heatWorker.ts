@@ -593,6 +593,7 @@ async function tile(m: {
   const seriesIndexByCell = new Map(seriesIndices.map((index, seriesIndex) => [index, seriesIndex]))
   const tSeries = new Float32Array(m.thermal && seriesIndices.length ? seriesIndices.length * steps : 0)
   tSeries.fill(NaN)
+  const dark = new Float32Array(N) // longest continuous night in the window (h)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
   const landingScore = new Float32Array(m.landing ? N : 0)
   const slope = t.slope.slice()
@@ -601,7 +602,7 @@ async function tile(m: {
       const c = j * nx + i
       const lon = smp.lon[c], lat = smp.lat[c]
       if (t.hz[c * NAZ] !== t.hz[c * NAZ]) { // no elevation here (see horizon): leave the point transparent
-        s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = NaN
+        s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = dark[c] = NaN
         if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
         if (m.landing) landingScore[c] = slope[c] = NaN
         continue
@@ -614,6 +615,7 @@ async function tile(m: {
       cMean[c] = sunOut.cMean
       cMin[c] = sunOut.cMin
       cBelow[c] = sunOut.cBelow
+      dark[c] = sunOut.longestDarkH
       e[c] = visibleFraction(earth, F, t.hz, off, hMin, hMax)
       let sky = 0
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
@@ -648,12 +650,12 @@ async function tile(m: {
     }
   }
   const elev = t.elev.slice()
-  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore]
+  const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, landingScore, dark]
   const tTimes = seriesIndices.length ? thermalTimes.slice() : undefined
   ;(self as unknown as Worker).postMessage(
     {
       id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky,
-      landingScore,
+      landingScore, dark,
       thermal: !!m.thermal,
       ...(seriesIndices.length ? { tSeries, tTimes, tSeriesIndices: seriesIndices } : {}),
     },

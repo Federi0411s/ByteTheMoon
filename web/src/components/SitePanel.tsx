@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type ReactNode } from 'react'
 import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
@@ -81,6 +81,7 @@ export function SitePanel({
   selected,
   onSelect,
   onSearchCoordinates,
+  regionFiltersPanel,
   onGenerateReport,
   reportDisabled,
   timeline,
@@ -94,6 +95,7 @@ export function SitePanel({
   onClose,
   onSaveSite,
   onRemoveSite,
+  onRemoveSavedSite,
   savedSites,
   comparisonPeriod,
   comparisonPeriodLabel,
@@ -115,6 +117,7 @@ export function SitePanel({
   selected?: Site
   onSelect: (s: Site) => void
   onSearchCoordinates: (lat: number, lon: number) => void
+  regionFiltersPanel: ReactNode
   onGenerateReport: () => void
   reportDisabled: boolean
   timeline: TimelineSample[]
@@ -129,6 +132,7 @@ export function SitePanel({
   onClose: () => void
   onSaveSite: (name: string) => void
   onRemoveSite: () => void
+  onRemoveSavedSite: (site: Site) => void
   savedSites: Site[]
   comparisonPeriod: [number, number]
   comparisonPeriodLabel: string
@@ -170,6 +174,7 @@ export function SitePanel({
         Show landing-site markers
       </label>
       <CoordinateSearch onSearch={onSearchCoordinates} />
+      {regionFiltersPanel}
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
         {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}
@@ -182,6 +187,7 @@ export function SitePanel({
       <SavedSitesMenu
         sites={savedSites}
         onSelect={onSelect}
+        onRemove={onRemoveSavedSite}
         period={comparisonPeriod}
         periodLabel={comparisonPeriodLabel}
         comparisonDisabledReason={comparisonDisabledReason}

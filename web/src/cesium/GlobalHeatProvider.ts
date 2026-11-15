@@ -25,6 +25,7 @@ export type HeatValues = {
   cMean: number; cMin: number; cBelow: number // EQUIPOT surface charging (V, V, fraction)
   tMean: number; tMin: number; tMax: number // regolith surface temperature (K), only with `thermal`
   fSky: number // visible-sky fraction (radiation)
+  dark: number // longest continuous night in the window (h)
   landingScore: number
 }
 
@@ -87,7 +88,7 @@ function distanceToRect(lon: number, lat: number, r: Rectangle) {
 }
 const MOON_R = 1737400
 
-const FIELDS = ['sun', 'earth', 'slope', 'elev', 'cMean', 'cMin', 'cBelow', 'fSky', 'tMean', 'tMin', 'tMax', 'landingScore'] as const
+const FIELDS = ['sun', 'earth', 'slope', 'elev', 'cMean', 'cMin', 'cBelow', 'fSky', 'dark', 'tMean', 'tMin', 'tMax', 'landingScore'] as const
 const reliefCache = new WeakMap<HeatTile, number>()
 /**
  * Range scale (m) of the guided upsampling for one sample grid: the typical elevation change between
@@ -332,7 +333,7 @@ export class GlobalHeatProvider {
     const lut = this.lut
     const dLon = (r.east - r.west) / TILE, dLat = (r.north - r.south) / TILE
     const bounded = this.rectangle !== Rectangle.MAX_VALUE
-    const v: HeatValues = { sun: 0, earth: 0, slope: 0, elev: 0, cMean: 0, cMin: 0, cBelow: 0, tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0, landingScore: NaN }
+    const v: HeatValues = { sun: 0, earth: 0, slope: 0, elev: 0, cMean: 0, cMin: 0, cBelow: 0, tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0, dark: 0, landingScore: NaN }
     const sinL = new Float64Array(TILE), cosL = new Float64Array(TILE)
     for (let i = 0; i < TILE; i++) {
       const lon = r.west + (i + 0.5) * dLon
@@ -386,7 +387,7 @@ export class GlobalHeatProvider {
     const bounded = this.rectangle !== Rectangle.MAX_VALUE
     const v: HeatValues = {
       sun: 0, earth: 0, slope: 0, elev: 0, cMean: 0, cMin: 0, cBelow: 0,
-      tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0,
+      tMean: NaN, tMin: NaN, tMax: NaN, fSky: 0, dark: 0,
       landingScore: NaN,
     }
     const sigR = relief(t)

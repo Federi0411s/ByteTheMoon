@@ -268,11 +268,13 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .site-save-error { color: #ffc27a; font-size: 12px; }
 .saved-sites-menu { margin: 8px 0; }
 .saved-sites-list { display: grid; gap: 4px; padding-top: 6px; }
+.saved-site-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .saved-site-link {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 6px 8px;
   border-color: transparent;
   text-align: left;
@@ -280,6 +282,18 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .saved-site-link:hover { border-color: var(--border); background: rgba(255, 255, 255, 0.04); }
 .saved-site-link > span { display: grid; min-width: 0; gap: 2px; }
 .saved-site-link small { color: var(--muted); font-size: 10px; }
+.saved-site-menu-remove {
+  display: grid;
+  flex: 0 0 32px;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 18px;
+}
+.saved-site-menu-remove:hover { border-color: rgba(255, 91, 91, 0.45); color: #ff9a9a; background: rgba(255, 91, 91, 0.1); }
 .saved-sites-compare-button { width: 100%; margin-top: 9px; border-color: var(--accent); color: #ffc18e; }
 .saved-sites-dialog-body { max-height: calc(100dvh - 138px); overflow: auto; align-content: start; }
 .saved-sites-confirm ul { display: grid; gap: 4px; max-height: 180px; overflow: auto; padding-left: 20px; color: var(--muted); font-size: 12px; }
@@ -675,3 +689,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .tutorial-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tutorial-card-head h2 { margin: 4px 0; color: var(--text); text-transform: none; letter-spacing: 0.02em; font-size: 15px; }
 .tutorial-card p { margin: 8px 0 12px; font-size: 13px; line-height: 1.5; }
+
+/* ---- Region filters ---- */
+.panel.region-filters { padding: 0; }
+.panel.region-filters > .menu-section-body > .muted:first-child { margin-top: 0; }
+.region-ok { color: #91cf60; }
+.region-filter .layer-head { cursor: pointer; }
+.region-range { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 4px 0 2px 24px; }
+.region-range .source { grid-column: 1 / -1; margin: 0; }
+.region-clear { width: 100%; margin-top: 8px; }
