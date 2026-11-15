@@ -412,3 +412,33 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .footprint-toggle:hover, .footprint-toggle[aria-expanded='true'] { color: var(--text); }
 .footprint-editor { margin-top: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 .footprint-help { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+
+/* ---- Insights: welcome screen, tutorial, "Learn the basics" ---- */
+.brand-title { position: relative; display: inline-block; }
+.insights-button {
+  position: absolute; left: 100%; top: 50%; transform: translateY(-50%); margin-left: 10px;
+  pointer-events: auto; padding: 3px 10px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+  border-color: rgba(255, 138, 61, 0.6); color: #ffc18e; background: var(--panel); backdrop-filter: blur(6px);
+}
+.insights-button:hover { background: rgba(255, 138, 61, 0.12); }
+.insights-dialog { width: min(520px, calc(100vw - 24px)); }
+.insights-welcome { display: grid; gap: 14px; padding: 22px 22px 18px; }
+.insights-welcome h2 { margin: 0; font-size: 20px; letter-spacing: 0.02em; }
+.insights-welcome p { margin: 0; color: var(--text); font-size: 14px; line-height: 1.5; }
+.insights-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.insights-spacer { flex: 1; }
+.insights-check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.insights-basics { gap: 8px; }
+.insights-basics .menu-section-summary span:first-child { font-weight: 600; }
+.insights-answer { margin: 0; padding: 0 12px 12px; color: var(--text); font-size: 13px; line-height: 1.5; }
+.tutorial-layer { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+.tutorial-dim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+.tutorial-highlight {
+  position: fixed; border: 2px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55), 0 0 18px rgba(255, 138, 61, 0.55);
+  transition: top 0.2s ease, left 0.2s ease, width 0.2s ease, height 0.2s ease;
+}
+.tutorial-card { position: fixed; width: min(340px, calc(100vw - 24px)); pointer-events: auto; background: #0c101c; box-shadow: 0 16px 50px rgba(0, 0, 0, 0.6); }
+.tutorial-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tutorial-card-head h2 { margin: 4px 0; color: var(--text); text-transform: none; letter-spacing: 0.02em; font-size: 15px; }
+.tutorial-card p { margin: 8px 0 12px; font-size: 13px; line-height: 1.5; }
