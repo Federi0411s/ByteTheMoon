@@ -1,0 +1,41 @@
+{
+ "tiling": "geographic",
+ "tileSize": 256,
+ "format": "webp",
+ "encoding": "u8",
+ "layout": "32 azimuths stacked vertically (row a*256 + r), azimuth a = a*360/32 deg clockwise from north",
+ "azimuths": 32,
+ "scale": 0.26,
+ "offset": -10.26,
+ "units": "deg",
+ "publicMaxLevel": 2,
+ "fineMaxLevel": 5,
+ "demMaxLevel": 7,
+ "source": "Terrain horizons from the LOLA global DEM (32 azimuths, 40 steps to 200 km, DEM down to level 7, observer 2 m)",
+ "levels": {
+  "0": {
+   "tiles": 2,
+   "MB": 2.6
+  },
+  "1": {
+   "tiles": 8,
+   "MB": 10.4
+  },
+  "2": {
+   "tiles": 32,
+   "MB": 40.5
+  },
+  "3": {
+   "tiles": 128,
+   "MB": 154.2
+  },
+  "4": {
+   "tiles": 512,
+   "MB": 569.7
+  },
+  "5": {
+   "tiles": 2048,
+   "MB": 2026.9
+  }
+ }
+}

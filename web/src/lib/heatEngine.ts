@@ -13,6 +13,8 @@
  */
 import { EARTH_RADIUS_KM, SUN_RADIUS_KM, earthPosition, sunPosition, type Ephemeris } from './ephemeris'
 import type { DemConfig } from './dem'
+import type { HorizonConfig } from './horizonTiles'
+import { fineUrlFor } from './pyramid'
 import type { HorizonMask } from './analysis'
 import { DATA_URL } from './data'
 import { loadEquipot, type EquipotTable } from './equipot'
@@ -123,9 +125,12 @@ export class HeatEngine {
   /** restarts so far (stuck or crashed workers), for the console */
   restarts = 0
   readonly dem: DemConfig
+  /** precomputed horizon pyramid (pipeline/horizon_tiles.py), null if not generated */
+  readonly hz: HorizonConfig | null
 
-  private constructor(dem: DemConfig) {
+  private constructor(dem: DemConfig, hz: HorizonConfig | null) {
     this.dem = dem
+    this.hz = hz
     this.equipot = loadEquipot()
     // at most 4: each worker holds its own elevation cache (~30 MB) and horizon cache; the mission engine has a pool too
     const k = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 2))
@@ -148,7 +153,7 @@ export class HeatEngine {
       e.preventDefault()
       this.restart(slot)
     }
-    worker.postMessage({ type: 'init', cfg: this.dem })
+    worker.postMessage({ type: 'init', cfg: this.dem, hz: this.hz })
     worker.postMessage({ type: 'equipot', table: this.equipot, threshold: CHARGE_THRESHOLD_V })
     if (this.lastWindow) worker.postMessage(this.lastWindow)
     return slot
@@ -185,7 +190,27 @@ export class HeatEngine {
         fineMaxLevel: ix.fineMaxLevel,
         scale: ix.scale,
         offset: ix.offset,
-      })
+      }, await HeatEngine.loadHorizons(origin))
+    } catch {
+      return null
+    }
+  }
+
+  /** Index of the precomputed horizon pyramid; null if it has not been generated (then all horizons are live). */
+  private static async loadHorizons(origin: string): Promise<HorizonConfig | null> {
+    try {
+      const r = await fetch(`${DATA_URL}/horizon/index.json`)
+      if (!r.ok || !(r.headers.get('content-type') ?? '').includes('json')) return null
+      const h = await r.json()
+      return {
+        publicUrl: `${origin}/horizon`,
+        fineUrl: h.fineMaxLevel > h.publicMaxLevel ? fineUrlFor('horizon') : null,
+        publicMaxLevel: h.publicMaxLevel,
+        fineMaxLevel: h.fineMaxLevel,
+        scale: h.scale,
+        offset: h.offset,
+        azimuths: h.azimuths ?? 32,
+      }
     } catch {
       return null
     }

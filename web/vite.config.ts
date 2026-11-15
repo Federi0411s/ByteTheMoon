@@ -6,7 +6,7 @@ import { viteStaticCopy } from 'vite-plugin-static-copy'
 
 /**
  * Dev only: serve the fine tile levels that are not in git (MOON_DATA/<name>_fine, written by
- * pipeline/dem_tiles.py, slope_tiles.py and sky_view.py) at /<name>-fine, so on-demand refinement
+ * pipeline/dem_tiles.py, slope_tiles.py, sky_view.py and horizon_tiles.py) at /<name>-fine, so on-demand refinement
  * works locally. In production they come from a bucket (VITE_DEM_FINE_URL etc., see lib/pyramid.ts);
  * without one the app falls back to the shipped coarser levels.
  */
@@ -16,7 +16,7 @@ function fineTiles(): Plugin {
     name: 'fine-tiles',
     apply: 'serve',
     configureServer(server) {
-      for (const name of ['dem', 'slope', 'sky']) {
+      for (const name of ['dem', 'slope', 'sky', 'horizon']) {
         const root = path.join(data, `${name}_fine`)
         server.middlewares.use(`/${name}-fine`, (req, res) => {
           const rel = decodeURIComponent((req.url ?? '').split('?')[0])
