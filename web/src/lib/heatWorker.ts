@@ -263,6 +263,7 @@ const albedo = (incDeg: number) => A0 + A_A * (incDeg / 45) ** 3 + A_B * (incDeg
 
 let thermalSun = new Float32Array(0) // per regular step: unit dir xyz + Sun distance (AU)
 let thermalCount = new Uint8Array(0) // per step: 1 = counted in the statistics, 0 = warm-up
+let thermalTimes = new Float64Array(0)
 let thermalDt = 21600
 const SPIN_UP_S = 3 * 29.53 * 86400
 
@@ -271,7 +272,7 @@ let qBuf = new Float64Array(0)
 const Tc = new Float64Array(NZ), Kn = new Float64Array(NZ)
 const alpha = new Float64Array(NZ), beta = new Float64Array(NZ), G = new Float64Array(NZ - 1), C = new Float64Array(NZ)
 
-function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number): [number, number, number] {
+function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, series?: Float32Array, seriesOff = 0): [number, number, number] {
   const T = thermalSun.length / 4
   if (!T) return [NaN, NaN, NaN]
   const r = SUN_RADIUS_DEG
@@ -333,6 +334,7 @@ function thermal(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: nu
     for (let i = 1; i < NZ; i++) Tc[i] = alpha[i] + beta[i] * Tc[i - 1]
     if (s >= 0 && thermalCount[s]) {
       const v = Tc[0]
+      if (series) series[seriesOff + s] = v
       sum += v
       n++
       if (v < min) min = v
@@ -405,7 +407,7 @@ function computeTerrain(key: string, west: number, south: number, east: number, 
   return out
 }
 
-async function tile(m: { id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean; g?: number }) {
+async function tile(m: { id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean; thermalSeriesIndices?: number[]; g?: number }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
   const g = m.g ?? 1
   const t = await terrain(m.z, m.x, m.y, m.n, demMax, g)
@@ -414,6 +416,11 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
   const s = new Float32Array(N), e = new Float32Array(N)
   const cMean = new Float32Array(N), cMin = new Float32Array(N), cBelow = new Float32Array(N)
   const tMean = new Float32Array(m.thermal ? N : 0), tMin = new Float32Array(m.thermal ? N : 0), tMax = new Float32Array(m.thermal ? N : 0)
+  const steps = thermalSun.length / 4
+  const seriesIndices = m.thermalSeriesIndices ?? []
+  const seriesIndexByCell = new Map(seriesIndices.map((index, seriesIndex) => [index, seriesIndex]))
+  const tSeries = new Float32Array(m.thermal && seriesIndices.length ? seriesIndices.length * steps : 0)
+  tSeries.fill(NaN)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
   for (let j = 0; j < ny; j++) {
     const lat = Math.max(-MAX_LAT, Math.min(MAX_LAT, north - (j * (north - south)) / (ny - 1)))
@@ -437,14 +444,22 @@ async function tile(m: { id: number; z: number; x: number; y: number; n: number;
       let sky = 0
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
       fSky[c] = sky / NAZ / 2
-      if (m.thermal) [tMean[c], tMin[c], tMax[c]] = thermal(F, t.hz, off, hMin, hMax)
+      const seriesIndex = seriesIndexByCell.get(c)
+      if (m.thermal && (!seriesIndices.length || seriesIndex !== undefined)) {
+        [tMean[c], tMin[c], tMax[c]] = thermal(F, t.hz, off, hMin, hMax, seriesIndex === undefined ? undefined : tSeries, (seriesIndex ?? 0) * steps)
+      }
     }
   }
   const slope = t.slope.slice(), elev = t.elev.slice()
   const arrays = [s, e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky]
+  const tTimes = seriesIndices.length ? thermalTimes.slice() : undefined
   ;(self as unknown as Worker).postMessage(
-    { id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, thermal: !!m.thermal },
-    arrays.map((a) => a.buffer),
+    {
+      id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky,
+      thermal: !!m.thermal,
+      ...(seriesIndices.length ? { tSeries, tTimes, tSeriesIndices: seriesIndices } : {}),
+    },
+    [...arrays.map((a) => a.buffer), ...(tTimes ? [tSeries.buffer, tTimes.buffer] : [])],
   )
 }
 
@@ -483,6 +498,7 @@ self.onmessage = (ev: MessageEvent) => {
     thermalSun = m.thermalSun
     thermalDt = m.thermalDt
     thermalCount = m.thermalCount
+    thermalTimes = m.thermalTimes
     version = m.version
   } else if (m.type === 'tile') {
     tile(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))

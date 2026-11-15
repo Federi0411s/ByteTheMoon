@@ -33,6 +33,9 @@ export interface HeatTile {
   tMean: Float32Array
   tMin: Float32Array
   tMax: Float32Array
+  tSeries?: Float32Array
+  tTimes?: Float64Array
+  tSeriesIndices?: number[]
   /** visible-sky fraction (radiation layer) */
   fSky: Float32Array
 }
@@ -218,17 +221,19 @@ export class HeatEngine {
       for (let t = s0; t < s1; t += dtS * 1000) steps.push({ t, count: 1 })
     }
     const thermalSun = new Float32Array(steps.length * 4), thermalCount = new Uint8Array(steps.length)
+    const thermalTimes = new Float64Array(steps.length)
     steps.forEach(({ t, count }, j) => {
       const p = sunPosition(eph, t + (dtS * 1000) / 2)
       const d = Math.hypot(p[0], p[1], p[2])
       thermalSun.set([p[0] / d, p[1] / d, p[2] / d, d / 1000 / AU_KM], j * 4)
       thermalCount[j] = count
+      thermalTimes[j] = t + (dtS * 1000) / 2
     })
 
     this.window = [start, end]
     this.gcr = gcrFactor(start, end)
     this.version++
-    this.lastWindow = { type: 'window', version: this.version, sun, earth, thermalSun, thermalCount, thermalDt: dtS }
+    this.lastWindow = { type: 'window', version: this.version, sun, earth, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
     for (const s of this.slots) s.worker.postMessage(this.lastWindow)
     this.cache.clear()
     this.order.length = 0
@@ -285,27 +290,31 @@ export class HeatEngine {
   /**
    * Values for Cesium geographic tile (z, x, y) on about n x n samples (nx x ny, lib/heatGrid.ts). `demMax` caps the elevation
    * level used (coarse tiles use coarse terrain: a rough first answer, refined as you zoom in).
+   * Optional row-major thermal sample indices return a per-time temperature series for those cells.
    * `wanted` lets the caller drop the request while it is still queued (e.g. its layer was removed).
    * Resolves null on failure; failures are not cached.
    */
-  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1): Promise<HeatTile | null> {
+  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, thermalSeriesIndices?: number[]): Promise<HeatTile | null> {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
-    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}`
+    const seriesKey = thermalSeriesIndices?.length ? `/s${thermalSeriesIndices.join('.')}` : ''
+    const key = `${this.version}/${z}/${x}/${y}/${n}/${demMax}/g${g}/${thermal ? 't' : ''}${seriesKey}`
     let p = this.cache.get(key)
     // a tile computed with the regolith model also answers requests without it
     if (!p && !thermal) p = this.cache.get(`${key}t`)
     if (p) return p
     const version = this.version
-    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, g }, `${z}/${x}/${y}/${g}`, wanted)
+    p = this.enqueue<HeatTile & { version: number; error?: string }>({ type: 'tile', z, x, y, n, demMax, thermal, thermalSeriesIndices, g }, `${z}/${x}/${y}/${g}`, wanted)
       .then((d) => {
         const ok = d && !d.error && d.version === version
         if (!ok) this.cache.delete(key) // never keep a failure: the next request recomputes
         if (d?.error) console.warn('heatmap tile failed:', d.error)
         return ok ? d : null
       })
-    this.cache.set(key, p)
-    this.order.push(key)
-    while (this.order.length > 1500) this.cache.delete(this.order.shift()!)
+    if (!seriesKey) {
+      this.cache.set(key, p)
+      this.order.push(key)
+      while (this.order.length > 1500) this.cache.delete(this.order.shift()!)
+    }
     return p
   }
 
