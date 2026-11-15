@@ -1,5 +1,6 @@
-import { CLASS_INFO, CRITERIA_INFO, type CriterionResult, type LandingScore } from '../lib/landingScore'
-import { WALK_TIP, DAYLIGHT_TIP, RAD_LIMITS_TIP, TEMP_LIMITS_TIP, type HumanAssessment, type HumanStatus } from '../lib/human'
+import { CLASS_INFO, criteriaInfo, type CriterionResult, type LandingScore } from '../lib/landingScore'
+import { DAYLIGHT_TIP, type HumanAssessment, type HumanStatus } from '../lib/human'
+import type { AdvancedSettings } from '../lib/advancedSettings'
 
 const HUMAN_COLOR: Record<HumanStatus, string> = { ok: '#3ddc84', limited: '#ffa23f', no: '#ff5b5b' }
 const HUMAN_MARK: Record<HumanStatus, string> = { ok: '✓', limited: '!', no: '✕' }
@@ -23,7 +24,7 @@ function Astronaut() {
   )
 }
 
-function HumanSection({ human }: { human: HumanAssessment }) {
+function HumanSection({ human, settings }: { human: HumanAssessment; settings: AdvancedSettings }) {
   const row = (label: string, r: HumanAssessment['temp'], tip: string) => (
     <div className="human-item tip" data-tip={tip} tabIndex={0}>
       <span>{label} <span className="tip-mark">ⓘ</span></span>
@@ -40,21 +41,23 @@ function HumanSection({ human }: { human: HumanAssessment }) {
           <p className="muted">Artemis III suit · in daylight · within 2 km of the lander</p>
         </div>
       </div>
-      <div className="power-now walk-duration tip" data-tip={WALK_TIP} tabIndex={0}>
+      <div className="power-now walk-duration tip"
+        data-tip={`Longest sunlit stretch within ${settings.eva.minimumTemperatureC}…${settings.eva.maximumTemperatureC} °C, up to ${settings.eva.maximumWalkHours} h; cold-only excursions up to ${settings.eva.coldWalkHours} h, further limited by the ${settings.eva.dailyDoseLimitMsv} mSv/day budget.`}
+        tabIndex={0}>
         <span>Walk duration <span className="tip-mark">ⓘ</span></span>
         <b style={{ color: HUMAN_COLOR[human.walk.status] }}>{human.walk.value}</b>
       </div>
       <p className="walk-note" style={{ color: HUMAN_COLOR[human.walk.status] }}>{human.walk.note}</p>
       {row('Daylight', human.daylight, DAYLIGHT_TIP)}
-      {row('Temperature', human.temp, TEMP_LIMITS_TIP)}
-      {row('Radiation', human.rad, RAD_LIMITS_TIP)}
+      {row('Temperature', human.temp, `Suit operating range: ${settings.eva.minimumTemperatureC}…${settings.eva.maximumTemperatureC} °C.`)}
+      {row('Radiation', human.rad, `Career limit: ${settings.eva.careerDoseLimitMsv} mSv.`)}
     </div>
   )
 }
 
 /** ⓘ with a small pop-up: what the criterion measures and its four bands with coloured dots. */
-function CriterionInfo({ id }: { id: CriterionResult['id'] }) {
-  const { what, bands } = CRITERIA_INFO[id]
+function CriterionInfo({ id, settings }: { id: CriterionResult['id']; settings: AdvancedSettings }) {
+  const { what, bands } = criteriaInfo(settings)[id]
   return (
     <span className="info" tabIndex={0} aria-label={`${what}: ${bands.map(([c, t]) => `${CLASS_INFO[c].label} ${t}`).join(', ')}`}>
       <span className="tip-mark">ⓘ</span>
@@ -75,7 +78,19 @@ function CriterionInfo({ id }: { id: CriterionResult['id'] }) {
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
 /** Landing score: one coloured bar per criterion, the human EVA check, the overall score, then the comments. */
-export function ScorePanel({ result, period, periodLabel, human }: { result: LandingScore; period: [number, number]; periodLabel: string; human?: HumanAssessment }) {
+export function ScorePanel({
+  result,
+  period,
+  periodLabel,
+  human,
+  settings,
+}: {
+  result: LandingScore
+  period: [number, number]
+  periodLabel: string
+  human?: HumanAssessment
+  settings: AdvancedSettings
+}) {
   const { criteria, score, feasible, missing } = result
   const overallColor = !feasible ? CLASS_INFO['not-feasible'].color : score >= 85 ? CLASS_INFO.recommended.color : score >= 60 ? CLASS_INFO.feasible.color : CLASS_INFO.difficult.color
   const periodText = periodLabel === 'landing day' ? day(period[0]) : `${day(period[0])} → ${day(period[1])}`
@@ -90,13 +105,13 @@ export function ScorePanel({ result, period, periodLabel, human }: { result: Lan
         const info = CLASS_INFO[c.cls]
         return (
           <div key={c.id} className="score-row">
-            <div className="score-head"><span>{c.name} <CriterionInfo id={c.id} /></span><span style={{ color: info.color }}>{info.label}</span></div>
+            <div className="score-head"><span>{c.name} <CriterionInfo id={c.id} settings={settings} /></span><span style={{ color: info.color }}>{info.label}</span></div>
             <div className="score-track"><div className="score-fill" style={{ width: `${Math.max(info.points, 3)}%`, background: info.color }} /></div>
           </div>
         )
       })}
       {missing.length > 0 && <p className="muted">Computing: {missing.join(', ')}…</p>}
-      {human && <HumanSection human={human} />}
+      {human && <HumanSection human={human} settings={settings} />}
       {criteria.length > 0 && (
         <>
           <div className="power-now" style={{ marginTop: 10 }}>

@@ -17,6 +17,7 @@ import type { HorizonMask } from './analysis'
 import { DATA_URL } from './data'
 import { loadEquipot, type EquipotTable } from './equipot'
 import { dsnStationGeometry } from './dsn'
+import type { AdvancedSettings } from './advancedSettings'
 
 export interface HeatTile {
   /** sample grid (edges included, row 0 = north): see lib/heatGrid.ts */
@@ -47,6 +48,7 @@ export interface LandingHeatOptions {
   /** semi-major m, semi-minor m, azimuth clockwise from north */
   footprint: [number, number, number]
   gcr: number
+  scoreSettings: AdvancedSettings
 }
 
 interface DemIndex {
@@ -312,7 +314,7 @@ export class HeatEngine {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
     // per-cell temperature series (site panels, reports) are one-off answers: computed fresh, never cached
     const series = thermalSeriesIndices?.length ? thermalSeriesIndices : undefined
-    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}` : ''
+    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}/${JSON.stringify(landing.scoreSettings)}` : ''
     return this.request(
       `${z}/${x}/${y}/${n}/${demMax}/g${g}${landingKey}`,
       { type: 'tile', z, x, y, n, demMax, thermal, g, landing, thermalSeriesIndices: series },
@@ -329,7 +331,7 @@ export class HeatEngine {
    * failure rules as tile().
    */
   polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, landing?: LandingHeatOptions): Promise<HeatTile | null> {
-    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}` : ''
+    const landingKey = landing ? `/l${landing.footprint.join(',')}/${landing.gcr}/${JSON.stringify(landing.scoreSettings)}` : ''
     return this.request(
       `P${p}/${z}/${bx}/${by}/${n}/${demMax}${landingKey}`,
       { type: 'tile', z, x: bx, y: by, n, demMax, thermal, polar: p, landing },

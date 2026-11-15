@@ -23,6 +23,7 @@ import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
 import { WelcomeModal } from './components/WelcomeModal'
+import { AdvancedModeDialog } from './components/AdvancedModeDialog'
 import { welcomeHidden } from './lib/welcomeStorage'
 import { Tutorial } from './components/Tutorial'
 import { BasicsDialog } from './components/BasicsDialog'
@@ -59,6 +60,7 @@ import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
 import { TechnicalReportDialog } from './components/TechnicalReportDialog'
 import type { ReportFilterImage, ReportOverlay } from './lib/technicalReport'
+import { copyAdvancedSettings, DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './lib/advancedSettings'
 
 const DAY = 86400_000
 const CSS_PIXELS_PER_CM = 96 / 2.54
@@ -233,6 +235,8 @@ export default function App() {
   const [ephemerisError, setEphemerisError] = useState<string>()
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(() => copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS))
+  const [advancedModeOpen, setAdvancedModeOpen] = useState(false)
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
   const [t, setT] = useState(() => Math.floor(Date.now() / 1000) * 1000) // current UTC time, whole seconds (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
@@ -907,7 +911,7 @@ export default function App() {
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: true,
-        landing: { footprint: [fpA, fpB, fpAz], gcr: heat.gcr },
+        landing: { footprint: [fpA, fpB, fpAz], gcr: heat.gcr, scoreSettings: advancedSettings },
         value: (v) => (Number.isFinite(v.landingScore) && v.slope <= limit ? v.landingScore : NaN),
         mask: slopeMax ? (rect, z) => slopeMax.checker(rect, z, fpA, fpB, fpAz, limit) : undefined,
         min: 0, max: 100, colormap: 'viridis', focus, guide,
@@ -918,7 +922,7 @@ export default function App() {
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, focus, slopeMax, guide])
+  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, focus, slopeMax, guide, advancedSettings])
 
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
@@ -1237,30 +1241,30 @@ export default function App() {
     // slope: max inside the landing footprint (polar maps); elsewhere the global terrain slope at the point
     const fp = footprintSlope?.sampleNearest(selected.lon * D2R, selected.lat * D2R)
     const slope = fp !== undefined && Number.isFinite(fp)
-      ? scoreSlope(fp, footprintLabel(score.footprint).replace(/^(circle|ellipse)/, 'landing $1'))
-      : env && Number.isFinite(env.slopeDeg) ? scoreSlope(env.slopeDeg, 'terrain (global estimate, no footprint)') : undefined
+      ? scoreSlope(fp, footprintLabel(score.footprint).replace(/^(circle|ellipse)/, 'landing $1'), advancedSettings)
+      : env && Number.isFinite(env.slopeDeg) ? scoreSlope(env.slopeDeg, 'terrain (global estimate, no footprint)', advancedSettings) : undefined
     let telecom
     if (dsnTl.length > 1) {
       const stepH = (dsnTl[1].t - dsnTl[0].t) / 3600_000
       let gap = 0, longest = 0
       for (const x of dsnTl) { gap = x.any ? 0 : gap + 1; longest = Math.max(longest, gap) }
-      telecom = scoreTelecom((100 * dsnTl.filter((x) => x.any).length) / dsnTl.length, longest * stepH)
+      telecom = scoreTelecom((100 * dsnTl.filter((x) => x.any).length) / dsnTl.length, longest * stepH, advancedSettings)
     }
     return combine([
-      env ? scoreTemperature(env.tMeanK - 273.15, env.tMinK - 273.15, env.tMaxK - 273.15) : undefined,
-      env ? scoreRadiation(env.doseUGyH, (scorePeriod[1] - scorePeriod[0]) / 3600_000) : undefined,
+      env ? scoreTemperature(env.tMeanK - 273.15, env.tMinK - 273.15, env.tMaxK - 273.15, advancedSettings) : undefined,
+      env ? scoreRadiation(env.doseUGyH, (scorePeriod[1] - scorePeriod[0]) / 3600_000, advancedSettings) : undefined,
       slope,
       telecom,
-      sunStats ? scoreSunlight(sunStats.longestDarkH, sunStats.pct) : undefined,
+      sunStats ? scoreSunlight(sunStats.longestDarkH, sunStats.pct, advancedSettings) : undefined,
     ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
-  }, [selected, siteEnvForPeriod, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow])
+  }, [selected, siteEnvForPeriod, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow, advancedSettings])
 
   // ---- crew outside the habitat: AxEMU suit + NASA-STD-3001 limits (lib/human.ts), same period ----
   const human = useMemo(() => {
     const env = siteEnvForPeriod?.env
     if (!env || !walkSeries || !analysisPeriodInWindow) return undefined
-    return assessHuman(env.doseUGyH, walkSeries, (scorePeriod[1] - scorePeriod[0]) / 86400_000, missionInWindow || landingDay !== undefined)
-  }, [siteEnvForPeriod, walkSeries, scorePeriod, missionInWindow, landingDay, analysisPeriodInWindow])
+    return assessHuman(env.doseUGyH, walkSeries, (scorePeriod[1] - scorePeriod[0]) / 86400_000, missionInWindow || landingDay !== undefined, advancedSettings)
+  }, [siteEnvForPeriod, walkSeries, scorePeriod, missionInWindow, landingDay, analysisPeriodInWindow, advancedSettings])
 
   const loadEphemerisData = async (load: () => Promise<NonNullable<DataBundle['ephemeris']>>) => {
     const request = ++ephemerisRequest.current
@@ -1437,11 +1441,25 @@ export default function App() {
               env={analysisPeriodInWindow && siteEnvKey ? { env: siteEnvForPeriod?.env ?? undefined, loading: !siteEnvForPeriod } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
-              landing={landing ? { result: landing, period: scorePeriod, periodLabel, human } : undefined}
+              landing={landing ? { result: landing, period: scorePeriod, periodLabel, human, settings: advancedSettings } : undefined}
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
+          {advancedModeOpen && (
+            <AdvancedModeDialog
+              settings={advancedSettings}
+              onSave={(settings) => { setAdvancedSettings(settings); setAdvancedModeOpen(false) }}
+              onCancel={() => setAdvancedModeOpen(false)}
+            />
+          )}
           <aside className="side right">
+            <section className="panel advanced-mode-card">
+              <button type="button" className="advanced-mode-button" onClick={() => setAdvancedModeOpen(true)}>
+                <span>Advanced Mode</span>
+                <span aria-hidden="true">⚙</span>
+              </button>
+              <p className="muted">Configure environmental and crew limits for this session.</p>
+            </section>
             {bundle.ephemeris && (
               <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
                 status={{

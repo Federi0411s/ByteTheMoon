@@ -29,6 +29,7 @@ import { DemSampler, demLevelFor, demPixelM } from './dem'
 import { fromPolar, heatGrid, polarBlockSize } from './heatGrid'
 import type { EquipotTable } from './equipot'
 import { scoreLandingCell } from './landingScore'
+import type { AdvancedSettings } from './advancedSettings'
 
 const R = 1737400
 const R2D = 180 / Math.PI
@@ -551,7 +552,7 @@ function stationLinkStats(F: Frame, hz: Float32Array, off: number, siteHeight: n
 async function tile(m: {
   id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean
   thermalSeriesIndices?: number[]; g?: number; polar?: number
-  landing?: { footprint: [number, number, number]; gcr: number }
+  landing?: { footprint: [number, number, number]; gcr: number; scoreSettings: AdvancedSettings }
 }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
   const smp = m.polar ? polarSamples(m.z, m.x, m.y, m.n, m.polar) : geoSamples(m.z, m.x, m.y, m.n, m.g ?? 1)
@@ -610,7 +611,7 @@ async function tile(m: {
             longestLinkGapH,
             sunlitPct: sunOut.sunlitPct,
             longestDarkH: sunOut.longestDarkH,
-          })
+          }, m.landing.scoreSettings)
           slope[c] = maxSlope
         } else {
           landingScore[c] = slope[c] = NaN

@@ -3,7 +3,8 @@
 NASA Space Apps 2026. An interactive 3D Moon for comparing landing sites by **sunlight** (power) and **Earth visibility** (communications). It takes the real terrain horizon from NASA LOLA data into account.
 
 - Streaming 3D Moon (Cesium Moon 3D Tiles), with a NASA Moon Trek fallback
-- **Global heatmaps** draped on the 3D surface, computed in the browser for the selected period (the mission period, or else the loaded 5-year window): sunlight, Earth visibility, permanent shadow, slope, elevation, surface charging, regolith temperature, radiation dose, and a live **landing-suitability score** with adjustable weights
+- **Global heatmaps** draped on the 3D surface, computed in the browser for the selected period (the mission period, or else the loaded 5-year window): sunlight, Earth visibility, permanent shadow, slope, elevation, surface charging, regolith temperature, radiation dose, and a live **landing-suitability score**
+- **Advanced Mode** lets expert users adjust landing-score thresholds and EVA temperature/radiation limits for the current session; reloading the app restores the defaults defined in the code
 - Time controls to step backward or forward by 1 minute, 30 minutes, 1 hour, 6 hours, 12 hours, or 1 day, plus a slider to set the date; Moon lighting uses the Sun's real position (NASA SPICE)
 - Landing-site panel expands to half the screen for easier browsing of analysis windows from 1 day to 1 year
 - Click a point on the Moon to inspect it, then save it with a custom name; saved sites persist in the browser and can be renamed or removed

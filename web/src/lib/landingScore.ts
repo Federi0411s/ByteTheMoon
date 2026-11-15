@@ -1,3 +1,5 @@
+import { DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './advancedSettings'
+
 /**
  * Landing score: each criterion is put in one of four classes, each class is worth fixed points, the
  * overall score is the mean. If ANY criterion is "Not feasible" every score is still shown, but the
@@ -29,30 +31,6 @@ export const CLASS_INFO: Record<ScoreClass, { label: string; points: number; col
   'not-feasible': { label: 'Not feasible', points: 0, color: '#ff5b5b' },
 }
 
-/** Short explanation of each criterion and its four bands, for the info pop-up next to the bars. */
-export const CRITERIA_INFO: Record<CriterionResult['id'], { what: string; bands: [ScoreClass, string][] }> = {
-  temperature: {
-    what: 'Mean surface temperature over the period',
-    bands: [['recommended', '≥ −80 °C'], ['feasible', '−80 – −130 °C'], ['difficult', '−130 – −180 °C'], ['not-feasible', '< −180 °C']],
-  },
-  radiation: {
-    what: 'Total dose over the period',
-    bands: [['recommended', '< 3·10⁸ µGy'], ['feasible', '3·10⁸ – 10⁹ µGy'], ['difficult', '10⁹ – 10¹⁰ µGy'], ['not-feasible', '> 10¹⁰ µGy']],
-  },
-  slope: {
-    what: 'Max slope in the landing footprint',
-    bands: [['recommended', '0 – 5°'], ['feasible', '5 – 8°'], ['difficult', '8 – 10°'], ['not-feasible', '> 10°']],
-  },
-  telecom: {
-    what: 'Time with at least one DSN station in direct link',
-    bands: [['recommended', '≥ 80%'], ['feasible', '40 – 80%'], ['difficult', '10 – 40%'], ['not-feasible', '< 10%']],
-  },
-  sunlight: {
-    what: 'Longest stretch without sunlight (Sun below the terrain horizon)',
-    bands: [['recommended', '≤ 3 days'], ['feasible', '3 – 7 days'], ['difficult', '7 – 20 days'], ['not-feasible', '> 20 days or none']],
-  },
-}
-
 export interface CriterionResult {
   id: 'temperature' | 'radiation' | 'slope' | 'telecom' | 'sunlight'
   name: string
@@ -81,72 +59,143 @@ const sci = (v: number) => (v >= 1e6 ? v.toExponential(1).replace('e+', '·10^')
  * terrain, 2027): equator ≈ −67 °C, 60°S ≈ −105 °C, 80°S ≈ −153 °C, 88°S ≈ −197 °C. The bare-soil
  * extremes are reported in the comment only.
  */
-export const TEMP_BANDS_C = { recommended: -80, feasible: -130, difficult: -180 }
+export const TEMP_BANDS_C = {
+  recommended: DEFAULT_ADVANCED_SETTINGS.temperature.recommendedC,
+  feasible: DEFAULT_ADVANCED_SETTINGS.temperature.feasibleC,
+  difficult: DEFAULT_ADVANCED_SETTINGS.temperature.difficultC,
+}
 
-export function scoreTemperature(tMeanC: number, tMinC: number, tMaxC: number): CriterionResult {
+export function scoreTemperature(tMeanC: number, tMinC: number, tMaxC: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
   const t = tMeanC
+  const { recommendedC, feasibleC, difficultC } = settings.temperature
   const cls: ScoreClass =
-    t >= TEMP_BANDS_C.recommended ? 'recommended'
-      : t >= TEMP_BANDS_C.feasible ? 'feasible'
-        : t >= TEMP_BANDS_C.difficult ? 'difficult'
+    t >= recommendedC ? 'recommended'
+      : t >= feasibleC ? 'feasible'
+        : t >= difficultC ? 'difficult'
           : 'not-feasible'
   const extremes = ` Bare-soil extremes ${fmtC(tMinC)} – ${fmtC(tMaxC)}.`
   const comment = {
-    recommended: `Mean ${fmtC(t)} (≥ −80 °C): among the mildest places on the Moon, standard insulation and heaters.`,
-    feasible: `Mean ${fmtC(t)} (−80…−130 °C): cold site, more heater power and insulation needed.`,
-    difficult: `Mean ${fmtC(t)} (−130…−180 °C): very cold, a dedicated thermal design (e.g. radioisotope heaters) is needed.`,
-    'not-feasible': `Mean ${fmtC(t)} (below −180 °C, like permanently shadowed craters): equipment must be isolated from the environment.`,
+    recommended: `Mean ${fmtC(t)} (≥ ${fmtC(recommendedC)}): among the mildest places on the Moon, standard insulation and heaters.`,
+    feasible: `Mean ${fmtC(t)} (${fmtC(feasibleC)}…${fmtC(recommendedC)}): cold site, more heater power and insulation needed.`,
+    difficult: `Mean ${fmtC(t)} (${fmtC(difficultC)}…${fmtC(feasibleC)}): very cold, a dedicated thermal design (e.g. radioisotope heaters) is needed.`,
+    'not-feasible': `Mean ${fmtC(t)} (below ${fmtC(difficultC)}, like permanently shadowed craters): equipment must be isolated from the environment.`,
   }[cls] + extremes
   return { id: 'temperature', name: 'Temperature', cls, value: `mean ${fmtC(t)}`, comment }
 }
 
-export function scoreRadiation(doseRateUGyH: number, hours: number): CriterionResult {
+export function scoreRadiation(doseRateUGyH: number, hours: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
   const total = doseRateUGyH * hours
-  const cls: ScoreClass = total < 3e8 ? 'recommended' : total < 1e9 ? 'feasible' : total < 1e10 ? 'difficult' : 'not-feasible'
+  const { recommendedDoseUGy, feasibleDoseUGy, difficultDoseUGy } = settings.radiation
+  const cls: ScoreClass = total < recommendedDoseUGy ? 'recommended'
+    : total < feasibleDoseUGy ? 'feasible'
+      : total < difficultDoseUGy ? 'difficult'
+        : 'not-feasible'
   const comment = {
-    recommended: `Total dose ${sci(total)} µGy over ${Math.round(hours / 24)} d, below 3·10^8 µGy.`,
-    feasible: `Total dose ${sci(total)} µGy: between 3·10^8 and 10^9 µGy, radiation-tolerant parts needed.`,
-    difficult: `Total dose ${sci(total)} µGy: between 10^9 and 10^10 µGy, shielding and rad-hard design needed.`,
-    'not-feasible': `Total dose ${sci(total)} µGy exceeds 10^10 µGy.`,
+    recommended: `Total dose ${sci(total)} µGy over ${Math.round(hours / 24)} d, below ${sci(recommendedDoseUGy)} µGy.`,
+    feasible: `Total dose ${sci(total)} µGy: between ${sci(recommendedDoseUGy)} and ${sci(feasibleDoseUGy)} µGy, radiation-tolerant parts needed.`,
+    difficult: `Total dose ${sci(total)} µGy: between ${sci(feasibleDoseUGy)} and ${sci(difficultDoseUGy)} µGy, shielding and rad-hard design needed.`,
+    'not-feasible': `Total dose ${sci(total)} µGy reaches or exceeds ${sci(difficultDoseUGy)} µGy.`,
   }[cls]
   return { id: 'radiation', name: 'Radiation', cls, value: `${doseRateUGyH.toFixed(1)} µGy/h`, comment }
 }
 
-export function scoreSlope(maxSlopeDeg: number, footprint: string): CriterionResult {
-  const cls: ScoreClass = maxSlopeDeg <= 5 ? 'recommended' : maxSlopeDeg <= 8 ? 'feasible' : maxSlopeDeg <= 10 ? 'difficult' : 'not-feasible'
+export function scoreSlope(maxSlopeDeg: number, footprint: string, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
+  const { recommendedDeg, feasibleDeg, difficultDeg } = settings.slope
+  const cls: ScoreClass = maxSlopeDeg <= recommendedDeg ? 'recommended'
+    : maxSlopeDeg <= feasibleDeg ? 'feasible'
+      : maxSlopeDeg <= difficultDeg ? 'difficult'
+        : 'not-feasible'
   const comment = {
-    recommended: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: safe (0–5°).`,
-    feasible: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: intermediate (5–8°).`,
-    difficult: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: at the limit (8–10°).`,
-    'not-feasible': `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: above 10°, landing not feasible.`,
+    recommended: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: safe (0–${recommendedDeg}°).`,
+    feasible: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: intermediate (${recommendedDeg}–${feasibleDeg}°).`,
+    difficult: `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: at the limit (${feasibleDeg}–${difficultDeg}°).`,
+    'not-feasible': `Max slope ${maxSlopeDeg.toFixed(1)}° in the ${footprint}: above ${difficultDeg}°, landing not feasible.`,
   }[cls]
   return { id: 'slope', name: 'Slope', cls, value: `${maxSlopeDeg.toFixed(1)}°`, comment }
 }
 
-export function scoreTelecom(linkPct: number, longestGapH: number): CriterionResult {
-  const cls: ScoreClass = linkPct >= 80 ? 'recommended' : linkPct >= 40 ? 'feasible' : linkPct >= 10 ? 'difficult' : 'not-feasible'
+export function scoreTelecom(linkPct: number, longestGapH: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
+  const { recommendedPercent, feasiblePercent, difficultPercent } = settings.telecom
+  const cls: ScoreClass = linkPct >= recommendedPercent ? 'recommended'
+    : linkPct >= feasiblePercent ? 'feasible'
+      : linkPct >= difficultPercent ? 'difficult'
+        : 'not-feasible'
   const gap = longestGapH >= 48 ? `${(longestGapH / 24).toFixed(1)} d` : `${Math.round(longestGapH)} h`
   const comment = {
-    recommended: `Direct link to the DSN ${Math.round(linkPct)}% of the time: near-continuous contact.`,
-    feasible: `Direct link ${Math.round(linkPct)}% of the time, longest gap ${gap}: store data between passes.`,
-    difficult: `Direct link only ${Math.round(linkPct)}% of the time, longest gap ${gap}: a relay satellite is advised.`,
-    'not-feasible': `Direct link ${Math.round(linkPct)}% of the time: a relay satellite is required.`,
+    recommended: `Direct link to the DSN ${Math.round(linkPct)}% of the time: near-continuous contact (≥ ${recommendedPercent}%).`,
+    feasible: `Direct link ${Math.round(linkPct)}% of the time, longest gap ${gap}: store data between passes (${feasiblePercent}–${recommendedPercent}%).`,
+    difficult: `Direct link only ${Math.round(linkPct)}% of the time, longest gap ${gap}: a relay satellite is advised (${difficultPercent}–${feasiblePercent}%).`,
+    'not-feasible': `Direct link ${Math.round(linkPct)}% of the time, below ${difficultPercent}%: a relay satellite is required.`,
   }[cls]
   return { id: 'telecom', name: 'Telecommunications', cls, value: `${Math.round(linkPct)}% in link`, comment }
 }
 
-export function scoreSunlight(longestDarkH: number, sunlitPct: number): CriterionResult {
+export function scoreSunlight(longestDarkH: number, sunlitPct: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
   const d = longestDarkH / 24
-  const cls: ScoreClass = sunlitPct <= 0 ? 'not-feasible' : d <= 3 ? 'recommended' : d <= 7 ? 'feasible' : d <= 20 ? 'difficult' : 'not-feasible'
+  const { recommendedDays, feasibleDays, difficultDays } = settings.darkness
+  const cls: ScoreClass = sunlitPct <= 0 ? 'not-feasible'
+    : d <= recommendedDays ? 'recommended'
+      : d <= feasibleDays ? 'feasible'
+        : d <= difficultDays ? 'difficult'
+          : 'not-feasible'
   const comment = {
-    recommended: `Sunlit ${Math.round(sunlitPct)}% of the time, longest night ${d.toFixed(1)} d: small batteries suffice.`,
-    feasible: `Longest night ${d.toFixed(1)} d: batteries must bridge several days.`,
-    difficult: `Longest night ${d.toFixed(1)} d (a lunar night): large batteries or a heat source needed.`,
+    recommended: `Sunlit ${Math.round(sunlitPct)}% of the time, longest night ${d.toFixed(1)} d: small batteries suffice (≤ ${recommendedDays} d).`,
+    feasible: `Longest night ${d.toFixed(1)} d: batteries must bridge several days (${recommendedDays}–${feasibleDays} d).`,
+    difficult: `Longest night ${d.toFixed(1)} d (a lunar night): large batteries or a heat source needed (${feasibleDays}–${difficultDays} d).`,
     'not-feasible': sunlitPct <= 0
       ? 'No sunlight at all in the period.'
-      : `Longest night ${d.toFixed(1)} d, longer than a lunar night: solar power alone is not enough.`,
+      : `Longest night ${d.toFixed(1)} d, above ${difficultDays} d: solar power alone is not enough.`,
   }[cls]
   return { id: 'sunlight', name: 'Sunlight', cls, value: `${Math.round(sunlitPct)}% sunlit`, comment }
+}
+
+const fmtDoseBand = (value: number) => value.toExponential(0).replace('e+', '·10^').replace('e', '·10^')
+
+/** Current score boundaries, used by the info pop-ups beside each criterion. */
+export function criteriaInfo(settings: AdvancedSettings): Record<CriterionResult['id'], { what: string; bands: [ScoreClass, string][] }> {
+  const { temperature, radiation, slope, telecom, darkness } = settings
+  const t = (value: number) => `${value} °C`
+  const dose = (value: number) => `${fmtDoseBand(value)} µGy`
+  const angle = (value: number) => `${value}°`
+  const percent = (value: number) => `${value}%`
+  const days = (value: number) => `${value} days`
+  return {
+    temperature: {
+      what: 'Mean surface temperature over the period',
+      bands: [['recommended', `≥ ${t(temperature.recommendedC)}`],
+        ['feasible', `${t(temperature.feasibleC)} to ${t(temperature.recommendedC)}`],
+        ['difficult', `${t(temperature.difficultC)} to ${t(temperature.feasibleC)}`],
+        ['not-feasible', `< ${t(temperature.difficultC)}`]],
+    },
+    radiation: {
+      what: 'Total dose over the period',
+      bands: [['recommended', `< ${dose(radiation.recommendedDoseUGy)}`],
+        ['feasible', `${dose(radiation.recommendedDoseUGy)} to ${dose(radiation.feasibleDoseUGy)}`],
+        ['difficult', `${dose(radiation.feasibleDoseUGy)} to ${dose(radiation.difficultDoseUGy)}`],
+        ['not-feasible', `≥ ${dose(radiation.difficultDoseUGy)}`]],
+    },
+    slope: {
+      what: 'Max slope in the landing footprint',
+      bands: [['recommended', `0 to ${angle(slope.recommendedDeg)}`],
+        ['feasible', `${angle(slope.recommendedDeg)} to ${angle(slope.feasibleDeg)}`],
+        ['difficult', `${angle(slope.feasibleDeg)} to ${angle(slope.difficultDeg)}`],
+        ['not-feasible', `> ${angle(slope.difficultDeg)}`]],
+    },
+    telecom: {
+      what: 'Time with at least one DSN station in direct link',
+      bands: [['recommended', `≥ ${percent(telecom.recommendedPercent)}`],
+        ['feasible', `${percent(telecom.feasiblePercent)} to ${percent(telecom.recommendedPercent)}`],
+        ['difficult', `${percent(telecom.difficultPercent)} to ${percent(telecom.feasiblePercent)}`],
+        ['not-feasible', `< ${percent(telecom.difficultPercent)}`]],
+    },
+    sunlight: {
+      what: 'Longest stretch without sunlight (Sun below the terrain horizon)',
+      bands: [['recommended', `≤ ${days(darkness.recommendedDays)}`],
+        ['feasible', `${days(darkness.recommendedDays)} to ${days(darkness.feasibleDays)}`],
+        ['difficult', `${days(darkness.feasibleDays)} to ${days(darkness.difficultDays)}`],
+        ['not-feasible', `> ${days(darkness.difficultDays)} or none`]],
+    },
+  }
 }
 
 export function combine(criteria: (CriterionResult | undefined)[], names: string[]): LandingScore {
@@ -165,22 +214,31 @@ export function scoreLandingCell(input: {
   longestLinkGapH: number
   sunlitPct: number
   longestDarkH: number
-}): number {
+}, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): number {
   const points = (cls: ScoreClass) => CLASS_INFO[cls].points
   const t = input.tMeanC
-  const temperature: ScoreClass = t >= TEMP_BANDS_C.recommended ? 'recommended'
-    : t >= TEMP_BANDS_C.feasible ? 'feasible'
-      : t >= TEMP_BANDS_C.difficult ? 'difficult'
+  const temperature: ScoreClass = t >= settings.temperature.recommendedC ? 'recommended'
+    : t >= settings.temperature.feasibleC ? 'feasible'
+      : t >= settings.temperature.difficultC ? 'difficult'
         : 'not-feasible'
   const totalDose = input.doseRateUGyH * input.periodHours
-  const radiation: ScoreClass = totalDose < 3e8 ? 'recommended' : totalDose < 1e9 ? 'feasible' : totalDose < 1e10 ? 'difficult' : 'not-feasible'
-  const slope: ScoreClass = input.maxSlopeDeg <= 5 ? 'recommended' : input.maxSlopeDeg <= 8 ? 'feasible' : input.maxSlopeDeg <= 10 ? 'difficult' : 'not-feasible'
-  const telecom: ScoreClass = input.linkPct >= 80 ? 'recommended' : input.linkPct >= 40 ? 'feasible' : input.linkPct >= 10 ? 'difficult' : 'not-feasible'
+  const radiation: ScoreClass = totalDose < settings.radiation.recommendedDoseUGy ? 'recommended'
+    : totalDose < settings.radiation.feasibleDoseUGy ? 'feasible'
+      : totalDose < settings.radiation.difficultDoseUGy ? 'difficult'
+        : 'not-feasible'
+  const slope: ScoreClass = input.maxSlopeDeg <= settings.slope.recommendedDeg ? 'recommended'
+    : input.maxSlopeDeg <= settings.slope.feasibleDeg ? 'feasible'
+      : input.maxSlopeDeg <= settings.slope.difficultDeg ? 'difficult'
+        : 'not-feasible'
+  const telecom: ScoreClass = input.linkPct >= settings.telecom.recommendedPercent ? 'recommended'
+    : input.linkPct >= settings.telecom.feasiblePercent ? 'feasible'
+      : input.linkPct >= settings.telecom.difficultPercent ? 'difficult'
+        : 'not-feasible'
   const darkDays = input.longestDarkH / 24
   const sunlight: ScoreClass = input.sunlitPct <= 0 ? 'not-feasible'
-    : darkDays <= 3 ? 'recommended'
-      : darkDays <= 7 ? 'feasible'
-        : darkDays <= 20 ? 'difficult'
+    : darkDays <= settings.darkness.recommendedDays ? 'recommended'
+      : darkDays <= settings.darkness.feasibleDays ? 'feasible'
+        : darkDays <= settings.darkness.difficultDays ? 'difficult'
           : 'not-feasible'
   return (points(temperature) + points(radiation) + points(slope) + points(telecom) + points(sunlight)) / 5
 }

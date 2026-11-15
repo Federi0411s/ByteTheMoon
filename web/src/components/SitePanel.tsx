@@ -9,6 +9,7 @@ import { PowerPanel } from './PowerPanel'
 import { ScorePanel } from './ScorePanel'
 import type { LandingScore } from '../lib/landingScore'
 import type { HumanAssessment } from '../lib/human'
+import type { AdvancedSettings } from '../lib/advancedSettings'
 import { EnvPanel, type SiteEnv } from './EnvPanel'
 import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
@@ -148,7 +149,7 @@ export function SitePanel({
   dsn?: { now?: DsnSample }
   env?: { env?: SiteEnv; loading: boolean }
   power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
-  landing?: { result: LandingScore; period: [number, number]; periodLabel: string; human?: HumanAssessment }
+  landing?: { result: LandingScore; period: [number, number]; periodLabel: string; human?: HumanAssessment; settings: AdvancedSettings }
   terrainViewActive: boolean
   terrainViewLoading: boolean
   terrainViewError?: string

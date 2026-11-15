@@ -1,3 +1,5 @@
+import { DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './advancedSettings'
+
 /**
  * Can the crew walk outside (EVA)? Artemis III suit (Axiom AxEMU) + NASA-STD-3001 radiation limits.
  *
@@ -12,13 +14,13 @@
  */
 
 export const SV_PER_GY = 60 / 13.2
-export const CAREER_LIMIT_MSV = 600
-export const SUIT_MIN_C = -157
-export const SUIT_MAX_C = 121
+export const CAREER_LIMIT_MSV = DEFAULT_ADVANCED_SETTINGS.eva.careerDoseLimitMsv
+export const SUIT_MIN_C = DEFAULT_ADVANCED_SETTINGS.eva.minimumTemperatureC
+export const SUIT_MAX_C = DEFAULT_ADVANCED_SETTINGS.eva.maximumTemperatureC
 /** dose budget per day spent outside (NASA-STD-3001 surface design value) */
-export const DAILY_BUDGET_MSV = 0.8
+export const DAILY_BUDGET_MSV = DEFAULT_ADVANCED_SETTINGS.eva.dailyDoseLimitMsv
 /** crew stay assumed when no mission period is set (the loaded window is years long, no crew stays that long) */
-export const REFERENCE_STAY_DAYS = 30
+export const REFERENCE_STAY_DAYS = DEFAULT_ADVANCED_SETTINGS.eva.referenceStayDays
 
 import type { SiteThermalSeries } from './regolith'
 
@@ -48,15 +50,22 @@ export interface HumanAssessment {
  * @param series hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
  * @param isMission false: no mission period set, the habitat dose is counted over REFERENCE_STAY_DAYS
  */
-export function assessHuman(doseUGyH: number, series: SiteThermalSeries, missionDays: number, isMission: boolean): HumanAssessment {
-  const periodDays = isMission ? missionDays : REFERENCE_STAY_DAYS
+export function assessHuman(
+  doseUGyH: number,
+  series: SiteThermalSeries,
+  missionDays: number,
+  isMission: boolean,
+  settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS,
+): HumanAssessment {
+  const { minimumTemperatureC, maximumTemperatureC, maximumWalkHours, coldWalkHours, dailyDoseLimitMsv, careerDoseLimitMsv, referenceStayDays } = settings.eva
+  const periodDays = isMission ? missionDays : referenceStayDays
   const { sunlit, tC, stepH } = series
   const n = sunlit.length
 
   // walks only in sunlight AND with the surface inside the suit range, checked hour by hour
   let lit = 0, ok = 0, run = 0, windowH = 0, dayMin = Infinity, dayMax = -Infinity, cold = 0, hot = 0
   for (let i = 0; i < n; i++) {
-    const inRange = tC[i] >= SUIT_MIN_C && tC[i] <= SUIT_MAX_C
+    const inRange = tC[i] >= minimumTemperatureC && tC[i] <= maximumTemperatureC
     if (sunlit[i]) {
       lit++
       if (tC[i] < dayMin) dayMin = tC[i]
@@ -78,19 +87,19 @@ export function assessHuman(doseUGyH: number, series: SiteThermalSeries, mission
   const temp: HumanAssessment['temp'] = !lit
     ? { status: 'no', value: range, note: 'no daylight' }
     : ok === 0
-      ? { status: hot > cold ? 'no' : 'limited', value: range, note: hot > cold ? 'too hot in daylight' : 'too cold in daylight: 2 h max' }
+      ? { status: hot > cold ? 'no' : 'limited', value: range, note: hot > cold ? 'too hot in daylight' : `too cold in daylight: ${coldWalkHours} h max` }
       : { status: okPct >= 90 ? 'ok' : 'limited', value: range, note: `in suit range ${Math.round(okPct)}% of daylight hours` }
   // longest walk allowed by temperature: the longest continuous sunlit, in-range stretch (max 8 h);
   // if it is never in range but only too cold, the suit still allows short (~2 h) excursions
-  const suitH = ok > 0 ? Math.min(8, windowH) : lit && cold >= hot ? 2 : 0
+  const suitH = ok > 0 ? Math.min(maximumWalkHours, windowH) : lit && cold >= hot ? coldWalkHours : 0
 
   // radiation: one walk keeps within 0.8 mSv/day; the career limit has to cover the habitat dose first
   const mSvH = (doseUGyH * SV_PER_GY) / 1000
-  const radH = DAILY_BUDGET_MSV / mSvH
+  const radH = dailyDoseLimitMsv / mSvH
   const maxWalkH = Math.min(suitH, radH)
   const walkMSv = mSvH * maxWalkH
-  const habitatMSv = DAILY_BUDGET_MSV * periodDays
-  const walksByDose = habitatMSv >= CAREER_LIMIT_MSV ? 0 : Math.floor((CAREER_LIMIT_MSV - habitatMSv) / Math.max(walkMSv, 1e-9))
+  const habitatMSv = dailyDoseLimitMsv * periodDays
+  const walksByDose = habitatMSv >= careerDoseLimitMsv ? 0 : Math.floor((careerDoseLimitMsv - habitatMSv) / Math.max(walkMSv, 1e-9))
   const sunlitDays = Math.floor((sunlitPct / 100) * periodDays)
   const rad: HumanAssessment['rad'] = {
     status: walksByDose === 0 ? 'no' : walksByDose < sunlitDays ? 'limited' : 'ok',
@@ -99,7 +108,7 @@ export function assessHuman(doseUGyH: number, series: SiteThermalSeries, mission
   }
 
   const walks: HumanStatus = daylight.status === 'no' || rad.status === 'no' || maxWalkH <= 0 ? 'no'
-    : temp.status === 'ok' && rad.status === 'ok' && daylight.status === 'ok' && maxWalkH >= 8 ? 'ok' : 'limited'
+    : temp.status === 'ok' && rad.status === 'ok' && daylight.status === 'ok' && maxWalkH >= maximumWalkHours ? 'ok' : 'limited'
   const verdict = walks === 'ok' ? 'Walks possible' : walks === 'limited' ? 'Walks possible, with limits' : 'Walks not possible'
   const walk: HumanAssessment['walk'] = walks === 'no'
     ? { status: 'no', value: '0 h', note: daylight.status === 'no' ? 'no daylight' : rad.status === 'no' ? 'career dose reached' : 'never within suit range' }
@@ -107,7 +116,7 @@ export function assessHuman(doseUGyH: number, series: SiteThermalSeries, mission
       ? { status: 'limited', value: fmtH(maxWalkH), note: 'limited by radiation' }
       : ok === 0
         ? { status: 'limited', value: fmtH(maxWalkH), note: 'limited by the cold' }
-        : maxWalkH < 8
+        : maxWalkH < maximumWalkHours
           ? { status: 'limited', value: fmtH(maxWalkH), note: 'limited by the temperature window' }
           : { status: 'ok', value: fmtH(maxWalkH), note: 'full suit autonomy' }
   return { walks, verdict, maxWalkH, walk, daylight, temp, rad }
