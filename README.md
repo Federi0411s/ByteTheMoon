@@ -152,6 +152,21 @@ it agrees with LOLA AVGVISIB_EARTH (r = 0.95, mean difference -0.02):
 python pipeline/earth_visibility.py    # ~2 min; --step-hours, --observer-height, --dem
 ```
 
+## Layer lunar pits
+
+`pipeline/pits.py` downloads the LROC lunar pit catalog (Wagner & Robinson 2021, 278 pits) to
+`pipeline/data/LUNAR_PIT_LOCATIONS.CSV` and writes `web/public/data/pits.geojson`. Each pit gets the
+LOLA surface height (and floor height = surface - depth) from the same global DEM tiles the app uses
+for the 3D terrain (`web/public/data/dem`, or the finer `MOON_DATA/dem_fine` tiles if present), in
+metres above the 1737.4 km sphere. `pipeline/lunar_pits.py` holds the pit model and prints a report
+with plots of the main LROC Atlas pits. In the app, the "Lunar pits" layer draws them (on the LOLA
+terrain when 3D elevation is on); clicking one analyses it as a site and shows its catalog data.
+
+```powershell
+python pipeline/pits.py           # --force to re-download the catalog
+python pipeline/lunar_pits.py     # report + pipeline/data/lunar_pits.png
+```
+
 ## Data sources
 
 - LRO LOLA topography, slope, average illumination, Earth visibility and PSR maps: NASA PDS Geosciences Node (Mazarico et al. 2011; LOLA Science Team)

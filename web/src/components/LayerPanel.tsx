@@ -87,6 +87,9 @@ export function LayerPanel({
   iceVisible,
   onIceVisible,
   iceError,
+  pitsVisible,
+  onPitsVisible,
+  pitsError,
   slopeExact,
 }: {
   layers: LayerMeta[]
@@ -107,6 +110,9 @@ export function LayerPanel({
   iceVisible: boolean
   onIceVisible: (visible: boolean) => void
   iceError?: string
+  pitsVisible: boolean
+  onPitsVisible: (visible: boolean) => void
+  pitsError?: string
   /** true: max slope from the 40 m LDSM (pipeline layer slope_max); false: approximated from the 100 m slope layer */
   slopeExact: boolean
 }) {
@@ -282,6 +288,24 @@ export function LayerPanel({
             </label>
             {iceError && <p className="muted">{iceError}</p>}
             <p className="source">Diviner PRP (Paige et al. 2010): light blue = stable within 0.5 m, blue = stable at the surface (T max &lt; 110 K), cyan = observed by M3.</p>
+          </div>
+        </div>
+      </details>
+
+      <details className="menu-section">
+        <summary className="menu-section-summary">
+          <span>Lunar pits</span>
+          <span className="menu-section-state">{pitsError ? 'Error' : pitsVisible ? 'On' : 'Off'}</span>
+          <span className="menu-section-chevron" aria-hidden="true">›</span>
+        </summary>
+        <div className="menu-section-body">
+          <div className="layer">
+            <label className="layer-head">
+              <input type="checkbox" checked={pitsVisible} onChange={(e) => onPitsVisible(e.target.checked)} />
+              Show layer
+            </label>
+            {pitsError && <p className="muted">{pitsError}</p>}
+            <p className="source">278 pits (possible lava-tube skylights) from the LROC catalog (Wagner &amp; Robinson 2021), heights from LOLA. Click a pit for its depth and size.</p>
           </div>
         </div>
       </details>

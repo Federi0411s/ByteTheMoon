@@ -18,6 +18,7 @@ import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEa
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
+import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
@@ -192,6 +193,7 @@ export default function App() {
   const radiationOpacityRef = useRef(0.7)
   const iceEntitiesRef = useRef<Entity[]>([])
   const iceLoadedRef = useRef(false)
+  const pitsRef = useRef<PitsLayer | null>(null)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
 
   const [ready, setReady] = useState(false)
@@ -248,6 +250,8 @@ export default function App() {
   const restoreElevationOnExit = useRef(false)
   const [iceVisible, setIceVisible] = useState(false)
   const [iceError, setIceError] = useState<string>()
+  const [pitsVisible, setPitsVisible] = useState(false)
+  const [pitsError, setPitsError] = useState<string>()
 
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
@@ -1138,6 +1142,7 @@ export default function App() {
             ...cur,
             values: cur.values.map((v, i) => {
               const m = bundle.layers[i]
+              if (!m) return v // extra rows (e.g. lunar pit details) are not layers
               const gv = g[m.id]
               // fill gaps; for layers the global computation supersedes, prefer it everywhere
               if ((v.value !== '—' && GLOBAL_LAYERS[m.id]?.polar !== false) || gv === undefined || !Number.isFinite(gv)) return v
@@ -1168,6 +1173,47 @@ export default function App() {
     if (scene) flyToSite(scene.viewer, lat, lon)
   }, [inspectCustomPoint, stopTerrainView])
 
+  // ---- lunar pits (LROC catalog + LOLA heights, pipeline/pits.py) ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const layer = new PitsLayer(scene.viewer)
+    pitsRef.current = layer
+    return () => {
+      layer.destroy()
+      if (pitsRef.current === layer) pitsRef.current = null
+    }
+  }, [ready])
+
+  useEffect(() => {
+    const layer = pitsRef.current
+    if (!ready || !layer) return
+    let cancelled = false
+    setPitsError(undefined)
+    layer.setVisible(pitsVisible).catch((error: unknown) => {
+      if (!cancelled) setPitsError(`Unable to load the pits layer: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    return () => { cancelled = true }
+  }, [ready, pitsVisible])
+
+  // pits sit on the LOLA 3D terrain when it is on (same DEM tiles as their heights)
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    pitsRef.current?.setTerrain(scene.basemap === 'trek' && basemapState.elevation)
+  }, [ready, basemapState.elevation, pitsVisible])
+
+  /** Analyse a pit like a custom site and add its catalog data to the inspect panel. */
+  const inspectPit = useCallback((pit: PitProps) => {
+    inspectCustomPoint(pit.lat, pit.lon)
+    setSelected((s) => (s && s.lat === pit.lat && s.lon === pit.lon
+      ? { ...s, name: pit.name, group: 'Lunar pit', heightM: pit.surface_elev_m ?? s.heightM }
+      : s))
+    setInspect((cur) => (cur && cur.lat === pit.lat && cur.lon === pit.lon
+      ? { ...cur, values: [...cur.values, ...pitInfoRows(pit)] }
+      : cur))
+  }, [inspectCustomPoint])
+
   // ---- click to inspect and analyse a custom site ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -1181,12 +1227,17 @@ export default function App() {
       return g ? { lat: CMath.toDegrees(g.latitude), lon: CMath.toDegrees(g.longitude) } : null
     }
     handler.setInputAction((e: { position: Cartesian2 }) => {
+      const pit = pitsRef.current?.pitFromPick(viewer.scene.pick(e.position))
+      if (pit) {
+        inspectPit(pit)
+        return
+      }
       const p = pick(e.position)
       if (!p) return
       inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
     return () => handler.destroy()
-  }, [ready, bundle, inspectCustomPoint])
+  }, [ready, bundle, inspectCustomPoint, inspectPit])
 
   // ---- site analysis ----
   const dayStart = Math.floor(t / DAY) * DAY
@@ -1379,6 +1430,7 @@ export default function App() {
               radiationOpacity={radiationOpacity} onRadiationOpacity={setRadiationOpacity}
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
               iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
+              pitsVisible={pitsVisible} onPitsVisible={setPitsVisible} pitsError={pitsError}
               slopeExact={!!scoreFields?.exact} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
