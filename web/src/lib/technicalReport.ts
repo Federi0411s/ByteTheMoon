@@ -199,9 +199,9 @@ function buildReportData(request: TechnicalReportRequest) {
     ['Interval source', request.periodSource],
     ['Analysis duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
     ['Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed'],
-    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of interval`],
-    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of interval`],
-    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of interval`],
+    ['Average solar-disc illumination', `${stats.sunPct.toFixed(1)}% of interval`],
+    ['Earth in view (>50% disc)', `${stats.earthPct.toFixed(1)}% of interval`],
+    ['Solar illumination with Earth in view', `${stats.bothPct.toFixed(1)}% of interval`],
     ['Longest estimated night', `${stats.longestDarkHours.toFixed(1)} h`],
     ['Now: Sun elevation / visible', `${current ? `${current.sunEl.toFixed(1)}° / ${(current.sunVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
     ['Now: Earth elevation / visible', `${current ? `${current.earthEl.toFixed(1)}° / ${(current.earthVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
@@ -273,6 +273,7 @@ export async function downloadTechnicalReportCsv(request: TechnicalReportRequest
   addRow('Model assumptions', 'Visibility and DSN contacts', 'Visibility and DSN contacts use the selected site’s terrain horizon. A station is considered in link only when the lunar site and that antenna have mutual line of sight.')
   addRow('Model assumptions', 'Power', 'Power assumes the stated array mode, area and efficiency; it does not include storage, degradation or temperature derating.')
   addRow('Model assumptions', 'Temperature and radiation', 'Temperature uses the Hayne regolith model where terrain data are available. Radiation is the GCR + albedo estimate.')
+  addRow('Model assumptions', 'Visibility percentages', 'Sunlight percentages weight the visible fraction of the solar disc; Earth visibility requires more than 50% of its disc to be above the horizon.')
   addRow('Model assumptions', 'Sampling', `Timelines are sampled at up to ${(data.timelineStep / HOUR_MS).toFixed(1)} h for illumination and ${data.dsnStepMs / HOUR_MS < 24 ? `${(data.dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(data.dsnStepMs / DAY_MS).toFixed(1)} d`} for DSN; event boundaries are approximate at that resolution.`)
   addRow('Model assumptions', 'Temperature and power samples', `Temperature cadence: ${data.temperatureStepMs === undefined ? 'unavailable' : `${(data.temperatureStepMs / HOUR_MS).toFixed(1)} h`}; power cadence: ${data.powerStepMs / HOUR_MS < 24 ? `${(data.powerStepMs / HOUR_MS).toFixed(1)} h` : `${(data.powerStepMs / DAY_MS).toFixed(1)} d`}. Values are sampled, without time-bucket averaging.`)
   addRow('Model assumptions', 'DSN traces', 'DSN links are binary (0 = no link, 1 = link), with one row per station and timestamp; a separate row sums the connected stations from 0 to 3.')
@@ -465,6 +466,7 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
 
   section('Model assumptions')
   paragraph('Visibility and DSN contacts use the selected site’s terrain horizon. A station is considered in link only when the lunar site and that antenna have mutual line of sight. Power assumes the stated array mode, area and efficiency; it does not include storage, degradation or temperature derating.')
+  paragraph('Sunlight percentages weight the visible fraction of the solar disc; Earth visibility requires more than 50% of its disc to be above the horizon.')
   paragraph(`Temperature uses the Hayne regolith model where terrain data are available. Radiation is the GCR + albedo estimate. Timelines are sampled at up to ${(timelineStep / HOUR_MS).toFixed(1)} h for illumination and ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`} for DSN; event boundaries are approximate at that resolution.`)
 
   newPage()
