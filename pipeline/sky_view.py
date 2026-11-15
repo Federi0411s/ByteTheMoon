@@ -161,7 +161,7 @@ def sky_band(ty: int) -> tuple[int, np.ndarray]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--level", type=int, default=7)
-    ap.add_argument("--public-max", type=int, default=5)
+    ap.add_argument("--public-max", type=int, default=4)  # level 5 is ~56 MB: bucket
     ap.add_argument("--procs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
     ap.add_argument("--bench", action="store_true")
     a = ap.parse_args()
