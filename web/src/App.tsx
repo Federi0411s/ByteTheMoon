@@ -1547,18 +1547,20 @@ export default function App() {
             />
           )}
           <aside className="side right">
-            <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
-              aria-label="Open settings" title="Settings">
-              <span aria-hidden="true">⚙</span>
-            </button>
-            {bundle.ephemeris && (
-              <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
-                status={{
-                  state: ephemerisBusy ? 'loading'
-                    : !missionValid && landingDay === undefined ? 'idle'
-                      : analysisPeriodInWindow ? 'ready' : 'outside',
-                }} />
-            )}
+            <div className={`mission-settings-row${bundle.ephemeris ? ' with-mission' : ''}`}>
+              <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
+                aria-label="Open settings" title="Settings">
+                <span aria-hidden="true">⚙</span>
+              </button>
+              {bundle.ephemeris && (
+                <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
+                  status={{
+                    state: ephemerisBusy ? 'loading'
+                      : !missionValid && landingDay === undefined ? 'idle'
+                        : analysisPeriodInWindow ? 'ready' : 'outside',
+                  }} />
+              )}
+            </div>
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!(heat && heatVersion)}
               radiationMetadata={radiationDisplayMeta}

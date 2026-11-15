@@ -61,7 +61,8 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .side { position: absolute; top: 12px; bottom: 82px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
 .side.left.expanded { width: 50vw; }
-.side.right { right: 12px; bottom: 118px; width: 300px; }
+.side.right { right: 12px; bottom: 118px; width: 350px; }
+.side.right > :not(.mission-settings-row) { align-self: flex-end; width: 300px; }
 
 .map-scale {
   position: absolute;
@@ -89,7 +90,6 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
 .panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .settings-button {
-  align-self: flex-end;
   display: grid;
   place-items: center;
   width: 42px;
@@ -102,6 +102,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
   line-height: 1;
   transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
+.mission-settings-row { display: flex; align-items: flex-start; gap: 8px; width: max-content; margin-left: auto; }
+.mission-settings-row.with-mission { width: 100%; }
+.mission-settings-row .settings-button { flex: 0 0 42px; }
+.mission-settings-row .mission { flex: 1 1 auto; min-width: 0; }
 .settings-button:hover { background: rgba(255, 138, 61, 0.12); border-color: var(--accent); transform: rotate(25deg); }
 .settings-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .settings-overlay {
@@ -496,6 +500,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 @media (max-width: 900px) {
   .side { position: static; width: auto !important; max-height: none; }
+  .side.right > :not(.mission-settings-row) { align-self: stretch; width: auto; }
   .app { overflow-y: auto; }
   .timebar { position: static; flex-wrap: wrap; margin: 8px 12px; }
   .time-col { flex: 1 1 100%; }
