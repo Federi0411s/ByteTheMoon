@@ -2,8 +2,12 @@ export interface SiteEnv {
   /** regolith surface temperature over the period, K */
   tMinK: number
   tMaxK: number
+  /** mean over the period, K */
+  tMeanK: number
   /** GCR + albedo dose rate, µGy/h */
   doseUGyH: number
+  /** terrain slope at the point from the global computation (deg), used where the polar footprint map does not reach */
+  slopeDeg: number
 }
 
 const C = (k: number) => `${Math.round(k - 273.15)} °C`

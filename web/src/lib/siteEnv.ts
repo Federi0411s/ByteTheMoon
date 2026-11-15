@@ -10,8 +10,11 @@ export interface SiteEnvSample {
   /** regolith surface temperature over the period, K */
   tMin: number
   tMax: number
+  tMean: number
   /** visible-sky fraction (0..0.5) for the radiation model */
   fSky: number
+  /** terrain slope (deg) */
+  slope: number
 }
 
 export async function sampleSiteEnv(heat: HeatEngine, latDeg: number, lonDeg: number): Promise<SiteEnvSample | null> {
@@ -30,5 +33,5 @@ export async function sampleSiteEnv(heat: HeatEngine, latDeg: number, lonDeg: nu
     const i = y0 * n + x0
     return a[i] * (1 - wx) * (1 - wy) + a[i + 1] * wx * (1 - wy) + a[i + n] * (1 - wx) * wy + a[i + n + 1] * wx * wy
   }
-  return { tMin: at(tile.tMin), tMax: at(tile.tMax), fSky: at(tile.fSky) }
+  return { tMin: at(tile.tMin), tMax: at(tile.tMax), tMean: at(tile.tMean), fSky: at(tile.fSky), slope: at(tile.slope) }
 }

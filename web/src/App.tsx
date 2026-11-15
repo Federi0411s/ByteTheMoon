@@ -25,7 +25,7 @@ import type { SiteEnv } from './components/EnvPanel'
 import { computeHorizon, computeTimeline, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade, loadRaster } from './lib/raster'
-import { DEFAULT_FOOTPRINT, footprintAxes, SLOPE_MAX_DEG } from './lib/requirements'
+import { DEFAULT_FOOTPRINT, footprintAxes, footprintLabel, SLOPE_MAX_DEG } from './lib/requirements'
 import {
   earthPosition,
   ephemerisRange,
@@ -39,7 +39,10 @@ import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadat
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreWeights } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
-import { dsnAt } from './lib/dsn'
+import { dsnAt, dsnTimeline } from './lib/dsn'
+import { assessHuman } from './lib/human'
+import { siteThermalSeries } from './lib/regolith'
+import { combine, scorePower, scoreRadiation, scoreSlope, scoreTelecom, scoreTemperature } from './lib/landingScore'
 import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
@@ -723,8 +726,8 @@ export default function App() {
     const key = `${heatVersion}|${selected.lat}|${selected.lon}`
     sampleSiteEnv(heat, selected.lat, selected.lon).then((v) => {
       if (cancelled) return
-      const ok = v && Number.isFinite(v.tMin) && Number.isFinite(v.tMax) && Number.isFinite(v.fSky)
-      setSiteEnv({ key, env: ok ? { tMinK: v.tMin, tMaxK: v.tMax, doseUGyH: radiationDose(v.fSky, heat.gcr) } : null })
+      const ok = v && Number.isFinite(v.tMin) && Number.isFinite(v.tMax) && Number.isFinite(v.tMean) && Number.isFinite(v.fSky)
+      setSiteEnv({ key, env: ok ? { tMinK: v.tMin, tMaxK: v.tMax, tMeanK: v.tMean, doseUGyH: radiationDose(v.fSky, heat.gcr), slopeDeg: v.slope } : null })
     }).catch(() => { if (!cancelled) setSiteEnv({ key, env: null }) })
     return () => { cancelled = true }
   }, [heat, heatVersion, selected])
@@ -1203,6 +1206,58 @@ export default function App() {
   }, [selected, ephemeris, dayStart, windowDays, panel])
   const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= t)), [powerTl, t])
   const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
+  // ---- landing score (lib/landingScore.ts): temperature, radiation, slope, telecom, power ----
+  // The score refers to the same period as the global heatmaps (temperature, radiation): the mission
+  // period when one is set inside the loaded window, otherwise the whole loaded window.
+  const scorePeriod = useMemo<[number, number]>(
+    () => (missionInWindow ? [mission.start!, mission.end!] : timeRange),
+    [missionInWindow, mission.start, mission.end, timeRange],
+  )
+  // samples over the period: ~1 h even over the 5-year window (at most ~45 000), never finer than 15 min
+  const scoreStep = Math.max(900_000, Math.ceil((scorePeriod[1] - scorePeriod[0]) / 45_000 / 900_000) * 900_000)
+  const dsnTl = useMemo(() => {
+    if (!selected || !ephemeris) return []
+    return dsnTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep)
+  }, [selected, ephemeris, scorePeriod, scoreStep])
+  const scorePower_ = useMemo(() => {
+    if (!selected || !ephemeris) return undefined
+    return summarizePower(powerTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep, panel))
+  }, [selected, ephemeris, scorePeriod, scoreStep, panel])
+  const landing = useMemo(() => {
+    if (!selected) return undefined
+    const env = siteEnvReady?.env ?? undefined
+    // slope: max inside the landing footprint (polar maps); elsewhere the global terrain slope at the point
+    const fp = footprintSlope?.sampleNearest(selected.lon * D2R, selected.lat * D2R)
+    const slope = fp !== undefined && Number.isFinite(fp)
+      ? scoreSlope(fp, footprintLabel(score.footprint).replace(/^(circle|ellipse)/, 'landing $1'))
+      : env && Number.isFinite(env.slopeDeg) ? scoreSlope(env.slopeDeg, 'terrain (global estimate, no footprint)') : undefined
+    let telecom
+    if (dsnTl.length > 1) {
+      const stepH = (dsnTl[1].t - dsnTl[0].t) / 3600_000
+      let gap = 0, longest = 0
+      for (const x of dsnTl) { gap = x.any ? 0 : gap + 1; longest = Math.max(longest, gap) }
+      telecom = scoreTelecom((100 * dsnTl.filter((x) => x.any).length) / dsnTl.length, longest * stepH)
+    }
+    return combine([
+      env ? scoreTemperature(env.tMeanK - 273.15, env.tMinK - 273.15, env.tMaxK - 273.15) : undefined,
+      env ? scoreRadiation(env.doseUGyH, (scorePeriod[1] - scorePeriod[0]) / 3600_000) : undefined,
+      slope,
+      telecom,
+      scorePower_ ? scorePower(scorePower_.longestOutageH, scorePower_.producingPct) : undefined,
+    ], ['temperature', 'radiation', 'slope', 'telecommunications', 'power'])
+  }, [selected, siteEnvReady, footprintSlope, score.footprint, dsnTl, scorePower_, scorePeriod])
+
+  // ---- crew outside the habitat: AxEMU suit + NASA-STD-3001 limits (lib/human.ts), same period ----
+  // walks: hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
+  const walkSeries = useMemo(() => {
+    if (!selected || !ephemeris) return undefined
+    return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], Math.max(3600_000, scoreStep), bundle?.fields.dem_south)
+  }, [selected, ephemeris, scorePeriod, scoreStep, bundle])
+  const human = useMemo(() => {
+    const env = siteEnvReady?.env
+    if (!env || !walkSeries) return undefined
+    return assessHuman(env.doseUGyH, walkSeries, (scorePeriod[1] - scorePeriod[0]) / 86400_000, missionInWindow)
+  }, [siteEnvReady, walkSeries, scorePeriod, missionInWindow])
 
   const selectCalendarDate = async (nextTime: number) => {
     const year = new Date(nextTime).getUTCFullYear()
@@ -1307,6 +1362,7 @@ export default function App() {
               env={siteEnvKey ? { env: siteEnvReady?.env ?? undefined, loading: !siteEnvReady } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
+              landing={landing ? { result: landing, period: scorePeriod, isMission: missionInWindow, human } : undefined}
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
