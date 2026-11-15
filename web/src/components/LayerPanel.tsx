@@ -248,7 +248,7 @@ export function LayerPanel({
                   <select value={radiationMode} onChange={(e) => {
                     if (e.target.value === 'classes' || e.target.value === 'continuous') onRadiationMode(e.target.value)
                   }}>
-                    <option value="classes">Classes</option>
+                    <option value="classes">Dose levels</option>
                     <option value="continuous">Continuous dose</option>
                   </select>
                 </label>
