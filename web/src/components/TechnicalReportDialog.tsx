@@ -3,13 +3,21 @@ import type { Ephemeris } from '../lib/ephemeris'
 import type { TimelineSample } from '../lib/analysis'
 import { downloadTechnicalReport, type ReportFilterImage, type ReportOverlay } from '../lib/technicalReport'
 import type { Site } from '../lib/data'
+import type { HeatEngine } from '../lib/heatEngine'
+import type { SiteEnv } from './EnvPanel'
+import type { PanelConfig } from '../lib/power'
+import { sampleSiteTemperatureTimeline } from '../lib/siteEnv'
 import { fmtDateTime } from '../lib/time'
 
 export function TechnicalReportDialog({
   site,
   ephemeris,
+  heat,
+  panel,
+  env,
   panoramaTimeline,
   panoramaNow,
+  currentMs,
   period,
   periodSource,
   overlays,
@@ -18,8 +26,12 @@ export function TechnicalReportDialog({
 }: {
   site: Site
   ephemeris: Ephemeris
+  heat?: HeatEngine | null
+  panel: PanelConfig
+  env?: SiteEnv
   panoramaTimeline: TimelineSample[]
   panoramaNow?: TimelineSample
+  currentMs: number
   period: [number, number]
   periodSource: string
   overlays: ReportOverlay[]
@@ -28,7 +40,6 @@ export function TechnicalReportDialog({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [includeSiteDetails, setIncludeSiteDetails] = useState(true)
-  const [includePeriodAnalysis, setIncludePeriodAnalysis] = useState(true)
   const [includeMap, setIncludeMap] = useState(overlays.length > 0)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string>()
@@ -43,16 +54,28 @@ export function TechnicalReportDialog({
     setGenerating(true)
     setError(undefined)
     try {
-      const filterImages = includeMap ? await captureMap(site, overlays) : []
+      if (heat && (heat.window[0] !== period[0] || heat.window[1] !== period[1])) {
+        throw new Error('The thermal model is still preparing the selected mission interval. Please try again in a moment.')
+      }
+      const [filterImages, temperatureTimeline] = await Promise.all([
+        includeMap ? captureMap(site, overlays) : Promise.resolve([] as ReportFilterImage[]),
+        heat
+          ? sampleSiteTemperatureTimeline(heat, site.lat, site.lon)
+          : Promise.resolve(null),
+      ])
       await downloadTechnicalReport({
         site,
         ephemeris,
+        panel,
+        env,
+        temperatureTimeline: temperatureTimeline ?? undefined,
         panoramaTimeline,
         panoramaNow,
+        currentMs,
         startMs: period[0],
         endMs: period[1],
+        periodSource,
         includeSiteDetails,
-        includePeriodAnalysis,
         includeMap,
         filterImages,
         overlays,
@@ -85,9 +108,9 @@ export function TechnicalReportDialog({
 
       <div className="report-dialog-body">
         <p className="muted">
-          Select the sections to include. The UTC interval matches the active Mission period, so the analysis and map layers use the same dates.
+          The report includes a mission data table and temperature, power-generation and DSN-contact timelines for the UTC interval below.
         </p>
-        <p className="muted">The report always includes the selected point’s 360° terrain horizon with Sun and Earth tracks.</p>
+        <p className="muted">Temperature and power are shown over time. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.</p>
 
         <section className="report-period">
           <h3>Mission interval</h3>
@@ -100,11 +123,7 @@ export function TechnicalReportDialog({
           <h3>Report contents</h3>
           <label>
             <input type="checkbox" checked={includeSiteDetails} onChange={(event) => setIncludeSiteDetails(event.target.checked)} disabled={generating} />
-            Site and terrain details
-          </label>
-          <label>
-            <input type="checkbox" checked={includePeriodAnalysis} onChange={(event) => setIncludePeriodAnalysis(event.target.checked)} disabled={generating} />
-            Illumination and Earth visibility for the full interval
+            Include the optional site note
           </label>
           <label title={overlays.length ? undefined : 'Enable one or more map layers before opening the report.'}>
             <input type="checkbox" checked={includeMap} onChange={(event) => setIncludeMap(event.target.checked)} disabled={generating || overlays.length === 0} />

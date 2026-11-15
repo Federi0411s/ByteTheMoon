@@ -653,6 +653,13 @@ export default function App() {
   const missionValid = mission.start !== undefined && mission.end !== undefined && mission.end > mission.start
   // the period must lie inside the loaded 5-year ephemeris window (interpolation clamps at its edges)
   const missionInWindow = missionValid && mission.start! >= timeRange[0] && mission.end! <= timeRange[1]
+  const navigationRange = useMemo<[number, number]>(
+    () => missionInWindow ? [mission.start!, mission.end!] : timeRange,
+    [missionInWindow, mission.start, mission.end, timeRange],
+  )
+  useEffect(() => {
+    setT((current) => Math.min(Math.max(current, navigationRange[0]), navigationRange[1]))
+  }, [navigationRange])
   // The polar 60 m maps are always rescaled to the selected period: the mission period when one is set
   // (and inside the loaded window), otherwise the whole loaded 5-year window, so every heatmap refers
   // to the same timeframe. The panel status only reports on an actual mission period.
@@ -1069,10 +1076,10 @@ export default function App() {
 
   useEffect(() => {
     if (!playing || !ephemeris) return
-    const end = timeRange[1]
+    const end = navigationRange[1]
     const id = setInterval(() => setT((x) => (x + stepMs > end ? x : x + stepMs)), 80)
     return () => clearInterval(id)
-  }, [playing, stepMs, ephemeris, timeRange])
+  }, [playing, stepMs, ephemeris, navigationRange])
 
   const inspectCustomPoint = useCallback((lat: number, lon: number) => {
     const scene = sceneRef.current
@@ -1335,7 +1342,8 @@ export default function App() {
             )}
           </aside>
           {bundle.ephemeris && ephemeris && (
-            <TimeBar t={t} range={timeRange} calendarRange={CALENDAR_RANGE} onChange={setT}
+            <TimeBar t={t} range={timeRange} navigationRange={navigationRange}
+              calendarRange={missionInWindow ? navigationRange : CALENDAR_RANGE} onChange={setT}
               onCalendarChange={selectCalendarDate} onReset={resetTimeline} playing={playing} onPlay={setPlaying}
               stepMs={stepMs} onStep={setStepMs} lighting={lighting} onLighting={setLighting}
               busy={ephemerisBusy} error={ephemerisError} mission={mission} onMission={setMission} />
@@ -1358,8 +1366,12 @@ export default function App() {
               key={selected.id}
               site={selected}
               ephemeris={ephemeris}
+              heat={heat}
+              panel={panel}
+              env={siteEnvReady?.env ?? undefined}
               panoramaTimeline={timeline}
               panoramaNow={now}
+              currentMs={t}
               period={reportPeriod}
               periodSource={reportPeriodSource}
               overlays={reportOverlays}

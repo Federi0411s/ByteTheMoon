@@ -1,7 +1,10 @@
 import { computeTimeline, type TimelineSample } from './analysis'
 import type { Ephemeris } from './ephemeris'
 import type { Site } from './data'
+import { DSN_STATIONS, dsnAt, type DsnSample } from './dsn'
 import { fitPanoramaRange } from './panorama'
+import { powerAt, type PanelConfig, type PowerSample } from './power'
+import type { SiteTemperatureSample } from './siteEnv'
 import { fmtDate, fmtDateTime } from './time'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -21,12 +24,16 @@ export interface ReportFilterImage extends ReportOverlay {
 export interface TechnicalReportRequest {
   site: Site
   ephemeris: Ephemeris
+  panel: PanelConfig
+  env?: { tMinK: number; tMaxK: number; doseUGyH: number }
+  temperatureTimeline?: SiteTemperatureSample[]
   panoramaTimeline: TimelineSample[]
   panoramaNow?: TimelineSample
+  currentMs: number
   startMs: number
   endMs: number
+  periodSource: string
   includeSiteDetails: boolean
-  includePeriodAnalysis: boolean
   includeMap: boolean
   filterImages: ReportFilterImage[]
   overlays: ReportOverlay[]
@@ -55,6 +62,94 @@ function periodStats(samples: TimelineSample[], endMs: number) {
     bothPct: totalHours ? 100 * bothHours / totalHours : 0,
     longestDarkHours,
   }
+}
+
+function sampleTimes(startMs: number, endMs: number, maxSamples: number, minimumStepMs: number): number[] {
+  const step = Math.max(minimumStepMs, Math.ceil((endMs - startMs) / (maxSamples - 1)))
+  const times = [startMs]
+  for (let t = startMs + step; t < endMs; t += step) times.push(t)
+  if (endMs > startMs) times.push(endMs)
+  return times
+}
+
+function powerStats(samples: PowerSample[], endMs: number) {
+  let energyWh = 0, totalHours = 0, producingHours = 0, outageHours = 0, longestOutageHours = 0, eclipseHours = 0
+  const peakW = Math.max(...samples.map((sample) => sample.power))
+  const thresholdW = Math.max(peakW * 0.01, 1e-6)
+  for (let i = 0; i + 1 < samples.length; i++) {
+    const sample = samples[i]
+    const hours = Math.max(0, Math.min(endMs, samples[i + 1].t) - sample.t) / HOUR_MS
+    totalHours += hours
+    energyWh += sample.power * hours
+    if (sample.power > thresholdW) {
+      producingHours += hours
+      outageHours = 0
+    } else {
+      outageHours += hours
+      longestOutageHours = Math.max(longestOutageHours, outageHours)
+    }
+    if (sample.eclipseFrac > 0.001 && sample.terrainFrac > 0) eclipseHours += hours
+  }
+  return {
+    meanW: totalHours ? energyWh / totalHours : 0,
+    peakW,
+    energyWh,
+    producingPct: totalHours ? 100 * producingHours / totalHours : 0,
+    longestOutageHours,
+    eclipseHours,
+  }
+}
+
+function dsnStats(samples: DsnSample[], endMs: number) {
+  let totalHours = 0, contactHours = 0, noContactHours = 0, longestNoContactHours = 0
+  let noStationHours = 0, oneStationHours = 0, twoStationHours = 0, allThreeHours = 0
+  const stationHours = Object.fromEntries(DSN_STATIONS.map((station) => [station.id, 0])) as Record<string, number>
+  const windows: { start: number; end: number }[] = []
+  for (let i = 0; i + 1 < samples.length; i++) {
+    const sample = samples[i], hours = Math.max(0, Math.min(endMs, samples[i + 1].t) - sample.t) / HOUR_MS
+    totalHours += hours
+    const linkedCount = DSN_STATIONS.filter((station) => sample.st[station.id]?.link).length
+    for (const station of DSN_STATIONS) if (sample.st[station.id]?.link) stationHours[station.id] += hours
+    if (linkedCount === 0) noStationHours += hours
+    if (linkedCount === 1) oneStationHours += hours
+    if (linkedCount === 2) twoStationHours += hours
+    if (linkedCount === 3) allThreeHours += hours
+    if (sample.any) {
+      contactHours += hours
+      noContactHours = 0
+      const last = windows[windows.length - 1]
+      if (last && last.end === sample.t) last.end = samples[i + 1].t
+      else windows.push({ start: sample.t, end: samples[i + 1].t })
+    } else {
+      noContactHours += hours
+      longestNoContactHours = Math.max(longestNoContactHours, noContactHours)
+    }
+  }
+  windows.sort((a, b) => (b.end - b.start) - (a.end - a.start))
+  return {
+    contactPct: totalHours ? 100 * contactHours / totalHours : 0,
+    longestNoContactHours,
+    noStationPct: totalHours ? 100 * noStationHours / totalHours : 0,
+    oneStationPct: totalHours ? 100 * oneStationHours / totalHours : 0,
+    twoStationPct: totalHours ? 100 * twoStationHours / totalHours : 0,
+    allThreePct: totalHours ? 100 * allThreeHours / totalHours : 0,
+    stationPct: Object.fromEntries(Object.entries(stationHours).map(([id, hours]) => [id, totalHours ? 100 * hours / totalHours : 0])) as Record<string, number>,
+    bestWindows: windows.slice(0, 3),
+  }
+}
+
+function timeUntilSet(samples: TimelineSample[], key: 'sunVisibleFrac' | 'earthVisibleFrac', currentMs: number): number | null {
+  if (!samples.length || currentMs < samples[0].t || currentMs > samples[samples.length - 1].t) return null
+  const currentIndex = samples.findIndex((sample) => sample.t >= currentMs)
+  if (currentIndex < 0 || samples[currentIndex][key] <= 0.5) return null
+  const set = samples.slice(currentIndex + 1).find((sample) => sample[key] <= 0.5)
+  return set ? set.t - currentMs : null
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null) return '—'
+  const hours = ms / HOUR_MS
+  return hours >= 48 ? `${(hours / 24).toFixed(1)} d` : `${hours.toFixed(1)} h`
 }
 
 export async function downloadTechnicalReport(request: TechnicalReportRequest): Promise<void> {
@@ -95,45 +190,114 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
     doc.line(margin, y, pageWidth - margin, y)
     y += 6
   }
-  const keyValue = (label: string, value: string) => paragraph(`${label}: ${value}`)
+  const table = (rows: [string, string][]) => {
+    const labelWidth = 62, valueWidth = contentWidth - labelWidth
+    for (let i = 0; i < rows.length; i++) {
+      const [label, value] = rows[i]
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8.5)
+      const labelLines = doc.splitTextToSize(label, labelWidth - 5)
+      const valueLines = doc.splitTextToSize(value, valueWidth - 5)
+      const height = Math.max(6, Math.max(labelLines.length, valueLines.length) * 4 + 2)
+      reserve(height)
+      doc.setFillColor(i % 2 ? 247 : 239, i % 2 ? 249 : 244, i % 2 ? 251 : 248)
+      doc.rect(margin, y - 3.5, contentWidth, height, 'F')
+      doc.setTextColor(72, 83, 96)
+      doc.text(labelLines, margin + 2, y)
+      doc.setTextColor(30, 42, 56)
+      doc.text(valueLines, margin + labelWidth + 2, y)
+      y += height
+    }
+    y += 3
+  }
 
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(19)
+  doc.setFontSize(18)
   doc.setTextColor(20, 38, 61)
   doc.text('ByteTheMoon', margin, y)
-  y += 8
-  doc.setFontSize(13)
-  doc.text('TECHNICAL LUNAR SITE REPORT', margin, y)
   y += 7
+  doc.setFontSize(12)
+  doc.text('LUNAR MISSION SITE REPORT', margin, y)
+  y += 6
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
   doc.setTextColor(85, 98, 116)
   doc.text(`Generated ${fmtDateTime(Date.now())} UTC`, margin, y)
-  y += 9
+  y += 7
 
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(14)
+  doc.setFontSize(13)
   doc.setTextColor(28, 38, 50)
   doc.text(request.site.name, margin, y)
-  y += 7
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
+  y += 5
+
+  const spanMs = request.endMs - request.startMs
+  if (!(spanMs > 0)) throw new Error('The mission interval must have a positive duration.')
+  const timelineStep = Math.min(spanMs, Math.max(HOUR_MS, Math.ceil(spanMs / 12000)))
+  const samples = computeTimeline(
+    request.ephemeris,
+    request.site,
+    request.site.horizon,
+    request.startMs,
+    request.endMs,
+    timelineStep,
+  )
+  if (samples.length < 2) throw new Error('The selected interval is too short to analyse.')
+  if (samples[samples.length - 1].t < request.endMs) {
+    samples.push(...computeTimeline(request.ephemeris, request.site, request.site.horizon, request.endMs, request.endMs))
+  }
+  const stats = periodStats(samples, request.endMs)
+  const powerTimes = sampleTimes(request.startMs, request.endMs, 2400, HOUR_MS)
+  const powerSamples = powerTimes.map((time) => powerAt(request.ephemeris, request.site, request.site.horizon, time, request.panel))
+  const powerSummary = powerStats(powerSamples, request.endMs)
+  const dsnTimes = sampleTimes(request.startMs, request.endMs, 12000, HOUR_MS)
+  const dsnStepMs = dsnTimes[1] - dsnTimes[0]
+  const dsnSamples = dsnTimes.map((time) => dsnAt(request.ephemeris, request.site, request.site.horizon, time))
+  const dsnSummary = dsnStats(dsnSamples, request.endMs)
+  const current = request.panoramaNow ?? computeTimeline(
+    request.ephemeris, request.site, request.site.horizon, request.currentMs, request.currentMs,
+  )[0]
+  const currentDsn = dsnAt(request.ephemeris, request.site, request.site.horizon, request.currentMs)
+  const currentPower = powerAt(request.ephemeris, request.site, request.site.horizon, request.currentMs, request.panel)
+
   const latHemisphere = request.site.lat < 0 ? 'S' : 'N'
   const lonHemisphere = request.site.lon < 0 ? 'W' : 'E'
-  keyValue('Coordinates', `${Math.abs(request.site.lat).toFixed(5)}° ${latHemisphere}, ${Math.abs(request.site.lon).toFixed(5)}° ${lonHemisphere}`)
-  keyValue('Mission interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`)
-  keyValue('Elapsed time', `${((request.endMs - request.startMs) / DAY_MS).toFixed(2)} days`)
+  section('Mission summary')
+  const rows: [string, string][] = [
+    ['Coordinates', `${Math.abs(request.site.lat).toFixed(5)}° ${latHemisphere}, ${Math.abs(request.site.lon).toFixed(5)}° ${lonHemisphere}`],
+    ['Site category / elevation', `${request.site.group} / ${request.site.heightM === undefined ? 'Unavailable' : `${request.site.heightM.toFixed(1)} m`}`],
+    ['Mission interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`],
+    ['Interval source', request.periodSource],
+    ['Mission duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
+    ['Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed'],
+    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of mission`],
+    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of mission`],
+    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of mission`],
+    ['Longest estimated night', `${stats.longestDarkHours.toFixed(1)} h`],
+    ['Now: Sun elevation / visible', `${current ? `${current.sunEl.toFixed(1)}° / ${(current.sunVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
+    ['Now: Earth elevation / visible', `${current ? `${current.earthEl.toFixed(1)}° / ${(current.earthVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
+    ['Time to sunset / Earthset', `${formatDuration(timeUntilSet(samples, 'sunVisibleFrac', request.currentMs))} / ${formatDuration(timeUntilSet(samples, 'earthVisibleFrac', request.currentMs))}`],
+    ['Surface temperature range', request.env ? `${(request.env.tMinK - 273.15).toFixed(0)} to ${(request.env.tMaxK - 273.15).toFixed(0)} °C` : 'Unavailable'],
+    ['Thermal excursion', request.env ? `${(request.env.tMaxK - request.env.tMinK).toFixed(1)} °C` : 'Unavailable'],
+    ['Radiation dose rate', request.env ? `${request.env.doseUGyH.toFixed(1)} µGy/h` : 'Unavailable'],
+    ['Solar-array setup', `${request.panel.mode === 'tracking' ? 'Sun-tracking' : 'Fixed horizontal'}; ${request.panel.areaM2} m²; ${(request.panel.efficiency * 100).toFixed(0)}% efficiency`],
+    ['Power now / energy per hour (mean) / peak', `${currentPower.power.toFixed(0)} W / ${powerSummary.meanW.toFixed(0)} W / ${powerSummary.peakW.toFixed(0)} W`],
+    ['Energy / producing time', `${(powerSummary.energyWh / 1000).toFixed(2)} kWh / ${powerSummary.producingPct.toFixed(1)}%`],
+    ['Longest power outage / eclipse', `${powerSummary.longestOutageHours.toFixed(1)} h / ${powerSummary.eclipseHours.toFixed(1)} h`],
+    ['DSN link now', DSN_STATIONS.filter((station) => currentDsn.st[station.id]?.link).map((station) => station.name).join(', ') || 'No station in link'],
+    ['Any DSN contact during mission', `${dsnSummary.contactPct.toFixed(1)}% of mission`],
+    ['DSN overlap (none / exactly 1 / exactly 2 / all 3)', `${dsnSummary.noStationPct.toFixed(1)}% / ${dsnSummary.oneStationPct.toFixed(1)}% / ${dsnSummary.twoStationPct.toFixed(1)}% / ${dsnSummary.allThreePct.toFixed(1)}%`],
+    ...DSN_STATIONS.map((station) => [`${station.name} ${station.antenna} contact time`, `${dsnSummary.stationPct[station.id].toFixed(1)}% of mission`] as [string, string]),
+    ['Longest estimated no-contact gap', `${dsnSummary.longestNoContactHours.toFixed(1)} h`],
+  ]
+  if (request.includeSiteDetails && request.site.note) rows.splice(4, 0, ['Site note', request.site.note])
+  table(rows)
 
-  if (request.includeSiteDetails) {
-    section('Site and terrain')
-    keyValue('Site category', request.site.group)
-    keyValue('Elevation', request.site.heightM === undefined ? 'Unavailable' : `${request.site.heightM.toFixed(1)} m above the reference sphere`)
-    keyValue('Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed for visibility analysis')
-    if (request.site.note) keyValue('Site note', request.site.note)
-  }
+  section('Model assumptions')
+  paragraph('Visibility and DSN contacts use the selected site’s terrain horizon. A station is considered in link only when the lunar site and that antenna have mutual line of sight. Power assumes the stated array mode, area and efficiency; it does not include storage, degradation or temperature derating.')
+  paragraph(`Temperature uses the Hayne regolith model where terrain data are available. Radiation is the GCR + albedo estimate. Timelines are sampled at up to ${(timelineStep / HOUR_MS).toFixed(1)} h for illumination and ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`} for DSN; event boundaries are approximate at that resolution.`)
 
-  const panoramaHeightEstimate = contentWidth * 160 / 312
-  reserve(panoramaHeightEstimate + 36)
+  newPage()
   section('Terrain horizon and Sun/Earth paths')
   paragraph('The skyline and body tracks use the active site-analysis window. Markers show the Sun and Earth positions at the current application time.')
   const panoramaHeight = addHorizonPanorama(
@@ -146,37 +310,45 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
     contentWidth,
   )
   y += panoramaHeight + 3
-  if (request.panoramaTimeline.length) {
-    const first = request.panoramaTimeline[0].t
-    const last = request.panoramaTimeline[request.panoramaTimeline.length - 1].t
-    paragraph(`Active analysis window: ${fmtDateTime(first)}–${fmtDateTime(last)} UTC; current position: ${request.panoramaNow ? fmtDateTime(request.panoramaNow.t) : 'unavailable'} UTC.`)
-  }
 
-  if (request.includePeriodAnalysis) {
-    section('Mission-period illumination and communications')
-    const spanMs = request.endMs - request.startMs
-    const stepMs = Math.min(spanMs, spanMs > 365 * DAY_MS ? 6 * HOUR_MS : HOUR_MS)
-    const samples = computeTimeline(
-      request.ephemeris,
-      request.site,
-      request.site.horizon,
-      request.startMs,
-      request.endMs,
-      stepMs,
-    )
-    if (samples.length < 2) throw new Error('The selected interval is too short to analyse.')
-    if (samples[samples.length - 1].t < request.endMs) {
-      samples.push(...computeTimeline(request.ephemeris, request.site, request.site.horizon, request.endMs, request.endMs, stepMs))
-    }
-    const stats = periodStats(samples, request.endMs)
-    keyValue('Sun visible (>50% of disc)', `${stats.sunPct.toFixed(1)}% of the interval`)
-    keyValue('Earth visible (>50% of disc)', `${stats.earthPct.toFixed(1)}% of the interval`)
-    keyValue('Sun and Earth simultaneously visible', `${stats.bothPct.toFixed(1)}% of the interval`)
-    keyValue('Longest estimated uninterrupted night', `${stats.longestDarkHours.toFixed(1)} h`)
-    paragraph(`Visibility is evaluated with ${stepMs / HOUR_MS}-hour sampling against the selected terrain horizon. Percentages are time-weighted; the longest night is an estimate at the sampling resolution.`)
-    reserve(76)
-    addVisibilityChart(doc, samples, request.startMs, request.endMs, margin, y, contentWidth)
-    y += 76
+  newPage()
+  section('Mission timelines')
+  paragraph(`Temperature and power are plotted as mean curves against mission time. Temperature uses representative lunations for missions longer than one year, so its connecting line is a guide between sampled periods. DSN links are binary (0 = no link, 1 = link): the three station traces are separated into lanes so simultaneous links remain visible. A second chart sums them from 0 to 3. DSN sampling: ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`}; contact transitions are approximate at that resolution.`)
+  if (request.temperatureTimeline?.length) {
+    reserve(60)
+    addTemperatureChart(doc, request.temperatureTimeline, request.startMs, request.endMs, margin, y, contentWidth)
+    y += 62
+  } else {
+    reserve(60)
+    const chart = chartFrame(doc, 'Surface temperature (°C) — unavailable', margin, y, contentWidth, 38, ['—', '—', '—'])
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(105, 115, 128)
+    doc.text('No terrain/thermal samples returned for this site and interval.', chart.chartX + chart.chartWidth / 2, chart.chartY + 21, { align: 'center' })
+    addChartDates(doc, chart, request.startMs, request.endMs)
+    y += 62
+  }
+  reserve(61)
+  addPowerChart(doc, powerSamples, request.startMs, request.endMs, margin, y, contentWidth)
+  y += 62
+  reserve(63)
+  addStationDsnChart(doc, dsnSamples, request.startMs, request.endMs, margin, y, contentWidth)
+
+  newPage()
+  section('Combined DSN link')
+  paragraph('The step line is the number of stations connected at each time: 0 means no link, 1 means one station, 2 means two simultaneous links, and 3 means all three.')
+  reserve(75)
+  addDsnSumChart(doc, dsnSamples, request.startMs, request.endMs, margin, y, contentWidth)
+  y += 76
+  const landingWindows = dsnSummary.bestWindows
+  section('Landing windows with at least one DSN link')
+  if (landingWindows.length) {
+    table(landingWindows.map((window, index) => [
+      `Window ${index + 1}`,
+      `${fmtDateTime(window.start)} – ${fmtDateTime(window.end)} UTC (${((window.end - window.start) / HOUR_MS).toFixed(1)} h)`,
+    ]))
+  } else {
+    paragraph('No interval with a sampled link from Goldstone, Madrid or Canberra was found. Increase sampling detail or choose another site/mission interval.')
   }
 
   if (request.includeMap) {
@@ -373,59 +545,220 @@ function drawPanoramaBody(
   }
 }
 
-function addVisibilityChart(
+function chartFrame(
   doc: import('jspdf').jsPDF,
-  samples: TimelineSample[],
+  title: string,
+  x: number,
+  y: number,
+  width: number,
+  plotHeight: number,
+  labels: string[],
+) {
+  const chartX = x + 18, chartY = y + 6, chartWidth = width - 23
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(45, 54, 66)
+  doc.text(title, x, y)
+  doc.setDrawColor(170, 180, 191)
+  doc.setLineWidth(0.25)
+  doc.rect(chartX, chartY, chartWidth, plotHeight)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(7.5)
+  doc.setTextColor(90, 101, 114)
+  labels.forEach((label, index) => {
+    const gy = chartY + plotHeight * index / (labels.length - 1)
+    if (index > 0 && index < labels.length - 1) {
+      doc.setDrawColor(226, 231, 236)
+      doc.line(chartX, gy, chartX + chartWidth, gy)
+    }
+    doc.text(label, x + 15, gy + 1, { align: 'right' })
+  })
+  return { chartX, chartY, chartWidth, plotHeight }
+}
+
+function addChartDates(doc: import('jspdf').jsPDF, chart: { chartX: number; chartY: number; chartWidth: number; plotHeight: number }, startMs: number, endMs: number) {
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(7.5)
+  doc.setTextColor(90, 101, 114)
+  const label = (time: number) => endMs - startMs < 7 * DAY_MS ? fmtDateTime(time) : fmtDate(time)
+  doc.text(label(startMs), chart.chartX, chart.chartY + chart.plotHeight + 4)
+  doc.text(label(startMs + (endMs - startMs) / 2), chart.chartX + chart.chartWidth / 2, chart.chartY + chart.plotHeight + 4, { align: 'center' })
+  doc.text(label(endMs), chart.chartX + chart.chartWidth, chart.chartY + chart.plotHeight + 4, { align: 'right' })
+}
+
+interface TimeBucketMean {
+  start: number
+  end: number
+  mean: number
+}
+
+function meanBuckets<T>(samples: T[], startMs: number, endMs: number, timeOf: (sample: T) => number, valueOf: (sample: T) => number, maxBuckets: number): TimeBucketMean[] {
+  const count = Math.min(maxBuckets, Math.max(4, Math.ceil(samples.length / 20)))
+  const duration = (endMs - startMs) / count
+  const buckets = Array.from({ length: count }, (_, index) => ({
+    start: startMs + index * duration,
+    end: startMs + (index + 1) * duration,
+    sum: 0,
+    count: 0,
+  }))
+  for (const sample of samples) {
+    const time = timeOf(sample), value = valueOf(sample)
+    if (time < startMs || time > endMs || !Number.isFinite(value)) continue
+    const index = Math.min(count - 1, Math.floor((time - startMs) / duration))
+    const bucket = buckets[index]
+    bucket.sum += value
+    bucket.count++
+  }
+  return buckets
+    .filter((bucket) => bucket.count > 0)
+    .map(({ start, end, sum, count: sampleCount }) => ({ start, end, mean: sum / sampleCount }))
+}
+
+function drawMeanCurve(
+  doc: import('jspdf').jsPDF,
+  chart: { chartX: number; chartY: number; chartWidth: number; plotHeight: number },
+  buckets: TimeBucketMean[],
+  min: number,
+  max: number,
+  startMs: number,
+  endMs: number,
+  color: [number, number, number],
+) {
+  const px = (bucket: TimeBucketMean) => chart.chartX + (((bucket.start + bucket.end) / 2 - startMs) / (endMs - startMs)) * chart.chartWidth
+  const py = (value: number) => chart.chartY + ((max - value) / (max - min)) * chart.plotHeight
+  doc.setDrawColor(...color)
+  doc.setFillColor(...color)
+  doc.setLineWidth(0.7)
+  let previous: TimeBucketMean | undefined
+  for (const bucket of buckets) {
+    if (previous && bucket.start - previous.end < 1) {
+      doc.line(px(previous), py(previous.mean), px(bucket), py(bucket.mean))
+    }
+    doc.circle(px(bucket), py(bucket.mean), 0.8, 'F')
+    previous = bucket
+  }
+}
+
+function addTemperatureChart(
+  doc: import('jspdf').jsPDF,
+  samples: SiteTemperatureSample[],
   startMs: number,
   endMs: number,
   x: number,
   y: number,
   width: number,
 ) {
-  const chartX = x + 13, chartY = y + 5, chartWidth = width - 18, chartHeight = 48
+  const buckets = meanBuckets(samples, startMs, endMs, (sample) => sample.t, (sample) => sample.temperatureK - 273.15, 12)
+  let low = Math.floor(Math.min(...buckets.map((bucket) => bucket.mean))), high = Math.ceil(Math.max(...buckets.map((bucket) => bucket.mean)))
+  if (low === high) { low -= 1; high += 1 }
+  const padding = Math.max(2, (high - low) * 0.08)
+  low = Math.floor(low - padding)
+  high = Math.ceil(high + padding)
+  const chart = chartFrame(doc, 'Mean surface temperature (°C)', x, y, width, 38, [`${high}`, `${((high + low) / 2).toFixed(0)}`, `${low}`])
+  drawMeanCurve(doc, chart, buckets, low, high, startMs, endMs, [190, 83, 42])
+  addChartDates(doc, chart, startMs, endMs)
+}
+
+function addPowerChart(
+  doc: import('jspdf').jsPDF,
+  samples: PowerSample[],
+  startMs: number,
+  endMs: number,
+  x: number,
+  y: number,
+  width: number,
+) {
+  const buckets = meanBuckets(samples, startMs, endMs, (sample) => sample.t, (sample) => sample.power, 120)
+  const peak = Math.max(...buckets.map((bucket) => bucket.mean))
+  const top = peak > 0 ? Math.ceil(peak / 10) * 10 : 1
+  const chart = chartFrame(doc, 'Mean solar-array power generation (W)', x, y, width, 38, [`${top.toFixed(0)}`, `${(top / 2).toFixed(0)}`, '0'])
+  drawMeanCurve(doc, chart, buckets, 0, top, startMs, endMs, [39, 127, 105])
+  addChartDates(doc, chart, startMs, endMs)
+}
+
+function addStationDsnChart(
+  doc: import('jspdf').jsPDF,
+  samples: DsnSample[],
+  startMs: number,
+  endMs: number,
+  x: number,
+  y: number,
+  width: number,
+) {
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(10)
   doc.setTextColor(45, 54, 66)
-  doc.text('Visible fraction over time', x, y)
-  doc.setDrawColor(130, 140, 153)
-  doc.setLineWidth(0.25)
-  doc.rect(chartX, chartY, chartWidth, chartHeight)
+  doc.text('Individual station links (0 = no link, 1 = link)', x, y)
+  const chartX = x + 47, chartY = y + 7, chartWidth = width - 52, laneHeight = 13
+  const stateY = (lane: number, state: boolean) => chartY + lane * laneHeight + (state ? 2 : 10)
   doc.setFont('helvetica', 'normal')
-  doc.setFontSize(8)
-  doc.setTextColor(105, 115, 128)
-  for (const pct of [0, 50, 100]) {
-    const gy = chartY + chartHeight * (1 - pct / 100)
-    doc.setDrawColor(220, 224, 229)
-    if (pct > 0 && pct < 100) doc.line(chartX, gy, chartX + chartWidth, gy)
-    doc.text(`${pct}%`, x, gy + 1)
-  }
-  const stride = Math.max(1, Math.ceil(samples.length / 900))
-  const drawSeries = (key: 'sunVisibleFrac' | 'earthVisibleFrac', color: [number, number, number]) => {
-    doc.setDrawColor(...color)
-    doc.setLineWidth(0.45)
-    let previous: [number, number] | undefined
-    for (let i = 0; i < samples.length; i += stride) {
-      const sample = samples[i]
-      const point: [number, number] = [
-        chartX + ((sample.t - startMs) / (endMs - startMs)) * chartWidth,
-        chartY + (1 - sample[key]) * chartHeight,
-      ]
-      if (previous) doc.line(previous[0], previous[1], point[0], point[1])
-      previous = point
+  doc.setFontSize(7.5)
+  for (let lane = 0; lane < DSN_STATIONS.length; lane++) {
+    const station = DSN_STATIONS[lane]
+    const top = chartY + lane * laneHeight
+    doc.setTextColor(70, 81, 94)
+    doc.text(`${station.name} (${station.antenna.split(' ')[0]})`, x, top + 7)
+    doc.text('1', chartX - 4, stateY(lane, true) + 1)
+    doc.text('0', chartX - 4, stateY(lane, false) + 1)
+    for (const state of [true, false]) {
+      doc.setDrawColor(225, 230, 235)
+      doc.setLineWidth(0.2)
+      doc.line(chartX, stateY(lane, state), chartX + chartWidth, stateY(lane, state))
     }
-    const last = samples[samples.length - 1]
-    const endPoint: [number, number] = [chartX + chartWidth, chartY + (1 - last[key]) * chartHeight]
-    if (previous) doc.line(previous[0], previous[1], endPoint[0], endPoint[1])
+    const px = (time: number) => chartX + ((time - startMs) / (endMs - startMs)) * chartWidth
+    doc.setDrawColor(
+      parseInt(station.color.slice(1, 3), 16),
+      parseInt(station.color.slice(3, 5), 16),
+      parseInt(station.color.slice(5, 7), 16),
+    )
+    doc.setLineWidth(0.7)
+    let runStart = samples[0].t
+    let runState = !!samples[0].st[station.id]?.link
+    for (let i = 1; i < samples.length; i++) {
+      const state = !!samples[i].st[station.id]?.link
+      if (state === runState) continue
+      const transition = px(samples[i].t), currentY = stateY(lane, runState), nextY = stateY(lane, state)
+      doc.line(px(runStart), currentY, transition, currentY)
+      doc.line(transition, currentY, transition, nextY)
+      runStart = samples[i].t
+      runState = state
+    }
+    doc.line(px(runStart), stateY(lane, runState), px(samples[samples.length - 1].t), stateY(lane, runState))
   }
-  drawSeries('sunVisibleFrac', [235, 149, 48])
-  drawSeries('earthVisibleFrac', [56, 132, 190])
-  doc.setFillColor(235, 149, 48)
-  doc.circle(chartX + 5, chartY + chartHeight + 7, 1.1, 'F')
-  doc.setTextColor(85, 95, 107)
-  doc.text('Sun', chartX + 8, chartY + chartHeight + 8)
-  doc.setFillColor(56, 132, 190)
-  doc.circle(chartX + 25, chartY + chartHeight + 7, 1.1, 'F')
-  doc.text('Earth', chartX + 28, chartY + chartHeight + 8)
-  doc.text(fmtDate(startMs), chartX, chartY + chartHeight + 15)
-  doc.text(fmtDate(endMs), chartX + chartWidth, chartY + chartHeight + 15, { align: 'right' })
+  const chartEnd = chartY + DSN_STATIONS.length * laneHeight + 2
+  doc.setTextColor(90, 101, 114)
+  const dateLabel = (time: number) => endMs - startMs < 7 * DAY_MS ? fmtDateTime(time) : fmtDate(time)
+  doc.text(dateLabel(startMs), chartX, chartEnd)
+  doc.text(dateLabel(startMs + (endMs - startMs) / 2), chartX + chartWidth / 2, chartEnd, { align: 'center' })
+  doc.text(dateLabel(endMs), chartX + chartWidth, chartEnd, { align: 'right' })
+}
+
+function addDsnSumChart(
+  doc: import('jspdf').jsPDF,
+  samples: DsnSample[],
+  startMs: number,
+  endMs: number,
+  x: number,
+  y: number,
+  width: number,
+) {
+  const chart = chartFrame(doc, 'Number of DSN stations in link (0–3)', x, y, width, 42, ['3', '2', '1', '0'])
+  const px = (time: number) => chart.chartX + ((time - startMs) / (endMs - startMs)) * chart.chartWidth
+  const py = (count: number) => chart.chartY + (1 - count / 3) * chart.plotHeight
+  doc.setDrawColor(76, 91, 128)
+  doc.setLineWidth(0.8)
+  const linkedCount = (sample: DsnSample) => DSN_STATIONS.filter((station) => sample.st[station.id]?.link).length
+  let runStart = samples[0].t
+  let runCount = linkedCount(samples[0])
+  for (let i = 1; i < samples.length; i++) {
+    const count = linkedCount(samples[i])
+    if (count === runCount) continue
+    const transition = px(samples[i].t)
+    doc.line(px(runStart), py(runCount), transition, py(runCount))
+    doc.line(transition, py(runCount), transition, py(count))
+    runStart = samples[i].t
+    runCount = count
+  }
+  doc.line(px(runStart), py(runCount), px(samples[samples.length - 1].t), py(runCount))
+  addChartDates(doc, chart, startMs, endMs)
 }
