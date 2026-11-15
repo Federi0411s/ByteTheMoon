@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Ephemeris } from '../lib/ephemeris'
 import type { TimelineSample } from '../lib/analysis'
-import { downloadTechnicalReport, type ReportFilterImage, type ReportOverlay } from '../lib/technicalReport'
+import { downloadTechnicalReport, downloadTechnicalReportCsv, type ReportFilterImage, type ReportOverlay } from '../lib/technicalReport'
 import type { Site } from '../lib/data'
 import type { HeatEngine } from '../lib/heatEngine'
 import type { SiteThermalSeries } from '../lib/regolith'
@@ -12,6 +12,7 @@ import { fmtDateTime } from '../lib/time'
 
 export function TechnicalReportDialog({
   site,
+  format,
   ephemeris,
   heat,
   panel,
@@ -27,6 +28,7 @@ export function TechnicalReportDialog({
   onClose,
 }: {
   site: Site
+  format: 'pdf' | 'csv'
   ephemeris: Ephemeris
   heat?: HeatEngine | null
   panel: PanelConfig
@@ -61,7 +63,7 @@ export function TechnicalReportDialog({
         throw new Error('The thermal model is still preparing the selected analysis interval. Please try again in a moment.')
       }
       const [filterImages, temperatureTimeline] = await Promise.all([
-        includeMap ? captureMap(site, overlays) : Promise.resolve([] as ReportFilterImage[]),
+        format === 'pdf' && includeMap ? captureMap(site, overlays) : Promise.resolve([] as ReportFilterImage[]),
         temperatureSeries
           ? Promise.resolve(Array.from(temperatureSeries.tC, (temperatureC, index) => ({
               t: period[0] + index * temperatureSeries.stepH * 3600_000,
@@ -69,7 +71,7 @@ export function TechnicalReportDialog({
             })))
           : heat ? sampleSiteTemperatureTimeline(heat, site.lat, site.lon) : Promise.resolve(null),
       ])
-      await downloadTechnicalReport({
+      const request = {
         site,
         ephemeris,
         panel,
@@ -85,7 +87,9 @@ export function TechnicalReportDialog({
         includeMap,
         filterImages,
         overlays,
-      })
+      }
+      if (format === 'csv') await downloadTechnicalReportCsv(request)
+      else await downloadTechnicalReport(request)
       onClose()
     } catch (reason) {
       setError(`The report could not be generated: ${reason instanceof Error ? reason.message : String(reason)}`)
@@ -107,16 +111,20 @@ export function TechnicalReportDialog({
       <header className="report-dialog-header">
         <div>
           <p className="report-eyebrow">BYTETHEMOON · DOCUMENTATION</p>
-          <h2 id="report-dialog-title">Technical site report</h2>
+          <h2 id="report-dialog-title">Technical site report ({format.toUpperCase()})</h2>
         </div>
         <button type="button" aria-label="Close report dialog" disabled={generating} onClick={onClose}>×</button>
       </header>
 
       <div className="report-dialog-body">
         <p className="muted">
-          The report includes a site data table and temperature, power-generation and DSN-contact timelines for the selected UTC interval below.
+          The report includes the site data table and sampled temperature, power-generation and DSN-contact timelines for the selected UTC interval below.
         </p>
-        <p className="muted">Temperature and power charts show sampled values, not averages over time buckets. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.</p>
+        <p className="muted">
+          {format === 'pdf'
+            ? 'Temperature and power charts show sampled values, not averages over time buckets. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.'
+            : 'CSV includes the same report summary and the sampled data behind its timelines and charts. Map images are represented by their active filter names and sources.'}
+        </p>
 
         <section className="report-period">
           <h3>Analysis interval</h3>
@@ -133,7 +141,7 @@ export function TechnicalReportDialog({
           </label>
           <label title={overlays.length ? undefined : 'Enable one or more map layers before opening the report.'}>
             <input type="checkbox" checked={includeMap} onChange={(event) => setIncludeMap(event.target.checked)} disabled={generating || overlays.length === 0} />
-            One close-up map image per active filter
+            {format === 'pdf' ? 'One close-up map image per active filter' : 'Include active map filter metadata'}
           </label>
           {overlays.length > 0 ? (
             <ul className="report-overlay-list">
@@ -149,8 +157,8 @@ export function TechnicalReportDialog({
 
       <footer className="report-dialog-footer">
         <button type="button" disabled={generating} onClick={onClose}>Cancel</button>
-        <button type="button" className="report-primary" disabled={generating} onClick={() => void generate()}>
-          {generating ? 'Preparing PDF…' : 'Generate and download PDF'}
+        <button type="button" className={format === 'csv' ? 'report-primary report-csv-primary' : 'report-primary'} disabled={generating} onClick={() => void generate()}>
+          {generating ? `Preparing ${format.toUpperCase()}…` : `Generate and download ${format.toUpperCase()}`}
         </button>
       </footer>
     </dialog>

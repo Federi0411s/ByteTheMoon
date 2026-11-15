@@ -155,6 +155,228 @@ function formatDuration(ms: number | null): string {
   return hours >= 48 ? `${(hours / 24).toFixed(1)} d` : `${hours.toFixed(1)} h`
 }
 
+function buildReportData(request: TechnicalReportRequest) {
+  const spanMs = request.endMs - request.startMs
+  if (!(spanMs > 0)) throw new Error('The selected analysis interval must have a positive duration.')
+  const timelineStep = Math.min(spanMs, Math.max(HOUR_MS, Math.ceil(spanMs / 12000)))
+  const samples = computeTimeline(
+    request.ephemeris,
+    request.site,
+    request.site.horizon,
+    request.startMs,
+    request.endMs,
+    timelineStep,
+  )
+  if (samples.length < 2) throw new Error('The selected interval is too short to analyse.')
+  if (samples[samples.length - 1].t < request.endMs) {
+    samples.push(...computeTimeline(request.ephemeris, request.site, request.site.horizon, request.endMs, request.endMs))
+  }
+  const stats = periodStats(samples, request.endMs)
+  const powerTimes = sampleTimes(request.startMs, request.endMs, MAX_POWER_SAMPLES, HOUR_MS)
+  const powerSamples = powerTimes.map((time) => powerAt(request.ephemeris, request.site, request.site.horizon, time, request.panel))
+  const powerSummary = powerStats(powerSamples, request.endMs)
+  const dsnTimes = sampleTimes(request.startMs, request.endMs, 12000, HOUR_MS)
+  const dsnStepMs = dsnTimes[1] - dsnTimes[0]
+  const powerStepMs = powerTimes[1] - powerTimes[0]
+  const temperatureStepMs = request.temperatureTimeline && request.temperatureTimeline.length > 1
+    ? request.temperatureTimeline[1].t - request.temperatureTimeline[0].t
+    : undefined
+  const dsnSamples = dsnTimes.map((time) => dsnAt(request.ephemeris, request.site, request.site.horizon, time))
+  const dsnSummary = dsnStats(dsnSamples, request.endMs)
+  const current = request.panoramaNow ?? computeTimeline(
+    request.ephemeris, request.site, request.site.horizon, request.currentMs, request.currentMs,
+  )[0]
+  const currentDsn = dsnAt(request.ephemeris, request.site, request.site.horizon, request.currentMs)
+  const currentPower = powerAt(request.ephemeris, request.site, request.site.horizon, request.currentMs, request.panel)
+
+  const latHemisphere = request.site.lat < 0 ? 'S' : 'N'
+  const lonHemisphere = request.site.lon < 0 ? 'W' : 'E'
+  const landingDayReport = request.periodSource === 'Landing day'
+  const rows: [string, string][] = [
+    ['Coordinates', `${Math.abs(request.site.lat).toFixed(5)}° ${latHemisphere}, ${Math.abs(request.site.lon).toFixed(5)}° ${lonHemisphere}`],
+    ['Site category / elevation', `${request.site.group} / ${request.site.heightM === undefined ? 'Unavailable' : `${request.site.heightM.toFixed(1)} m`}`],
+    [request.periodSource === 'Landing day' ? 'Landing day (UTC)' : 'Analysis interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`],
+    ['Interval source', request.periodSource],
+    ['Analysis duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
+    ['Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed'],
+    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of interval`],
+    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of interval`],
+    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of interval`],
+    ['Longest estimated night', `${stats.longestDarkHours.toFixed(1)} h`],
+    ['Now: Sun elevation / visible', `${current ? `${current.sunEl.toFixed(1)}° / ${(current.sunVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
+    ['Now: Earth elevation / visible', `${current ? `${current.earthEl.toFixed(1)}° / ${(current.earthVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
+    ['Time to sunset / Earthset', `${formatDuration(timeUntilSet(samples, 'sunVisibleFrac', request.currentMs))} / ${formatDuration(timeUntilSet(samples, 'earthVisibleFrac', request.currentMs))}`],
+    ['Surface temperature range', request.env ? `${(request.env.tMinK - 273.15).toFixed(0)} to ${(request.env.tMaxK - 273.15).toFixed(0)} °C` : 'Unavailable'],
+    ['Thermal excursion', request.env ? `${(request.env.tMaxK - request.env.tMinK).toFixed(1)} °C` : 'Unavailable'],
+    ['Radiation dose rate', request.env ? `${request.env.doseUGyH.toFixed(1)} µGy/h` : 'Unavailable'],
+    ['Solar-array setup', `${request.panel.mode === 'tracking' ? 'Sun-tracking' : 'Fixed horizontal'}; ${request.panel.areaM2} m²; ${(request.panel.efficiency * 100).toFixed(0)}% efficiency`],
+    ['Power now / energy per hour (mean) / peak', `${currentPower.power.toFixed(0)} W / ${powerSummary.meanW.toFixed(0)} W / ${powerSummary.peakW.toFixed(0)} W`],
+    ['Energy / producing time', `${(powerSummary.energyWh / 1000).toFixed(2)} kWh / ${powerSummary.producingPct.toFixed(1)}%`],
+    ['Longest power outage / eclipse', `${powerSummary.longestOutageHours.toFixed(1)} h / ${powerSummary.eclipseHours.toFixed(1)} h`],
+    ['DSN link now', DSN_STATIONS.filter((station) => currentDsn.st[station.id]?.link).map((station) => station.name).join(', ') || 'No station in link'],
+    ['Any DSN contact during interval', `${dsnSummary.contactPct.toFixed(1)}% of interval`],
+    ['DSN overlap (none / exactly 1 / exactly 2 / all 3)', `${dsnSummary.noStationPct.toFixed(1)}% / ${dsnSummary.oneStationPct.toFixed(1)}% / ${dsnSummary.twoStationPct.toFixed(1)}% / ${dsnSummary.allThreePct.toFixed(1)}%`],
+    ...DSN_STATIONS.map((station) => [`${station.name} ${station.antenna} contact time`, `${dsnSummary.stationPct[station.id].toFixed(1)}% of interval`] as [string, string]),
+    ['Longest estimated no-contact gap', `${dsnSummary.longestNoContactHours.toFixed(1)} h`],
+  ]
+  if (request.includeSiteDetails && request.site.note) rows.splice(4, 0, ['Site note', request.site.note])
+  return {
+    spanMs, timelineStep, samples, stats, powerTimes, powerSamples, powerSummary, powerStepMs,
+    dsnTimes, dsnStepMs, dsnSamples, dsnSummary, temperatureStepMs, current, currentDsn,
+    currentPower, rows, landingDayReport,
+  }
+}
+
+function csvCell(value: string | number): string {
+  const text = String(value)
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+export async function downloadTechnicalReportCsv(request: TechnicalReportRequest): Promise<void> {
+  const data = buildReportData(request)
+  const columns = [
+    'Section', 'Item', 'Value', 'Timestamp UTC', 'Sun azimuth (deg)', 'Sun elevation (deg)',
+    'Sun visible fraction', 'Earth azimuth (deg)', 'Earth elevation (deg)', 'Earth visible fraction',
+    'Power (W)', 'Eclipse fraction', 'Temperature (°C)', 'DSN station', 'Source', 'Opacity (%)',
+  ]
+  const lines: string[][] = [columns]
+  const addRow = (
+    section: string,
+    item: string,
+    value = '',
+    details: {
+      utc?: string
+      sunAz?: number
+      sunEl?: number
+      sunVisible?: number
+      earthAz?: number
+      earthEl?: number
+      earthVisible?: number
+      power?: number
+      eclipse?: number
+      temperatureC?: number
+      station?: string
+      source?: string
+      opacity?: number
+    } = {},
+  ) => lines.push([
+    section, item, value, details.utc ?? '', ...[
+      details.sunAz, details.sunEl, details.sunVisible, details.earthAz, details.earthEl,
+      details.earthVisible, details.power, details.eclipse, details.temperatureC,
+    ].map((number) => number === undefined ? '' : String(number)),
+    details.station ?? '', details.source ?? '',
+    details.opacity === undefined ? '' : String(details.opacity),
+  ])
+  addRow('Report metadata', 'Site', request.site.name)
+  addRow('Report metadata', 'Generated UTC', fmtDateTime(Date.now()))
+  for (const [label, value] of data.rows) addRow('Mission summary', label, value)
+  addRow('Model assumptions', 'Visibility and DSN contacts', 'Visibility and DSN contacts use the selected site’s terrain horizon. A station is considered in link only when the lunar site and that antenna have mutual line of sight.')
+  addRow('Model assumptions', 'Power', 'Power assumes the stated array mode, area and efficiency; it does not include storage, degradation or temperature derating.')
+  addRow('Model assumptions', 'Temperature and radiation', 'Temperature uses the Hayne regolith model where terrain data are available. Radiation is the GCR + albedo estimate.')
+  addRow('Model assumptions', 'Sampling', `Timelines are sampled at up to ${(data.timelineStep / HOUR_MS).toFixed(1)} h for illumination and ${data.dsnStepMs / HOUR_MS < 24 ? `${(data.dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(data.dsnStepMs / DAY_MS).toFixed(1)} d`} for DSN; event boundaries are approximate at that resolution.`)
+  addRow('Model assumptions', 'Temperature and power samples', `Temperature cadence: ${data.temperatureStepMs === undefined ? 'unavailable' : `${(data.temperatureStepMs / HOUR_MS).toFixed(1)} h`}; power cadence: ${data.powerStepMs / HOUR_MS < 24 ? `${(data.powerStepMs / HOUR_MS).toFixed(1)} h` : `${(data.powerStepMs / DAY_MS).toFixed(1)} d`}. Values are sampled, without time-bucket averaging.`)
+  addRow('Model assumptions', 'DSN traces', 'DSN links are binary (0 = no link, 1 = link), with one row per station and timestamp; a separate row sums the connected stations from 0 to 3.')
+  addRow('Terrain horizon and Sun/Earth paths', 'Panorama', 'The skyline and body tracks use the active site-analysis window. The report marker identifies the Sun and Earth positions at the current application time.')
+  if (data.current) {
+    addRow('Terrain horizon and Sun/Earth paths', 'Current application time', '', {
+      utc: fmtDateTime(request.currentMs),
+      sunAz: data.current.sunAz,
+      sunEl: data.current.sunEl,
+      sunVisible: data.current.sunVisibleFrac,
+      earthAz: data.current.earthAz,
+      earthEl: data.current.earthEl,
+      earthVisible: data.current.earthVisibleFrac,
+    })
+  }
+
+  const terrain = request.site.horizon?.elevDeg
+  if (terrain?.length) {
+    const azStep = request.site.horizon?.azStepDeg ?? 360 / terrain.length
+    terrain.forEach((elevation, index) => addRow('Terrain horizon', 'Elevation', String(elevation), {
+      sunAz: index * azStep,
+    }))
+  } else {
+    addRow('Terrain horizon', 'Status', 'Unavailable; flat horizon assumed')
+  }
+  for (const sample of request.panoramaTimeline) {
+    addRow('Sun/Earth paths', 'Panorama sample', '', {
+      utc: fmtDateTime(sample.t),
+      sunAz: sample.sunAz,
+      sunEl: sample.sunEl,
+      sunVisible: sample.sunVisibleFrac,
+      earthAz: sample.earthAz,
+      earthEl: sample.earthEl,
+      earthVisible: sample.earthVisibleFrac,
+    })
+  }
+  for (const sample of data.samples) {
+    addRow('Illumination timeline', 'Visibility', '', {
+      utc: fmtDateTime(sample.t),
+      sunAz: sample.sunAz,
+      sunEl: sample.sunEl,
+      sunVisible: sample.sunVisibleFrac,
+      earthAz: sample.earthAz,
+      earthEl: sample.earthEl,
+      earthVisible: sample.earthVisibleFrac,
+    })
+  }
+  for (const sample of request.temperatureTimeline ?? []) {
+    addRow('Temperature timeline', 'Surface temperature', '', {
+      utc: fmtDateTime(sample.t),
+      temperatureC: sample.temperatureK - 273.15,
+    })
+  }
+  if (!request.temperatureTimeline?.length) {
+    addRow('Temperature timeline', 'Status', 'No terrain/thermal samples returned for this site and interval.')
+  }
+  for (const sample of data.powerSamples) {
+    addRow('Power timeline', 'Solar-array output', '', {
+      utc: fmtDateTime(sample.t),
+      power: sample.power,
+      eclipse: sample.eclipseFrac,
+    })
+  }
+  data.dsnSamples.forEach((sample, index) => {
+    for (const station of DSN_STATIONS) {
+      const link = !!sample.st[station.id]?.link
+      addRow('DSN timeline', 'Station link', link ? '1' : '0', {
+        utc: fmtDateTime(data.dsnTimes[index]),
+        station: station.name,
+      })
+    }
+    addRow('DSN timeline', 'Stations connected', String(DSN_STATIONS.filter((station) => sample.st[station.id]?.link).length), {
+      utc: fmtDateTime(data.dsnTimes[index]),
+    })
+  })
+  if (data.dsnSummary.bestWindows.length) {
+    data.dsnSummary.bestWindows.forEach((window, index) => addRow(
+      'Landing windows with at least one DSN link',
+      `Window ${index + 1}`,
+      `${fmtDateTime(window.start)} – ${fmtDateTime(window.end)} UTC (${((window.end - window.start) / HOUR_MS).toFixed(1)} h)`,
+    ))
+  } else {
+    addRow('Landing windows with at least one DSN link', 'Result', 'No interval with a sampled link from Goldstone, Madrid or Canberra was found.')
+  }
+  if (request.includeMap) {
+    addRow('Close-up map views', 'Images', 'Map images are not embedded in CSV; active filter details follow.')
+    for (const overlay of request.overlays) {
+      addRow('Close-up map views', overlay.title, overlay.source, {
+        source: overlay.source,
+        opacity: Math.round(overlay.opacity * 100),
+      })
+    }
+  }
+
+  const safeName = request.site.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'lunar-site'
+  const csv = `\uFEFF${lines.map((line) => line.map(csvCell).join(',')).join('\r\n')}`
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `ByteTheMoon-${safeName}-${fmtDate(request.startMs)}-${fmtDate(request.endMs)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export async function downloadTechnicalReport(request: TechnicalReportRequest): Promise<void> {
   const { jsPDF } = await import('jspdf')
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
@@ -234,71 +456,11 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
   doc.text(request.site.name, margin, y)
   y += 5
 
-  const spanMs = request.endMs - request.startMs
-  if (!(spanMs > 0)) throw new Error('The selected analysis interval must have a positive duration.')
-  const timelineStep = Math.min(spanMs, Math.max(HOUR_MS, Math.ceil(spanMs / 12000)))
-  const samples = computeTimeline(
-    request.ephemeris,
-    request.site,
-    request.site.horizon,
-    request.startMs,
-    request.endMs,
-    timelineStep,
-  )
-  if (samples.length < 2) throw new Error('The selected interval is too short to analyse.')
-  if (samples[samples.length - 1].t < request.endMs) {
-    samples.push(...computeTimeline(request.ephemeris, request.site, request.site.horizon, request.endMs, request.endMs))
-  }
-  const stats = periodStats(samples, request.endMs)
-  const powerTimes = sampleTimes(request.startMs, request.endMs, MAX_POWER_SAMPLES, HOUR_MS)
-  const powerSamples = powerTimes.map((time) => powerAt(request.ephemeris, request.site, request.site.horizon, time, request.panel))
-  const powerSummary = powerStats(powerSamples, request.endMs)
-  const dsnTimes = sampleTimes(request.startMs, request.endMs, 12000, HOUR_MS)
-  const dsnStepMs = dsnTimes[1] - dsnTimes[0]
-  const powerStepMs = powerTimes[1] - powerTimes[0]
-  const temperatureStepMs = request.temperatureTimeline && request.temperatureTimeline.length > 1
-    ? request.temperatureTimeline[1].t - request.temperatureTimeline[0].t
-    : undefined
-  const dsnSamples = dsnTimes.map((time) => dsnAt(request.ephemeris, request.site, request.site.horizon, time))
-  const dsnSummary = dsnStats(dsnSamples, request.endMs)
-  const current = request.panoramaNow ?? computeTimeline(
-    request.ephemeris, request.site, request.site.horizon, request.currentMs, request.currentMs,
-  )[0]
-  const currentDsn = dsnAt(request.ephemeris, request.site, request.site.horizon, request.currentMs)
-  const currentPower = powerAt(request.ephemeris, request.site, request.site.horizon, request.currentMs, request.panel)
-
-  const latHemisphere = request.site.lat < 0 ? 'S' : 'N'
-  const lonHemisphere = request.site.lon < 0 ? 'W' : 'E'
-  const landingDayReport = request.periodSource === 'Landing day'
+  const {
+    timelineStep, powerSamples, powerStepMs, dsnStepMs, dsnSamples, dsnSummary,
+    temperatureStepMs, rows, landingDayReport,
+  } = buildReportData(request)
   section(landingDayReport ? 'Landing-day summary' : 'Mission summary')
-  const rows: [string, string][] = [
-    ['Coordinates', `${Math.abs(request.site.lat).toFixed(5)}° ${latHemisphere}, ${Math.abs(request.site.lon).toFixed(5)}° ${lonHemisphere}`],
-    ['Site category / elevation', `${request.site.group} / ${request.site.heightM === undefined ? 'Unavailable' : `${request.site.heightM.toFixed(1)} m`}`],
-    [request.periodSource === 'Landing day' ? 'Landing day (UTC)' : 'Analysis interval (UTC)', `${fmtDateTime(request.startMs)} – ${fmtDateTime(request.endMs)}`],
-    ['Interval source', request.periodSource],
-    ['Analysis duration', `${(spanMs / DAY_MS).toFixed(2)} days`],
-    ['Terrain horizon', request.site.horizon?.source ?? 'Unavailable; flat horizon assumed'],
-    ['Sun visible (>50% disc)', `${stats.sunPct.toFixed(1)}% of interval`],
-    ['Earth visible (>50% disc)', `${stats.earthPct.toFixed(1)}% of interval`],
-    ['Sun and Earth both visible', `${stats.bothPct.toFixed(1)}% of interval`],
-    ['Longest estimated night', `${stats.longestDarkHours.toFixed(1)} h`],
-    ['Now: Sun elevation / visible', `${current ? `${current.sunEl.toFixed(1)}° / ${(current.sunVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
-    ['Now: Earth elevation / visible', `${current ? `${current.earthEl.toFixed(1)}° / ${(current.earthVisibleFrac * 100).toFixed(0)}%` : 'Unavailable'}`],
-    ['Time to sunset / Earthset', `${formatDuration(timeUntilSet(samples, 'sunVisibleFrac', request.currentMs))} / ${formatDuration(timeUntilSet(samples, 'earthVisibleFrac', request.currentMs))}`],
-    ['Surface temperature range', request.env ? `${(request.env.tMinK - 273.15).toFixed(0)} to ${(request.env.tMaxK - 273.15).toFixed(0)} °C` : 'Unavailable'],
-    ['Thermal excursion', request.env ? `${(request.env.tMaxK - request.env.tMinK).toFixed(1)} °C` : 'Unavailable'],
-    ['Radiation dose rate', request.env ? `${request.env.doseUGyH.toFixed(1)} µGy/h` : 'Unavailable'],
-    ['Solar-array setup', `${request.panel.mode === 'tracking' ? 'Sun-tracking' : 'Fixed horizontal'}; ${request.panel.areaM2} m²; ${(request.panel.efficiency * 100).toFixed(0)}% efficiency`],
-    ['Power now / energy per hour (mean) / peak', `${currentPower.power.toFixed(0)} W / ${powerSummary.meanW.toFixed(0)} W / ${powerSummary.peakW.toFixed(0)} W`],
-    ['Energy / producing time', `${(powerSummary.energyWh / 1000).toFixed(2)} kWh / ${powerSummary.producingPct.toFixed(1)}%`],
-    ['Longest power outage / eclipse', `${powerSummary.longestOutageHours.toFixed(1)} h / ${powerSummary.eclipseHours.toFixed(1)} h`],
-    ['DSN link now', DSN_STATIONS.filter((station) => currentDsn.st[station.id]?.link).map((station) => station.name).join(', ') || 'No station in link'],
-    ['Any DSN contact during interval', `${dsnSummary.contactPct.toFixed(1)}% of interval`],
-    ['DSN overlap (none / exactly 1 / exactly 2 / all 3)', `${dsnSummary.noStationPct.toFixed(1)}% / ${dsnSummary.oneStationPct.toFixed(1)}% / ${dsnSummary.twoStationPct.toFixed(1)}% / ${dsnSummary.allThreePct.toFixed(1)}%`],
-    ...DSN_STATIONS.map((station) => [`${station.name} ${station.antenna} contact time`, `${dsnSummary.stationPct[station.id].toFixed(1)}% of interval`] as [string, string]),
-    ['Longest estimated no-contact gap', `${dsnSummary.longestNoContactHours.toFixed(1)} h`],
-  ]
-  if (request.includeSiteDetails && request.site.note) rows.splice(4, 0, ['Site note', request.site.note])
   table(rows)
 
   section('Model assumptions')

@@ -283,6 +283,7 @@ export default function App() {
   const [terrainViewLoading, setTerrainViewLoading] = useState(false)
   const [terrainViewError, setTerrainViewError] = useState<string>()
   const [reportOpen, setReportOpen] = useState(false)
+  const [reportFormat, setReportFormat] = useState<'pdf' | 'csv'>('pdf')
   const ephemerisRequest = useRef(0)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
@@ -1760,7 +1761,8 @@ export default function App() {
                   available={!!heat} periodReady={filterPeriod.ready} error={filterDataError}
                   busy={!filterDataError && ((regionFilters.ice.on && !iceDistance) || (regionFilters.pits.on && !pitDistance))} />
               }
-              onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}
+              onGenerateReport={() => { setPlaying(false); setReportFormat('pdf'); setReportOpen(true) }}
+              onGenerateCsv={() => { setPlaying(false); setReportFormat('csv'); setReportOpen(true) }}
               reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}
               now={now} nowMs={t} sunlightCountdown={sunlightCountdown}
@@ -1854,6 +1856,7 @@ export default function App() {
             <TechnicalReportDialog
               key={selected.id}
               site={selected}
+              format={reportFormat}
               ephemeris={ephemeris}
               heat={heat}
               panel={panel}
