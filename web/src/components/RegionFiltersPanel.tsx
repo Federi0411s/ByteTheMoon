@@ -5,7 +5,7 @@ import { FILTER_DEFS, FILTER_ORDER, activeFilters, defaultFilters, type FilterKe
  * Region filters: tick the criteria that matter, set a range for each, and the map highlights in green
  * the areas that meet all of them.
  */
-export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel, available, busy, error }: {
+export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel, available, periodReady, busy, error }: {
   filters: RegionFilterState
   onChange: (f: RegionFilterState) => void
   /** length of the selected period, hours (upper limit of the sunlight / night filters) */
@@ -13,6 +13,8 @@ export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel
   periodLabel: string
   /** the global engine is ready */
   available: boolean
+  /** heatmap values have been recomputed for the period currently entered in the mission inputs */
+  periodReady: boolean
   /** water-ice / pit distances still loading */
   busy: boolean
   error?: string
@@ -23,7 +25,7 @@ export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel
     <details className="panel menu-section region-filters" data-tour="region-filters">
       <summary className="menu-section-summary">
         <span>Region filters</span>
-        <span className="menu-section-state">{!available ? 'Unavailable' : active.length ? `${active.length} on` : 'Off'}</span>
+        <span className="menu-section-state">{!available ? 'Unavailable' : !periodReady ? 'Updating' : active.length ? `${active.length} on` : 'Off'}</span>
         <span className="menu-section-chevron" aria-hidden="true">›</span>
       </summary>
       <div className="menu-section-body">
@@ -35,6 +37,7 @@ export function RegionFiltersPanel({ filters, onChange, periodHours, periodLabel
               Tick the criteria you need and set their range: the map shows in <b className="region-ok">green</b> the
               areas that meet all of them. Period: {periodLabel}.
             </p>
+            {!periodReady && <p className="muted" role="status">Updating map values for the selected mission period…</p>}
             {FILTER_ORDER.map((k) => {
               const d = FILTER_DEFS[k], f = filters[k]
               const hi = d.limits[1] ?? Math.max(1, Math.round(periodHours))

@@ -5,7 +5,7 @@
  *
  * Messages (main -> worker):
  *   { type: 'init', cfg: DemConfig, hz?: HorizonConfig }   hz: precomputed horizons (lib/horizonTiles.ts), if generated
- *   { type: 'window', version, window, sun, earth, dsn, thermalTimes }               time window and Sun/Earth + DSN sample geometry
+ *   { type: 'window', version, window, sun, sunTimes, earth, dsn, thermalTimes }      time window and Sun/Earth + DSN sample geometry
  *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
  *        regular steps: Sun dir xyz + distance (AU); thermalCount marks the steps that enter the
@@ -47,6 +47,7 @@ const MAX_LAT = (89.99 / 180) * Math.PI // the exact pole has no azimuths
 let dem: DemSampler
 let hzs: HorizonSampler | null = null
 let sun = new Float32Array(0)
+let sunTimes = new Float64Array(0)
 let earth = new Float32Array(0)
 let dsn = new Float64Array(0)
 let version = 0
@@ -251,7 +252,8 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
     return
   }
   const cosTail = eq ? Math.cos(eq.tailHalfAngleDeg / R2D) : 0
-  let acc = 0, sum = 0, min = Infinity, below = 0, lit = 0, darkRun = 0, longestDark = 0
+  let acc = 0, sum = 0, min = Infinity, below = 0, lit = 0, darkStart = NaN, longestDarkMs = 0
+  let previousVisible = NaN, previousTime = windowStart
   for (let j = 0; j < T; j++) {
     const o = j * 4
     const sx = sun[o], sy = sun[o + 1], sz = sun[o + 2], r = sun[o + 3]
@@ -266,7 +268,22 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
       visible = v <= 0 ? 0 : v >= 1 ? 1 : v
     }
     acc += visible
-    if (visible > 0.5) { lit++; darkRun = 0 } else { darkRun++; longestDark = Math.max(longestDark, darkRun) }
+    const t = sunTimes[j]
+    const isLit = visible > 0.5
+    if (isLit) lit++
+    if (j === 0) {
+      if (!isLit) darkStart = windowStart
+    } else if ((previousVisible > 0.5) !== isLit) {
+      const crossing = previousTime + ((0.5 - previousVisible) / (visible - previousVisible)) * (t - previousTime)
+      if (isLit) {
+        longestDarkMs = Math.max(longestDarkMs, crossing - darkStart)
+        darkStart = NaN
+      } else {
+        darkStart = crossing
+      }
+    }
+    previousVisible = visible
+    previousTime = t
     if (!eq) continue
     // surface charging
     const inTail = sx * earth[o] + sy * earth[o + 1] + sz * earth[o + 2] > cosTail
@@ -289,9 +306,10 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
     if (V < min) min = V
     if (V < chargeThreshold) below++
   }
+  if (Number.isFinite(darkStart)) longestDarkMs = Math.max(longestDarkMs, windowEnd - darkStart)
   sunOut.frac = acc / T
   sunOut.sunlitPct = (100 * lit) / T
-  sunOut.longestDarkH = longestDark * ((windowEnd - windowStart) / T / 3600_000)
+  sunOut.longestDarkH = longestDarkMs / 3600_000
   if (eq) { sunOut.cMean = sum / T; sunOut.cMin = min; sunOut.cBelow = below / T } else sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN
 }
 
@@ -697,6 +715,7 @@ self.onmessage = (ev: MessageEvent) => {
     chargeThreshold = m.threshold
   } else if (m.type === 'window') {
     sun = m.sun
+    sunTimes = m.sunTimes
     earth = m.earth
     dsn = m.dsn
     windowStart = m.window[0]

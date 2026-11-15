@@ -282,6 +282,7 @@ export default function App() {
   const [pitsError, setPitsError] = useState<string>()
   // region filters: highlight the points that meet every ticked criterion (lib/regionFilters.ts)
   const [regionFilters, setRegionFilters] = useState<RegionFilterState>(() => defaultFilters(5 * 8766))
+  const regionFilterPeriodHours = useRef(5 * 8766)
   const [iceDistance, setIceDistance] = useState<IceDistance | null>(null)
   const [pitDistance, setPitDistance] = useState<PitDistance | null>(null)
   const [filterDataError, setFilterDataError] = useState<string>()
@@ -962,11 +963,38 @@ export default function App() {
 
   // ---- region filters ----
   const filterPeriod = useMemo(() => {
-    const [start, end] = heat && heatVersion ? heat.window : [0, 0]
+    const [start, end] = scorePeriod
     const hours = end > start ? (end - start) / 3600_000 : 0
     const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
-    return { hours, label: hours ? `${day(start)} → ${day(end)} (${Math.round(hours).toLocaleString('en-US')} h)` : '—' }
-  }, [heat, heatVersion])
+    const ready = !!heat && heatVersion === heat.version &&
+      heat.window[0] === start && heat.window[1] === end && analysisPeriodInWindow
+    return { hours, label: hours ? `${day(start)} → ${day(end)} (${Math.round(hours).toLocaleString('en-US')} h)` : '—', ready }
+  }, [scorePeriod, heat, heatVersion, analysisPeriodInWindow])
+
+  useEffect(() => {
+    if (!filterPeriod.ready) return
+    const previousHours = regionFilterPeriodHours.current
+    const limit = Math.max(1, Math.round(filterPeriod.hours))
+    const scale = filterPeriod.hours / previousHours
+    setRegionFilters((current) => {
+      let changed = false
+      const next = { ...current }
+      const sunMin = Math.round(Math.min(limit, Math.max(0, current.sunHours.min * scale)) * 10) / 10
+      const sunMax = Math.max(sunMin, Math.round(Math.min(limit, current.sunHours.max * scale) * 10) / 10)
+      if (sunMin !== current.sunHours.min || sunMax !== current.sunHours.max) {
+        next.sunHours = { ...current.sunHours, min: sunMin, max: sunMax }
+        changed = true
+      }
+      const nightMax = Math.min(current.nightHours.max, limit)
+      const nightMin = Math.min(current.nightHours.min, nightMax)
+      if (nightMin !== current.nightHours.min || nightMax !== current.nightHours.max) {
+        next.nightHours = { ...current.nightHours, min: nightMin, max: nightMax }
+        changed = true
+      }
+      return changed ? next : current
+    })
+    regionFilterPeriodHours.current = filterPeriod.hours
+  }, [filterPeriod.ready, filterPeriod.hours])
 
   // distance data, loaded the first time the water-ice / pit filters are ticked
   useEffect(() => {
@@ -990,11 +1018,11 @@ export default function App() {
 
   useEffect(() => {
     const scene = sceneRef.current
-    if (!ready || !scene || !(heat && heatVersion)) return
+    if (!ready || !scene) return
     const old = layerRefs.current.__filters
     if (old) { removeLayer(scene, old); delete layerRefs.current.__filters }
     const on = activeFilters(regionFilters)
-    if (!on.length) return
+    if (!heat || !on.length || !filterPeriod.ready) return
     const handle = setTimeout(() => {
       const gcr = heat.gcr
       const provider = new GlobalHeatProvider({
@@ -1015,7 +1043,7 @@ export default function App() {
       layerRefs.current.__filters = layer
     }, 250) // debounce typing in the range boxes
     return () => clearTimeout(handle)
-  }, [ready, regionFilters, heat, heatVersion, filterPeriod.hours, iceDistance, pitDistance, focus, guide, pyramids.sky])
+  }, [ready, regionFilters, heat, heatVersion, filterPeriod, iceDistance, pitDistance, focus, guide, pyramids.sky])
 
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
@@ -1583,7 +1611,7 @@ export default function App() {
               regionFiltersPanel={
                 <RegionFiltersPanel filters={regionFilters} onChange={setRegionFilters}
                   periodHours={filterPeriod.hours} periodLabel={filterPeriod.label}
-                  available={!!(heat && heatVersion)} error={filterDataError}
+                  available={!!heat} periodReady={filterPeriod.ready} error={filterDataError}
                   busy={!filterDataError && ((regionFilters.ice.on && !iceDistance) || (regionFilters.pits.on && !pitDistance))} />
               }
               onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}

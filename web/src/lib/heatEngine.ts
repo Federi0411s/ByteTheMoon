@@ -227,11 +227,14 @@ export class HeatEngine {
     const N = Math.max(48, Math.min(MAX_STEPS, Math.round((end - start) / 3600_000)))
     const dt = (end - start) / N
     // golden-ratio jitter inside each step: avoids aliasing between the step and the lunar day
-    const pack = (pos: (e: Ephemeris, t: number) => number[], radiusKm: number) => {
+    const sunTimes = new Float64Array(N)
+    const sampleTime = (j: number) => start + (j + ((j * 0.6180339887) % 1)) * dt
+    const pack = (pos: (e: Ephemeris, t: number) => number[], radiusKm: number, times?: Float64Array) => {
       const out = new Float32Array(N * 4)
       for (let j = 0; j < N; j++) {
-        const f = (j * 0.6180339887) % 1
-        const p = pos(eph, start + (j + f) * dt)
+        const t = sampleTime(j)
+        if (times) times[j] = t
+        const p = pos(eph, t)
         const d = Math.hypot(p[0], p[1], p[2])
         out[j * 4] = p[0] / d
         out[j * 4 + 1] = p[1] / d
@@ -240,11 +243,10 @@ export class HeatEngine {
       }
       return out
     }
-    const sun = pack(sunPosition, SUN_RADIUS_KM), earth = pack(earthPosition, EARTH_RADIUS_KM)
+    const sun = pack(sunPosition, SUN_RADIUS_KM, sunTimes), earth = pack(earthPosition, EARTH_RADIUS_KM)
     const dsn = new Float64Array(N * 18)
     for (let j = 0; j < N; j++) {
-      const f = (j * 0.6180339887) % 1
-      dsn.set(dsnStationGeometry(eph, start + (j + f) * dt), j * 18)
+      dsn.set(dsnStationGeometry(eph, sampleTime(j)), j * 18)
     }
 
     // Regolith model: needs a regular time series (thermal inertia). Windows up to a year are run
@@ -278,7 +280,7 @@ export class HeatEngine {
     this.window = [start, end]
     this.gcr = gcrFactor(start, end)
     this.version++
-    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, earth, dsn, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
+    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, sunTimes, earth, dsn, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
     for (const s of this.slots) s.worker.postMessage(this.lastWindow)
     this.cache.clear()
     this.order.length = 0
