@@ -6,6 +6,7 @@ import {
   Color,
   ConstantPositionProperty,
   Ellipsoid,
+  CallbackProperty,
   type Entity,
   ImageryLayer,
   LabelStyle,
@@ -73,6 +74,7 @@ const CALENDAR_RANGE: [number, number] = [
 const D2R = Math.PI / 180
 const MOON_RADIUS_M = 1737400
 const FOCUS_RADIUS_M = 15_000 // refined heatmaps around the selected site
+const SCORE_RADIUS_M = 500_000 // the landing-suitability map covers this radius around the selected site
 const RELIEF_EDGE_RAD = 80 * D2R // the relief basemap (LOLA LDEM 80S) ends here
 const RELIEF_FADE_RAD = 1 * D2R
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
@@ -205,6 +207,11 @@ export default function App() {
   const iceLoadedRef = useRef(false)
   const pitsRef = useRef<PitsLayer | null>(null)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
+  // site marker -> site (click to select) and the marker under the mouse (grows a little, animated)
+  const siteByMarker = useRef(new Map<Entity, Site>())
+  // latest selection actions for the map click handler (registered once per scene)
+  const clickActions = useRef<{ selectSite: (s: Site) => void; clearSelection: () => void; hasSelection: boolean }>({ selectSite: () => {}, clearSelection: () => {}, hasSelection: false })
+  const hover = useRef<{ entity?: Entity; since: number; prev?: Entity; prevSince: number }>({ since: 0, prevSince: 0 })
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
@@ -581,11 +588,21 @@ export default function App() {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
     markers.current.sites.forEach((e) => scene.viewer.entities.remove(e))
-    markers.current.sites = allSites.map((s) =>
-      scene.viewer.entities.add({
+    siteByMarker.current.clear()
+    // hover animation: 9 px -> 13 px over 150 ms when the mouse is on the marker, back when it leaves
+    const sizeOf = (e: () => Entity | undefined) => new CallbackProperty(() => {
+      const h = hover.current, me = e(), now = performance.now()
+      const k = (t: number) => { const x = Math.min(1, (now - t) / 150); return x * (2 - x) }
+      if (me && h.entity === me) return 9 + 4 * k(h.since)
+      if (me && h.prev === me) return 13 - 4 * k(h.prevSince)
+      return 9
+    }, false)
+    markers.current.sites = allSites.map((s) => {
+      let self: Entity | undefined
+      const entity = scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
         point: {
-          pixelSize: 9,
+          pixelSize: sizeOf(() => self),
           color: s.group === 'Saved'
             ? Color.fromCssColorString('#32cd32')
             : FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
@@ -598,8 +615,11 @@ export default function App() {
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
           disableDepthTestDistance: 500_000, // always on top nearby, hidden behind the Moon from afar
         },
-      }),
-    )
+      })
+      self = entity
+      siteByMarker.current.set(entity, s)
+      return entity
+    })
   }, [ready, bundle, allSites])
 
   useEffect(() => {
@@ -894,16 +914,36 @@ export default function App() {
     if (!ready || !scene || !(heat && heatVersion)) return
     const old = layerRefs.current.__score
     if (old) { removeLayer(scene, old); delete layerRefs.current.__score }
-    if (!score.enabled) return
+    // not global: only around the selected site / point, so the whole area gets refined quality
+    if (!score.enabled || selLat === undefined || selLon === undefined) return
     const handle = setTimeout(() => {
       const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
+      const lat0 = selLat * D2R, lon0 = selLon * D2R
+      const dLat = SCORE_RADIUS_M / MOON_RADIUS_M
+      const south = Math.max(-Math.PI / 2, lat0 - dLat), north = Math.min(Math.PI / 2, lat0 + dLat)
+      // a pole inside the circle, or a box crossing the antimeridian: take every longitude
+      const polar = lat0 + dLat >= Math.PI / 2 || lat0 - dLat <= -Math.PI / 2
+      const dLon = polar ? Math.PI : Math.asin(Math.min(1, Math.sin(dLat) / Math.cos(lat0)))
+      const wrap = lon0 - dLon < -Math.PI || lon0 + dLon > Math.PI
+      const boundsRad: [number, number, number, number] = polar || wrap ? [-Math.PI, south, Math.PI, north] : [lon0 - dLon, south, lon0 + dLon, north]
+      const sinLat0 = Math.sin(lat0), cosLat0 = Math.cos(lat0), cosR = Math.cos(dLat)
+      const inCircle = (lon: number, lat: number) => sinLat0 * Math.sin(lat) + cosLat0 * Math.cos(lat) * Math.cos(lon - lon0) >= cosR
+      const slopeMask = slopeMax ? (rect: [number, number, number, number], z: number) => slopeMax.checkerBanded(rect, z, fpA, fpB, fpAz, limit) : undefined
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: true,
         landing: { footprint: [fpA, fpB, fpAz], gcr: heat.gcr, scoreSettings: advancedSettings },
         value: (v) => (Number.isFinite(v.landingScore) && v.slope <= limit ? v.landingScore : NaN),
-        mask: slopeMax ? (rect, z) => slopeMax.checker(rect, z, fpA, fpB, fpAz, limit) : undefined,
-        min: 0, max: 100, colormap: 'viridis', focus, guide,
+        mask: async (rect, z) => {
+          const keep = slopeMask ? await slopeMask(rect, z) : undefined
+          return keep ? (lon, lat) => inCircle(lon, lat) && keep(lon, lat) : inCircle
+        },
+        boundsRad,
+        maximumLevel: 13,
+        // the whole circle at the selected site's refined quality: finest elevation tiles, one sample
+        // per elevation pixel (capped at 33 per tile side for the regolith model) from tile level 5 on
+        focus: { boundsRad, center: [lon0, lat0], radiusM: SCORE_RADIUS_M, samples: 33, demLevel: heat.dem.fineMaxLevel, minLevel: 5 },
+        min: 0, max: 100, colormap: 'viridis', guide,
         credit: 'Landing suitability: equal-weight Landing Score criteria (temperature, radiation, LOLA slope, DSN and sunlight)',
       }) as unknown as FieldImageryProvider
       const layer = new ImageryLayer(asProvider(provider), { alpha: score.opacity })
@@ -911,7 +951,7 @@ export default function App() {
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, focus, slopeMax, guide, advancedSettings])
+  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, selLat, selLon, slopeMax, guide, advancedSettings])
 
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
@@ -1163,16 +1203,37 @@ export default function App() {
       const g = Cartographic.fromCartesian(c, Ellipsoid.MOON)
       return g ? { lat: CMath.toDegrees(g.latitude), lon: CMath.toDegrees(g.longitude) } : null
     }
+    const siteAt = (pos: Cartesian2) => {
+      const picked = viewer.scene.pick(pos) as { id?: unknown } | undefined
+      return picked && picked.id ? siteByMarker.current.get(picked.id as Entity) : undefined
+    }
     handler.setInputAction((e: { position: Cartesian2 }) => {
+      // a site marker: select it (one click)
+      const site = siteAt(e.position)
+      if (site) { clickActions.current.selectSite(site); return }
       const pit = pitsRef.current?.pitFromPick(viewer.scene.pick(e.position))
       if (pit) {
         inspectPit(pit)
         return
       }
+      // empty map while something is selected: deselect, instead of jumping to a new point
+      if (clickActions.current.hasSelection) { clickActions.current.clearSelection(); return }
       const p = pick(e.position)
       if (!p) return
       inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
+    handler.setInputAction((e: { endPosition: Cartesian2 }) => {
+      const site = siteAt(e.endPosition)
+      const entity = site ? markers.current.sites.find((m) => siteByMarker.current.get(m) === site) : undefined
+      const h = hover.current
+      if (entity !== h.entity) {
+        h.prev = h.entity
+        h.prevSince = performance.now()
+        h.entity = entity
+        h.since = performance.now()
+        viewer.scene.canvas.style.cursor = entity ? 'pointer' : ''
+      }
+    }, ScreenSpaceEventType.MOUSE_MOVE)
     return () => handler.destroy()
   }, [ready, bundle, inspectCustomPoint, inspectPit])
 
@@ -1362,6 +1423,7 @@ export default function App() {
     setSelected(undefined)
     setSitePanelExpanded(false)
   }
+  clickActions.current = { selectSite, clearSelection, hasSelection: !!selected }
 
   const saveSelectedSite = (name: string) => {
     if (!selected || (selected.group !== 'Custom' && selected.group !== 'Saved')) return
@@ -1445,7 +1507,6 @@ export default function App() {
               now={now} nowMs={t}
               periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
-              footprint={score.footprint} onFootprint={(footprint) => setScore((s) => ({ ...s, footprint }))}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite}
               onRemoveSavedSite={removeSavedSite}

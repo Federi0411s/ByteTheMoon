@@ -24,6 +24,8 @@ const CACHE_TILES = 320 // 64 KB each
 /** levels whose tiles needed for one map tile exceed this are skipped (a coarser one is used) */
 const MAX_TILES_PER_LEVEL = 48
 const FETCH_TIMEOUT_MS = 20_000
+/** latitude bands per map tile in checkerBanded */
+const MAX_BANDS = 6
 
 /** raw max-slope DN per pixel (0 = no data); null = tile missing */
 type Tile = Uint8Array | null
@@ -131,6 +133,36 @@ export class SlopeMaxTiles {
     for (let y = ty0; y <= ty1; y++) for (let x = tx0; x <= tx1; x++) jobs.push(this.load(L, ((x % n) + n) % n, y))
     await Promise.all(jobs)
     return true
+  }
+
+  /**
+   * As checker(), but the tile is split into latitude bands in which cos(latitude) varies by at most
+   * 2x, each checked at its own level. checker() picks one level per tile from its most poleward
+   * latitude, so a tile reaching the pole (every polar-row tile at every zoom) fell back to the coarsest
+   * level, 21 km cells, and the polar regions were almost entirely excluded. Now only the band touching
+   * the pole is coarse, over a few km. At most MAX_BANDS bands per tile.
+   */
+  async checkerBanded(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, limitDeg: number): Promise<(lon: number, lat: number) => boolean> {
+    const [west, south, east, north] = rect
+    // split points: latitudes where cos halves, going poleward from the equator-most edge
+    const eqEdge = south <= 0 && north >= 0 ? 0 : Math.min(Math.abs(south), Math.abs(north))
+    const polEdge = Math.max(Math.abs(south), Math.abs(north))
+    const cuts: number[] = []
+    for (let c = Math.cos(eqEdge) / 2; cuts.length < MAX_BANDS - 1; c /= 2) {
+      const lat = Math.acos(c)
+      if (lat >= polEdge) break
+      cuts.push(lat)
+    }
+    if (!cuts.length) return this.checker(rect, z, a, b, azDeg, limitDeg)
+    // bands as [s, n] in signed latitude
+    const bounds = [...new Set([south, north, ...cuts.flatMap((l) => [l, -l]).filter((l) => l > south && l < north)])].sort((x, y) => x - y)
+    const bands: [number, number][] = []
+    for (let i = 0; i + 1 < bounds.length; i++) bands.push([bounds[i], bounds[i + 1]])
+    const checks = await Promise.all(bands.map(([s, n]) => this.checker([west, s, east, n], z, a, b, azDeg, limitDeg)))
+    return (lon, lat) => {
+      for (let i = 0; i < bands.length; i++) if (lat <= bands[i][1] || i === bands.length - 1) return checks[i](lon, lat)
+      return false
+    }
   }
 
   /**
