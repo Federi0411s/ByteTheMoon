@@ -1351,6 +1351,18 @@ export default function App() {
     if (sceneRef.current) flyToSite(sceneRef.current.viewer, s.lat, s.lon)
   }
 
+  // ✕ in the left panel: close the analysis of the selected point / site
+  const clearSelection = () => {
+    stopTerrainView(false)
+    setInspect(undefined)
+    if (markers.current.custom && sceneRef.current) {
+      sceneRef.current.viewer.entities.remove(markers.current.custom)
+      markers.current.custom = undefined
+    }
+    setSelected(undefined)
+    setSitePanelExpanded(false)
+  }
+
   const saveSelectedSite = (name: string) => {
     if (!selected || (selected.group !== 'Custom' && selected.group !== 'Saved')) return
     const saved: Site = { ...selected, name: name.trim(), group: 'Saved' }
@@ -1407,7 +1419,8 @@ export default function App() {
               timeline={timeline} summary={summary}
               now={now} nowMs={t}
               periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
-              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)}
+              expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
+              footprint={score.footprint} onFootprint={(footprint) => setScore((s) => ({ ...s, footprint }))}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
               env={analysisPeriodInWindow && siteEnvKey ? { env: siteEnvForPeriod?.env ?? undefined, loading: !siteEnvForPeriod } : undefined}
@@ -1435,7 +1448,6 @@ export default function App() {
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
               iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
               pitsVisible={pitsVisible} onPitsVisible={setPitsVisible} pitsError={pitsError}
-              slopeExact={!!slopeMax}
               guided={guided} onGuided={setGuided} guidedAvailable={!!pyramids.dem} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />

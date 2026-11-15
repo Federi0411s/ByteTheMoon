@@ -1,7 +1,7 @@
 import { cssGradient } from '../lib/colormaps'
 import type { LayerMeta } from '../lib/raster'
 import type { RadiationOverlayMetadata } from '../lib/radiation'
-import { FOOTPRINT_MAX_M, FOOTPRINT_MIN_M, type Footprint, footprintLabel, SLOPE_CLASSES, SLOPE_MAX_DEG, slopeClass } from '../lib/requirements'
+import type { Footprint } from '../lib/requirements'
 
 export interface LayerState {
   visible: boolean
@@ -15,42 +15,6 @@ export interface ScoreConfig {
   /** landing ellipse / circle over which the max slope is taken */
   footprint: Footprint
   opacity: number
-}
-
-function NumberField({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void }) {
-  return (
-    <label className="slider" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-      <span>{label}</span>
-      <input type="number" min={min} max={max} step={step} value={value} style={{ width: 90 }}
-        onChange={(e) => onChange(Number(e.target.value))} />
-    </label>
-  )
-}
-
-function FootprintEditor({ fp, onChange }: { fp: Footprint; onChange: (fp: Footprint) => void }) {
-  const m = { min: FOOTPRINT_MIN_M, max: FOOTPRINT_MAX_M, step: 10 }
-  return (
-    <>
-      <p className="slider">Landing footprint</p>
-      <div style={{ display: 'flex', gap: 16 }}>
-        {(['circle', 'ellipse'] as const).map((s) => (
-          <label key={s} className="layer-head">
-            <input type="radio" name="fp-shape" checked={fp.shape === s} onChange={() => onChange({ ...fp, shape: s })} />
-            {s === 'circle' ? 'Circle' : 'Ellipse'}
-          </label>
-        ))}
-      </div>
-      {fp.shape === 'circle' ? (
-        <NumberField label="Radius (m)" value={fp.radiusM} {...m} onChange={(v) => onChange({ ...fp, radiusM: v })} />
-      ) : (
-        <>
-          <NumberField label="Semi-major axis (m)" value={fp.semiMajorM} {...m} onChange={(v) => onChange({ ...fp, semiMajorM: v })} />
-          <NumberField label="Semi-minor axis (m)" value={fp.semiMinorM} {...m} onChange={(v) => onChange({ ...fp, semiMinorM: v })} />
-          <NumberField label="Azimuth (° from north)" value={fp.azimuthDeg} min={0} max={180} step={5} onChange={(v) => onChange({ ...fp, azimuthDeg: v })} />
-        </>
-      )}
-    </>
-  )
 }
 
 function Legend({ colormap, min, max, units }: { colormap: string; min: number; max: number; units: string }) {
@@ -88,7 +52,6 @@ export function LayerPanel({
   pitsVisible,
   onPitsVisible,
   pitsError,
-  slopeExact,
   guided,
   onGuided,
   guidedAvailable,
@@ -115,7 +78,6 @@ export function LayerPanel({
   onPitsVisible: (visible: boolean) => void
   pitsError?: string
   /** true: steepest slope from the slope pyramid's max channel (lib/slopeMax.ts); false: the engine's sampled (average) slope */
-  slopeExact: boolean
   /** DEM-guided upsampling of the computed heatmaps (sharper edges); off = plain bilinear */
   guided: boolean
   onGuided: (on: boolean) => void
@@ -144,37 +106,8 @@ export function LayerPanel({
                 <input type="checkbox" checked={score.enabled} onChange={(e) => onScore({ ...score, enabled: e.target.checked })} />
                 Show score heatmap
               </label>
-              <FootprintEditor fp={score.footprint} onChange={(footprint) => onScore({ ...score, footprint })} />
-              <label className="slider">
-                <span className="slider-label">
-                  <span>Max slope in footprint</span>
-                  <span className="slider-value">
-                    {score.maxSlope}° · <b style={{ color: slopeClass(score.maxSlope).color }}>{slopeClass(score.maxSlope).label}</b>
-                  </span>
-                </span>
-                <input type="range" min={0.5} max={SLOPE_MAX_DEG} step={0.5} value={score.maxSlope}
-                  onChange={(e) => onScore({ ...score, maxSlope: Number(e.target.value) })} />
-              </label>
-              <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden' }}>
-                {SLOPE_CLASSES.map((c, i) => (
-                  <div key={c.label} title={`${c.label}: ${i ? SLOPE_CLASSES[i - 1].upTo : 0}–${c.upTo}°`}
-                    style={{ flex: c.upTo - (i ? SLOPE_CLASSES[i - 1].upTo : 0), background: c.color }} />
-                ))}
-              </div>
-              <div className="legend-labels">
-                {SLOPE_CLASSES.map((c, i) => <span key={c.label}>{c.label} {i ? SLOPE_CLASSES[i - 1].upTo : 0}–{c.upTo}°</span>)}
-              </div>
               <p className="muted">Combines temperature, radiation, slope, telecommunications and sunlight with equal weight. Temporal values use the global heatmap sampling; a selected site shows its detailed score.</p>
               {score.enabled && <Legend colormap="viridis" min={0} max={100} units="score" />}
-              {score.enabled && (
-                <p className="source">
-                  Transparent where the steepest slope inside the footprint ({footprintLabel(score.footprint)}) centred on
-                  that point exceeds the limit.{' '}
-                  {slopeExact
-                    ? 'The exclusion mask uses the max-slope pyramid; the score criterion uses a 5 × 5 DEM sample grid over the footprint.'
-                    : 'The max-slope check and score criterion use DEM samples over the footprint; resolution follows the current map zoom.'}
-                </p>
-              )}
             </div>
           )}
         </div>

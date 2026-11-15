@@ -90,7 +90,9 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .panel h2 { margin: 4px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .site-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .site-panel-heading h2 { margin: 4px 0 10px; }
-.site-panel-expand { margin-bottom: 6px; }
+.site-panel-expand { margin-bottom: 6px; margin-left: auto; }
+.site-panel-close { margin-bottom: 6px; padding: 4px 9px; font-size: 13px; line-height: 1; }
+.site-panel-close:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .site-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 8px; color: var(--muted); font-size: 11px; }
 .site-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .coordinate-search { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
@@ -402,3 +404,11 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .info-band { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 6px; }
 .info-band b { font-weight: 600; }
 .info-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.footprint-picker { margin-top: 6px; }
+.footprint-toggle {
+  display: inline-flex; gap: 6px; align-items: center; padding: 2px 8px; font-size: 11px;
+  color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 12px;
+}
+.footprint-toggle:hover, .footprint-toggle[aria-expanded='true'] { color: var(--text); }
+.footprint-editor { margin-top: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.footprint-help { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--muted); }
