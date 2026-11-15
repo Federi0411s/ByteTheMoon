@@ -3,6 +3,8 @@ import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
+import { FootprintEditor } from './FootprintEditor'
+import type { Footprint } from '../lib/requirements'
 import { PowerPanel } from './PowerPanel'
 import { ScorePanel } from './ScorePanel'
 import type { LandingScore } from '../lib/landingScore'
@@ -73,6 +75,20 @@ function CoordinateSearch({ onSearch }: { onSearch: (lat: number, lon: number) =
   )
 }
 
+/** Dropdown-style button (like the site chooser) that opens the landing footprint editor. */
+function FootprintButton({ fp, onChange }: { fp: Footprint; onChange: (fp: Footprint) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="footprint-picker">
+      <button type="button" className="footprint-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span>Landing footprint</span>
+        <span className="chevron">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && <FootprintEditor fp={fp} onChange={onChange} />}
+    </div>
+  )
+}
+
 export function SitePanel({
   sites,
   selected,
@@ -89,6 +105,9 @@ export function SitePanel({
   inspect,
   expanded,
   onToggleExpanded,
+  onClose,
+  footprint,
+  onFootprint,
   onSaveSite,
   onRemoveSite,
   savedSitesError,
@@ -118,6 +137,11 @@ export function SitePanel({
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
   expanded: boolean
   onToggleExpanded: () => void
+  /** close the analysis of the selected point / site */
+  onClose: () => void
+  /** landing footprint (probability region) used by the slope checks */
+  footprint: Footprint
+  onFootprint: (fp: Footprint) => void
   onSaveSite: (name: string) => void
   onRemoveSite: () => void
   savedSitesError?: string
@@ -141,6 +165,9 @@ export function SitePanel({
           aria-label={expanded ? 'Collapse landing sites panel' : 'Expand landing sites panel'}>
           {expanded ? 'Collapse' : 'Expand'}
         </button>
+        {(selected || inspect) && (
+          <button className="site-panel-close" onClick={onClose} title="Close the analysis of this point" aria-label="Close the analysis of this point">✕</button>
+        )}
       </div>
       <div className="site-legend">
         <span><i className="marker-dot past" aria-hidden="true" />Past missions</span>
@@ -162,6 +189,7 @@ export function SitePanel({
           </optgroup>
         ))}
       </select>
+      <FootprintButton fp={footprint} onChange={onFootprint} />
       <p className="muted">Click the map or search coordinates to inspect and analyse a custom landing site.</p>
       {savedSitesError && <p className="site-save-error" role="alert">{savedSitesError}</p>}
 
