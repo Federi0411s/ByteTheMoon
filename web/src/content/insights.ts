@@ -135,6 +135,14 @@ export const INFO = {
       'A good landing site is a compromise: gentle slope, long sunlight, Earth in view for communications, and ' +
       'close to (but not inside) ice-rich craters.',
   },
+  pits: {
+    question: 'What are lunar pits?',
+    answer:
+      'Steep-walled holes, from a few metres to about 100 m wide, that form when the ground collapses into an ' +
+      'empty space below, often a lava tube. Some open onto caves that could shelter astronauts and equipment ' +
+      'from radiation, small meteorites and extreme temperatures. Most are far from the south pole: click one ' +
+      'to see its depth and size.',
+  },
   dataSources: {
     question: 'Where do the data come from?',
     answer:

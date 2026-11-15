@@ -242,6 +242,7 @@ export function LayerPanel({
       <details className="menu-section">
         <summary className="menu-section-summary">
           <span>Lunar pits</span>
+          <InfoTip topic="pits" />
           <span className="menu-section-state">{pitsError ? 'Error' : pitsVisible ? 'On' : 'Off'}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
