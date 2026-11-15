@@ -130,7 +130,7 @@ export interface SunTransition {
   daylight: boolean
 }
 
-/** Find day/night crossings across the loaded ephemeris, refining each crossing to one minute. */
+/** Find day/night crossings across the loaded ephemeris, refining each crossing to one millisecond. */
 export function findSunTransitions(
   eph: Ephemeris,
   site: { lat: number; lon: number; heightM?: number },
@@ -154,7 +154,7 @@ export function findSunTransitions(
     const daylight = visibleAt(t) > 0.5
     if (daylight !== previousDaylight) {
       let low = previousT, high = t
-      while (high - low > 60_000) {
+      while (high - low > 1) {
         const mid = (low + high) / 2
         if ((visibleAt(mid) > 0.5) === previousDaylight) low = mid
         else high = mid
@@ -187,30 +187,81 @@ export interface SiteSummary {
   longestDarkH: number
 }
 
-export function summarize(tl: TimelineSample[]): SiteSummary {
-  if (!tl.length) return { litPct: 0, earthPct: 0, bothPct: 0, nextSunsetMs: null, nextEarthsetMs: null, longestDarkH: 0 }
-  let lit = 0, earth = 0, both = 0, dark = 0, longestDark = 0
-  for (const s of tl) {
-    const L = s.sunVisibleFrac > 0.5, E = s.earthVisibleFrac > 0.5
-    lit += +L; earth += +E; both += +(L && E)
-    dark = L ? 0 : dark + 1
-    longestDark = Math.max(longestDark, dark)
-  }
-  const stepH = tl.length > 1 ? (tl[1].t - tl[0].t) / 3600_000 : 1
-  const firstSet = (key: 'sunVisibleFrac' | 'earthVisibleFrac') => {
-    if (tl[0][key] <= 0.5) return null
-    const s = tl.find((x) => x[key] <= 0.5)
-    return s ? s.t - tl[0].t : null
-  }
+export interface TimelineSummaryIndex {
+  samples: TimelineSample[]
+  sunlitPrefix: Uint32Array
+  earthVisiblePrefix: Uint32Array
+  bothVisiblePrefix: Uint32Array
+  nextSunsetIndex: Int32Array
+  nextEarthsetIndex: Int32Array
+  longestDarkSuffix: Uint32Array
+  stepH: number
+}
+
+export function indexTimeline(tl: TimelineSample[]): TimelineSummaryIndex {
   const n = tl.length
-  return {
-    litPct: (100 * lit) / n,
-    earthPct: (100 * earth) / n,
-    bothPct: (100 * both) / n,
-    nextSunsetMs: firstSet('sunVisibleFrac'),
-    nextEarthsetMs: firstSet('earthVisibleFrac'),
-    longestDarkH: longestDark * stepH,
+  const sunlitPrefix = new Uint32Array(n + 1)
+  const earthVisiblePrefix = new Uint32Array(n + 1)
+  const bothVisiblePrefix = new Uint32Array(n + 1)
+  const nextSunsetIndex = new Int32Array(n + 1)
+  const nextEarthsetIndex = new Int32Array(n + 1)
+  const longestDarkSuffix = new Uint32Array(n + 1)
+  nextSunsetIndex[n] = -1
+  nextEarthsetIndex[n] = -1
+
+  let darkRun = 0
+  for (let i = n - 1; i >= 0; i--) {
+    const sample = tl[i]
+    const sunlit = sample.sunVisibleFrac > 0.5
+    const earthVisible = sample.earthVisibleFrac > 0.5
+    sunlitPrefix[i] = sunlitPrefix[i + 1] + Number(sunlit)
+    earthVisiblePrefix[i] = earthVisiblePrefix[i + 1] + Number(earthVisible)
+    bothVisiblePrefix[i] = bothVisiblePrefix[i + 1] + Number(sunlit && earthVisible)
+    nextSunsetIndex[i] = sample.sunVisibleFrac <= 0.5 ? i : nextSunsetIndex[i + 1]
+    nextEarthsetIndex[i] = sample.earthVisibleFrac <= 0.5 ? i : nextEarthsetIndex[i + 1]
+    darkRun = sunlit ? 0 : darkRun + 1
+    longestDarkSuffix[i] = Math.max(darkRun, longestDarkSuffix[i + 1])
   }
+
+  return {
+    samples: tl,
+    sunlitPrefix,
+    earthVisiblePrefix,
+    bothVisiblePrefix,
+    nextSunsetIndex,
+    nextEarthsetIndex,
+    longestDarkSuffix,
+    stepH: n > 1 ? (tl[1].t - tl[0].t) / 3600_000 : 1,
+  }
+}
+
+export function summarizeIndexed(index: TimelineSummaryIndex, startMs = -Infinity): SiteSummary {
+  const { samples } = index
+  let low = 0, high = samples.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (samples[mid].t < startMs) low = mid + 1
+    else high = mid
+  }
+  const n = samples.length - low
+  if (!n) return { litPct: 0, earthPct: 0, bothPct: 0, nextSunsetMs: null, nextEarthsetMs: null, longestDarkH: 0 }
+
+  const first = samples[low]
+  const nextSunset = index.nextSunsetIndex[low]
+  const nextEarthset = index.nextEarthsetIndex[low]
+  const stepH = n > 1 ? index.stepH : 1
+  return {
+    litPct: (100 * (index.sunlitPrefix[low] - index.sunlitPrefix[samples.length])) / n,
+    earthPct: (100 * (index.earthVisiblePrefix[low] - index.earthVisiblePrefix[samples.length])) / n,
+    bothPct: (100 * (index.bothVisiblePrefix[low] - index.bothVisiblePrefix[samples.length])) / n,
+    nextSunsetMs: first.sunVisibleFrac <= 0.5 ? null : nextSunset > low ? samples[nextSunset].t - first.t : null,
+    nextEarthsetMs: first.earthVisibleFrac <= 0.5 ? null : nextEarthset > low ? samples[nextEarthset].t - first.t : null,
+    longestDarkH: index.longestDarkSuffix[low] * stepH,
+  }
+}
+
+export function summarize(tl: TimelineSample[]): SiteSummary {
+  return summarizeIndexed(indexTimeline(tl))
 }
 
 /**
@@ -235,5 +286,73 @@ export function longestFullNightH(eph: Ephemeris, site: { lat: number; lon: numb
     else if (runStart < 0) runStart = i
   }
   close(tl.length)
+  return longest / 3600_000
+}
+
+export interface DarkInterval {
+  startMs: number
+  endMs: number
+  /** Sunrise is exclusive; the end of the loaded ephemeris is inclusive. */
+  endInclusive: boolean
+}
+
+export function darkIntervalsFromTransitions(
+  ephemerisStart: number,
+  ephemerisEnd: number,
+  initialDaylight: boolean,
+  transitions: SunTransition[],
+): DarkInterval[] {
+  const intervals: DarkInterval[] = []
+  let darkStart = initialDaylight ? undefined : ephemerisStart
+  for (const transition of transitions) {
+    if (transition.daylight) {
+      if (darkStart !== undefined) intervals.push({ startMs: darkStart, endMs: transition.t, endInclusive: false })
+      darkStart = undefined
+    } else if (darkStart === undefined) {
+      darkStart = transition.t
+    }
+  }
+  if (darkStart !== undefined) intervals.push({ startMs: darkStart, endMs: ephemerisEnd, endInclusive: true })
+  return intervals
+}
+
+export function longestFullNightHFromIntervals(
+  intervals: DarkInterval[],
+  ephemerisRange: [number, number],
+  start: number,
+  end: number,
+  stepMs: number,
+  padMs = 30 * 86400_000,
+): number {
+  if (!(stepMs > 0) || end < start) return 0
+  const [e0, e1] = ephemerisRange
+  const a = Math.max(e0, start - padMs), b = Math.min(e1, end + padMs)
+  if (b < a) return 0
+  const maxIndex = Math.floor((b - a) / stepMs)
+  let longest = 0, runStart = -1, runEnd = -1
+  const close = () => {
+    if (runStart < 0) return
+    const firstSample = a + runStart * stepMs
+    const lastSample = a + runEnd * stepMs
+    if (lastSample >= start && firstSample <= end) longest = Math.max(longest, (runEnd - runStart + 1) * stepMs)
+    runStart = runEnd = -1
+  }
+
+  for (const interval of intervals) {
+    const first = Math.max(0, Math.ceil((interval.startMs - a) / stepMs))
+    const last = Math.min(maxIndex, interval.endInclusive
+      ? Math.floor((interval.endMs - a) / stepMs)
+      : Math.ceil((interval.endMs - a) / stepMs) - 1)
+    if (first > last) continue
+    // Merge runs with no sampled daylight point between them, matching computeTimeline's sampling.
+    if (runStart >= 0 && first <= runEnd + 1) {
+      runEnd = Math.max(runEnd, last)
+    } else {
+      close()
+      runStart = first
+      runEnd = last
+    }
+  }
+  close()
   return longest / 3600_000
 }

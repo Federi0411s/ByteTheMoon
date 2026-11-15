@@ -34,7 +34,15 @@ import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './c
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
 import type { SiteEnv } from './components/EnvPanel'
-import { computeTimeline, findSunTransitions, longestFullNightH, nextSunTransition, summarize } from './lib/analysis'
+import {
+  computeTimeline,
+  darkIntervalsFromTransitions,
+  findSunTransitions,
+  indexTimeline,
+  longestFullNightHFromIntervals,
+  nextSunTransition,
+  summarizeIndexed,
+} from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade } from './lib/raster'
 import { DEFAULT_FOOTPRINT, SLOPE_MAX_DEG, footprintAxes, footprintLabel } from './lib/requirements'
@@ -1340,24 +1348,38 @@ export default function App() {
     }
     return samples
   }, [selected, ephemeris, scorePeriod, analysisPeriodInWindow])
+  const timelineSummaryIndex = useMemo(() => indexTimeline(timeline), [timeline])
+  const sunCycle = useMemo(() => {
+    if (!selected || !ephemeris) return undefined
+    const range = ephemerisRange(ephemeris)
+    const transitions = findSunTransitions(ephemeris, selected, selected.horizon)
+    const initialDaylight = transitions.length
+      ? !transitions[0].daylight
+      : computeTimeline(ephemeris, selected, selected.horizon, range[0], range[0])[0]?.sunVisibleFrac > 0.5
+    return {
+      range,
+      transitions,
+      darkIntervals: darkIntervalsFromTransitions(range[0], range[1], initialDaylight, transitions),
+    }
+  }, [selected, ephemeris])
   const summaryStart = landingDay !== undefined ? scorePeriod[0] : t
   const summary = useMemo(() => {
-    if (!timeline.length || !selected || !ephemeris) return undefined
-    const s = summarize(timeline.filter((x) => x.t >= summaryStart))
-    // longest night measured over its full length, even when the period starts / ends inside it
+    if (!timeline.length || !selected || !ephemeris || !sunCycle) return undefined
+    const s = summarizeIndexed(timelineSummaryIndex, summaryStart)
     const step = timeline.length > 1 ? timeline[1].t - timeline[0].t : 3600_000
-    return { ...s, longestDarkH: longestFullNightH(ephemeris, selected, selected.horizon, summaryStart, scorePeriod[1], step) }
-  }, [timeline, summaryStart, selected, ephemeris, scorePeriod])
+    return {
+      ...s,
+      longestDarkH: longestFullNightHFromIntervals(
+        sunCycle.darkIntervals, sunCycle.range, summaryStart, scorePeriod[1], step,
+      ),
+    }
+  }, [timeline, timelineSummaryIndex, summaryStart, selected, ephemeris, scorePeriod, sunCycle])
   const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
-  const sunTransitions = useMemo(() => {
-    if (!selected || !ephemeris) return []
-    return findSunTransitions(ephemeris, selected, selected.horizon)
-  }, [selected, ephemeris])
   const sunlightCountdown = useMemo(() => {
     if (!now) return undefined
-    const next = nextSunTransition(sunTransitions, t)
+    const next = nextSunTransition(sunCycle?.transitions ?? [], t)
     return { daylight: now.sunVisibleFrac > 0.5, remainingMs: next ? next.t - t : undefined }
-  }, [now, sunTransitions, t])
+  }, [now, sunCycle, t])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
   // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
   const powerTl = useMemo(() => {
@@ -1370,7 +1392,7 @@ export default function App() {
     }
     return samples
   }, [selected, ephemeris, scorePeriod, panel, analysisPeriodInWindow])
-  const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= summaryStart)), [powerTl, summaryStart])
+  const powerSummary = useMemo(() => summarizePower(powerTl, summaryStart), [powerTl, summaryStart])
   const dsnNow = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
   // ---- landing score (lib/landingScore.ts): temperature, radiation, slope, telecom, sunlight ----
   // The score refers to the same period as the global heatmaps (temperature, radiation).

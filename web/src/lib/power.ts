@@ -102,13 +102,21 @@ export interface PowerSummary {
   eclipseH: number
 }
 
-export function summarizePower(tl: PowerSample[]): PowerSummary | undefined {
-  if (tl.length < 2) return undefined
-  const stepH = (tl[1].t - tl[0].t) / 3600_000
+export function summarizePower(tl: PowerSample[], startMs = -Infinity): PowerSummary | undefined {
+  let low = 0, high = tl.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (tl[mid].t < startMs) low = mid + 1
+    else high = mid
+  }
+  const n = tl.length - low
+  if (n < 2) return undefined
+  const stepH = (tl[low + 1].t - tl[low].t) / 3600_000
   let sum = 0, peak = 0, producing = 0, gap = 0, longest = 0, ecl = 0
-  for (const p of tl) peak = Math.max(peak, p.power)
+  for (let i = low; i < tl.length; i++) peak = Math.max(peak, tl[i].power)
   const on = Math.max(peak * 0.01, 1e-6)
-  for (const p of tl) {
+  for (let i = low; i < tl.length; i++) {
+    const p = tl[i]
     sum += p.power
     const prod = p.power > on
     producing += +prod
@@ -116,14 +124,14 @@ export function summarizePower(tl: PowerSample[]): PowerSummary | undefined {
     longest = Math.max(longest, gap)
     if (p.eclipseFrac > 0.001 && p.terrainFrac > 0) ecl++
   }
-  const meanW = sum / tl.length
-  const hours = tl.length * stepH
+  const meanW = sum / n
+  const hours = n * stepH
   return {
     meanW,
     peakW: peak,
     energyWh: meanW * hours,
     energyPerDayWh: meanW * 24,
-    producingPct: (100 * producing) / tl.length,
+    producingPct: (100 * producing) / n,
     longestOutageH: longest * stepH,
     eclipseH: ecl * stepH,
   }
