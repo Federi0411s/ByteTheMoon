@@ -42,7 +42,7 @@ import { SitePanel } from './components/SitePanel'
 import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
 import { siteThermalSeries } from './lib/regolith'
-import { combine, scorePower, scoreRadiation, scoreSlope, scoreTelecom, scoreTemperature } from './lib/landingScore'
+import { combine, scoreRadiation, scoreSlope, scoreSunlight, scoreTelecom, scoreTemperature } from './lib/landingScore'
 import { DEFAULT_PANEL, powerTimeline, summarizePower, type PanelConfig } from './lib/power'
 import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
@@ -1213,7 +1213,7 @@ export default function App() {
   }, [selected, ephemeris, dayStart, windowDays, panel])
   const powerSummary = useMemo(() => summarizePower(powerTl.filter((s) => s.t >= t)), [powerTl, t])
   const dsnNow = useMemo(() => (selected && ephemeris ? dsnAt(ephemeris, selected, selected.horizon, t) : undefined), [selected, ephemeris, t])
-  // ---- landing score (lib/landingScore.ts): temperature, radiation, slope, telecom, power ----
+  // ---- landing score (lib/landingScore.ts): temperature, radiation, slope, telecom, sunlight ----
   // The score refers to the same period as the global heatmaps (temperature, radiation): the mission
   // period when one is set inside the loaded window, otherwise the whole loaded window.
   const scorePeriod = useMemo<[number, number]>(
@@ -1226,10 +1226,18 @@ export default function App() {
     if (!selected || !ephemeris) return []
     return dsnTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep)
   }, [selected, ephemeris, scorePeriod, scoreStep])
-  const scorePower_ = useMemo(() => {
+  // hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
+  const walkSeries = useMemo(() => {
     if (!selected || !ephemeris) return undefined
-    return summarizePower(powerTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep, panel))
-  }, [selected, ephemeris, scorePeriod, scoreStep, panel])
+    return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], Math.max(3600_000, scoreStep), bundle?.fields.dem_south)
+  }, [selected, ephemeris, scorePeriod, scoreStep, bundle])
+  // sunlight criterion: share of the period sunlit and longest night (Sun below the terrain horizon)
+  const sunStats = useMemo(() => {
+    if (!walkSeries) return undefined
+    let lit = 0, run = 0, longest = 0
+    for (const v of walkSeries.sunlit) { lit += v; run = v ? 0 : run + 1; longest = Math.max(longest, run) }
+    return { pct: (100 * lit) / walkSeries.sunlit.length, longestDarkH: longest * walkSeries.stepH }
+  }, [walkSeries])
   const landing = useMemo(() => {
     if (!selected) return undefined
     const env = siteEnvReady?.env ?? undefined
@@ -1250,16 +1258,11 @@ export default function App() {
       env ? scoreRadiation(env.doseUGyH, (scorePeriod[1] - scorePeriod[0]) / 3600_000) : undefined,
       slope,
       telecom,
-      scorePower_ ? scorePower(scorePower_.longestOutageH, scorePower_.producingPct) : undefined,
-    ], ['temperature', 'radiation', 'slope', 'telecommunications', 'power'])
-  }, [selected, siteEnvReady, footprintSlope, score.footprint, dsnTl, scorePower_, scorePeriod])
+      sunStats ? scoreSunlight(sunStats.longestDarkH, sunStats.pct) : undefined,
+    ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
+  }, [selected, siteEnvReady, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod])
 
   // ---- crew outside the habitat: AxEMU suit + NASA-STD-3001 limits (lib/human.ts), same period ----
-  // walks: hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
-  const walkSeries = useMemo(() => {
-    if (!selected || !ephemeris) return undefined
-    return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], Math.max(3600_000, scoreStep), bundle?.fields.dem_south)
-  }, [selected, ephemeris, scorePeriod, scoreStep, bundle])
   const human = useMemo(() => {
     const env = siteEnvReady?.env
     if (!env || !walkSeries) return undefined
