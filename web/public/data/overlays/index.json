@@ -82,7 +82,7 @@
   },
   {
    "id": "dem_south",
-   "title": "Elevation",
+   "title": "Altitude",
    "description": "Height above the 1737.4 km reference sphere. Also used in the browser to compute horizons for custom sites.",
    "source": "LOLA LDEM 80S 80 m (PDS), resampled to 240 m",
    "min": -5000,

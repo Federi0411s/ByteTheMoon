@@ -66,7 +66,7 @@ LAYERS = [
           "Steepest 40 m LOLA slope inside each 100 m cell.",
           "LOLA LDSM 85S 40 m (PDS), max-resampled to 100 m", "ldsm_85s_40m",
           0, 45, 0, 30, "°", "slope", 100, nodata_dn=0, display=False, resample_max=True),
-    Layer("dem_south", "Elevation",
+    Layer("dem_south", "Altitude",
           "Height above the 1737.4 km reference sphere. Also used in the browser to compute horizons for custom sites.",
           "LOLA LDEM 80S 80 m (PDS), resampled to 240 m", "ldem_80s_80m",
           -10000, 22767, -5000, 5000, "m", "terrain", 240, encoding="u16"),
