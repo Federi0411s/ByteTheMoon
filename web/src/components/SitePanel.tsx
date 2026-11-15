@@ -241,7 +241,18 @@ export function SitePanel({
           {dsn && <DsnPanel now={dsn.now} />}
           {power && <PowerPanel {...power} />}
           <button className="report-open-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
-            Generate technical report (PDF)
+            <span className="report-button-copy">
+              <span className="report-button-title">Generate technical report (PDF)</span>
+              <span className="report-button-note">Your mission report is ready for liftoff</span>
+            </span>
+            <span className="report-rocket" aria-hidden="true">
+              <svg viewBox="0 0 56 56" fill="none">
+                <path d="M28 5C21 13 19 22 20 31l8 7 8-7c1-9-1-18-8-26Z" fill="#141a2b" />
+                <circle cx="28" cy="20" r="3.2" fill="#ffcf70" />
+                <path d="m20 27-7 8 9-2m14-6 7 8-9-2M24 34l-2 7 6-3 6 3-2-7" />
+                <path className="rocket-flame" d="M25 39c-1 4 0 7 3 10 3-3 4-6 3-10l-3 2Z" fill="#ff8a3d" />
+              </svg>
+            </span>
           </button>
           {reportDisabled && <p className="muted">Wait for the selected analysis interval data to finish loading before generating a report.</p>}
         </>
