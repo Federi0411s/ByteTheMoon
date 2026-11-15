@@ -236,7 +236,7 @@ export class GlobalHeatProvider {
       demMax = Math.max(demMax, f!.demLevel)
       // the regolith model costs ~1 ms per sample: a 65 x 65 thermal tile took ~2 min and tripped the
       // stuck-worker timeout, so temperature layers refine to 33 x 33 at most
-      if (this.o.thermal) n = Math.min(n, 33)
+      if (this.o.thermal || this.o.landing) n = Math.min(n, 33)
     }
     // near the poles, neighbouring tiles of the row share one computation (see tileGroup)
     const g = tileGroup(z, y), gx = Math.floor(x / g)
@@ -286,7 +286,7 @@ export class GlobalHeatProvider {
       if (inFocus) {
         n = Math.max(n, Math.min(f!.samples, Math.ceil(S / demPixelM(f!.demLevel)) + 1))
         demMax = Math.max(demMax, f!.demLevel)
-        if (this.o.thermal) n = Math.min(n, 33) // as in requestImage
+        if (this.o.thermal || this.o.landing) n = Math.min(n, 33) // as in requestImage
       }
       jobs.push(this.o.engine.polarBlock(z, pole, bx, by, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, this.o.landing))
     }
