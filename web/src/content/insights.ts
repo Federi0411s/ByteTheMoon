@@ -55,17 +55,14 @@ export const TUTORIAL = {
     },
     {
       title: 'Radiation',
-      body:
-        'Shows the estimated radiation dose. The Moon has no magnetic field or atmosphere, so cosmic rays (and ' +
-        'solar particles during solar storms) reach the ground; nearby crater walls and hills block part of the ' +
-        'sky and reduce the dose. Display it as Dose levels (green / yellow / red) or as Continuous dose.',
+      body: 'Shows the estimated radiation dose. Display it as Dose levels (green / yellow / red) or as Continuous dose.',
       target: '[data-tour="radiation"]',
     },
     {
       title: 'Water ice',
       body:
         'Blue points mark cold traps: crater floors so cold (below 110 K, about −163 °C) that water ice is stable ' +
-        'at the surface. Ice is a key resource, but it lies in cold, dark craters.',
+        'at the surface.',
       target: '[data-tour="water-ice"]',
     },
     {
@@ -78,10 +75,7 @@ export const TUTORIAL = {
     },
     {
       title: 'Compare sites',
-      body:
-        'Pick a site in the Landing sites panel, or click any point on the map, to read its values. A good landing ' +
-        'site is a compromise: gentle slope, long sunlight, Earth in view for communications, and close to (but not ' +
-        'inside) ice-rich craters.',
+      body: 'Pick a site in the Landing sites panel, or click any point on the map, to read its values.',
       target: '#landing-sites-panel',
     },
   ] satisfies TutorialStep[],
@@ -105,6 +99,10 @@ export const BASICS = {
         'horizon. PSRs are among the coldest places in the Solar System (below about −230 °C).',
     },
     {
+      question: 'Why is water ice important?',
+      answer: 'Ice is a key resource, but it lies in cold, dark craters.',
+    },
+    {
       question: 'Why does slope matter?',
       answer:
         'A lander can tip over or fail to land safely on steep terrain, so flat areas (a few degrees of slope) ' +
@@ -115,6 +113,12 @@ export const BASICS = {
       answer:
         'Without a relay satellite, a lander can only talk to Earth when Earth is above the local horizon. Hills ' +
         'and crater rims can block it.',
+    },
+    {
+      question: 'Why does radiation change from place to place?',
+      answer:
+        'The Moon has no magnetic field or atmosphere, so cosmic rays (and solar particles during solar storms) ' +
+        'reach the ground; nearby crater walls and hills block part of the sky and reduce the dose.',
     },
     {
       question: 'What is surface charging?',
@@ -128,6 +132,12 @@ export const BASICS = {
       answer:
         'Even sunlit polar ridges are cold: they peak at roughly −120 °C to −10 °C and get much colder when ' +
         'shadowed. The darkest crater floors stay around −230 °C or colder all year.',
+    },
+    {
+      question: 'What makes a good landing site?',
+      answer:
+        'A good landing site is a compromise: gentle slope, long sunlight, Earth in view for communications, and ' +
+        'close to (but not inside) ice-rich craters.',
     },
     {
       question: 'Where do the data come from?',
