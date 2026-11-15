@@ -59,7 +59,7 @@ import {
 } from './lib/ephemeris'
 import { loadRadiationMetadata, radiationDose, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
-import { LayerPanel, type LayerState, type ScoreConfig } from './components/LayerPanel'
+import { LayerPanel, type LayerState, type ReachConfig, type ScoreConfig } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
 import { compareSavedSites } from './lib/savedSiteComparison'
 import { dsnAt, dsnTimeline } from './lib/dsn'
@@ -71,7 +71,10 @@ import { TimeBar } from './components/TimeBar'
 import { MissionPanel, type Mission } from './components/MissionPanel'
 import { TechnicalReportDialog } from './components/TechnicalReportDialog'
 import type { ReportFilterImage, ReportOverlay } from './lib/technicalReport'
-import { copyAdvancedSettings, DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './lib/advancedSettings'
+import { copyAdvancedSettings, DEFAULT_ADVANCED_SETTINGS, DEFAULT_DISPLAY_SETTINGS, type AdvancedSettings, type DisplaySettings } from './lib/advancedSettings'
+import { asReachProvider, ReachImageryProvider } from './cesium/ReachImageryProvider'
+import { ReachEngine, type ReachResult } from './lib/reach'
+import { reachAreaKm2, SLOPE_QUANTUM } from './lib/reachGrid'
 
 const DAY = 86400_000
 const CSS_PIXELS_PER_CM = 96 / 2.54
@@ -255,8 +258,10 @@ export default function App() {
   const [radiationMetadata, setRadiationMetadata] = useState<RadiationOverlayMetadata | null>(null)
   // precomputed time-independent layers (pipeline/dem_tiles.py, slope_tiles.py, sky_view.py)
   const [pyramids, setPyramids] = useState<Partial<Record<PyramidName, PyramidIndex>>>({})
-  // DEM-guided upsampling of the computed heatmaps (GlobalHeatProvider `guide`); off = plain bilinear
-  const [guided, setGuided] = useState(true)
+  // Settings: movement slope limit and distance (reachable-area layer) and DEM-guided upsampling of
+  // the computed heatmaps (GlobalHeatProvider `guide`; off = plain bilinear)
+  const [display, setDisplay] = useState<DisplaySettings>(() => ({ ...DEFAULT_DISPLAY_SETTINGS }))
+  const guided = display.guided
   const guide = useMemo(() => (guided && pyramids.dem ? pyramidTiles(pyramids.dem) : undefined), [guided, pyramids])
   useEffect(() => {
     let cancelled = false
@@ -969,6 +974,67 @@ export default function App() {
     return () => clearTimeout(handle)
   }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, selLat, selLon, slopeMax, guide, advancedSettings])
 
+  // ---- reachable area from the selected site / point (lib/reachWorker.ts) ----
+  // One search per start point; the slope limit is applied afterwards (a lower limit is a pure redraw,
+  // a higher one resumes the search in the worker).
+  const [reach, setReach] = useState<ReachConfig>({ enabled: false, opacity: 0.6 })
+  const [reachResult, setReachResult] = useState<ReachResult | null>(null)
+  const [reachError, setReachError] = useState<string>()
+  const [reachEngine, setReachEngine] = useState<ReachEngine | null>(null)
+  const reachKey = useRef('')
+  const reachOpacity = useRef(reach.opacity) // read when the layer is rebuilt; changes alone don't rebuild it
+  const moveSlope = display.moveSlopeDeg
+  const reachRadiusKm = display.reachRadiusKm
+  useEffect(() => {
+    if (!heat || !reach.enabled) return
+    const engine = new ReachEngine(heat.dem)
+    engine.onResult = (r) => { setReachError(undefined); setReachResult(r) }
+    engine.onError = (e) => setReachError(e)
+    reachKey.current = ''
+    setReachEngine(engine)
+    return () => { engine.dispose(); setReachEngine(null); setReachResult(null) }
+  }, [heat, reach.enabled])
+  useEffect(() => {
+    if (!reachEngine) return
+    if (selLat === undefined || selLon === undefined) {
+      reachEngine.stop()
+      reachKey.current = ''
+      setReachResult(null)
+      return
+    }
+    const key = `${selLat},${selLon},${reachRadiusKm}`
+    if (reachKey.current === key) { reachEngine.setLimit(moveSlope); return }
+    reachKey.current = key
+    setReachResult(null)
+    setReachError(undefined)
+    reachEngine.start(selLat, selLon, reachRadiusKm * 1000, moveSlope)
+  }, [reachEngine, selLat, selLon, moveSlope, reachRadiusKm])
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene) return
+    const old = layerRefs.current.__reach
+    delete layerRefs.current.__reach
+    if (reach.enabled && reachResult) {
+      const layer = new ImageryLayer(asReachProvider(new ReachImageryProvider(reachResult, moveSlope)), { alpha: reachOpacity.current })
+      scene.overlays.add(layer)
+      layerRefs.current.__reach = layer
+    }
+    if (old) removeLayer(scene, old) // after adding the new one: no empty frame in between
+  }, [ready, reach.enabled, reachResult, moveSlope])
+  useEffect(() => {
+    reachOpacity.current = reach.opacity
+    const layer = layerRefs.current.__reach
+    if (layer) layer.alpha = reach.opacity
+  }, [reach.opacity])
+  const reachStatus = useMemo(() => {
+    if (reachError) return `Could not compute: ${reachError}`
+    if (!reachResult) return 'Computing…'
+    const q = Math.min(Math.floor(moveSlope * SLOPE_QUANTUM + 1e-9), reachResult.exploredQ)
+    const area = reachAreaKm2(reachResult.grid, reachResult.val, q / SLOPE_QUANTUM)
+    const more = !reachResult.final ? ' · refining…' : q < Math.floor(moveSlope * SLOPE_QUANTUM + 1e-9) ? ' · extending…' : ''
+    return `${area.toLocaleString('en-US', { maximumFractionDigits: 0 })} km² reachable · ${Math.round(reachResult.grid.cell)} m grid · ${reachResult.ms} ms${more}`
+  }, [reachError, reachResult, moveSlope])
+
   // ---- region filters ----
   const filterPeriod = useMemo(() => {
     const [start, end] = scorePeriod
@@ -1659,9 +1725,11 @@ export default function App() {
             <SettingsDialog
               settings={advancedSettings}
               footprint={score.footprint}
-              onSave={(settings, footprint) => {
+              display={display}
+              onSave={(settings, footprint, nextDisplay) => {
                 setAdvancedSettings(settings)
                 setScore((current) => ({ ...current, footprint }))
+                setDisplay(nextDisplay)
                 setSettingsOpen(false)
               }}
               onCancel={() => setSettingsOpen(false)}
@@ -1691,7 +1759,8 @@ export default function App() {
               radiationMode={radiationMode} onRadiationMode={setRadiationMode}
               iceVisible={iceVisible} onIceVisible={setIceVisible} iceError={iceError}
               pitsVisible={pitsVisible} onPitsVisible={setPitsVisible} pitsError={pitsError}
-              guided={guided} onGuided={setGuided} guidedAvailable={!!pyramids.dem} />
+              reach={reach} onReach={setReach}
+              reachInfo={{ available: !!heat && selLat !== undefined, maxDeg: moveSlope, radiusKm: display.reachRadiusKm, status: reachStatus }} />
             {sceneRef.current && (
               <BasemapPanel basemap={sceneRef.current.basemap} state={basemapState} onChange={setBasemapState} viewResM={viewResM} />
             )}

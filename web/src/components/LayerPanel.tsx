@@ -19,6 +19,23 @@ export interface ScoreConfig {
   opacity: number
 }
 
+/** Reachable-area layer (lib/reachWorker.ts): area connected to the selected point by terrain within the movement slope limit. */
+export interface ReachConfig {
+  enabled: boolean
+  opacity: number
+}
+
+export interface ReachInfo {
+  /** elevation pyramid loaded and a site / point selected */
+  available: boolean
+  /** movement maximum slope (deg, Settings) */
+  maxDeg: number
+  /** search radius around the selected point, km */
+  radiusKm: number
+  /** progress / result line */
+  status?: string
+}
+
 function Legend({ colormap, min, max, units }: { colormap: string; min: number; max: number; units: string }) {
   return (
     <div className="legend">
@@ -54,9 +71,9 @@ export function LayerPanel({
   pitsVisible,
   onPitsVisible,
   pitsError,
-  guided,
-  onGuided,
-  guidedAvailable,
+  reach,
+  onReach,
+  reachInfo,
 }: {
   layers: LayerMeta[]
   state: Record<string, LayerState>
@@ -79,11 +96,9 @@ export function LayerPanel({
   pitsVisible: boolean
   onPitsVisible: (visible: boolean) => void
   pitsError?: string
-  /** true: steepest slope from the slope pyramid's max channel (lib/slopeMax.ts); false: the engine's sampled (average) slope */
-  /** DEM-guided upsampling of the computed heatmaps (sharper edges); off = plain bilinear */
-  guided: boolean
-  onGuided: (on: boolean) => void
-  guidedAvailable: boolean
+  reach: ReachConfig
+  onReach: (r: ReachConfig) => void
+  reachInfo: ReachInfo
 }) {
   const shown = layers.filter((l) => l.display !== false)
   const activeLayers = shown.filter((l) => state[l.id]?.visible).length
@@ -125,12 +140,34 @@ export function LayerPanel({
         <div className="menu-section-body">
           <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
           {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
-          {guidedAvailable && (
-            <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
-              <input type="checkbox" checked={guided} onChange={(e) => onGuided(e.target.checked)} />
-              <span>Terrain-guided sharpening</span>
+          <div className="layer">
+            <label className="layer-head" title="Area you can drive to from the selected site or point without facing terrain steeper than the movement maximum slope, uphill or downhill (Settings).">
+              <input type="checkbox" checked={reach.enabled} onChange={(e) => onReach({ ...reach, enabled: e.target.checked })} />
+              Reachable area (max slope {reachInfo.maxDeg}°)
             </label>
-          )}
+            {reach.enabled && (
+              <>
+                <input type="range" min={0} max={1} step={0.05} value={reach.opacity} aria-label="Reachable area opacity"
+                  onChange={(e) => onReach({ ...reach, opacity: Number(e.target.value) })} />
+                {!reachInfo.available ? (
+                  <p className="muted">Select a site or click a point on the Moon first.</p>
+                ) : (
+                  <>
+                    <div className="legend">
+                      <div className="legend-bar" style={{ background: 'linear-gradient(to right, rgb(46, 204, 113), rgb(255, 176, 32))' }} />
+                      <div className="legend-labels">
+                        <span>0°</span>
+                        <span>steepest slope on the way</span>
+                        <span>{reachInfo.maxDeg}°</span>
+                      </div>
+                    </div>
+                    {reachInfo.status && <p className="muted">{reachInfo.status}</p>}
+                  </>
+                )}
+                <p className="source">Within {reachInfo.radiusKm} km of the selected point. Terrain slope from LOLA elevation (steepest gradient, so it holds driving up, down or across); change the limit in Settings.</p>
+              </>
+            )}
+          </div>
           {shown.map((l) => {
             const s = state[l.id] ?? { visible: false, opacity: 0.55 }
             return (

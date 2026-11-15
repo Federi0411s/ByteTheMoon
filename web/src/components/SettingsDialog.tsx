@@ -2,8 +2,14 @@ import { useEffect, useState } from 'react'
 import {
   copyAdvancedSettings,
   DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_DISPLAY_SETTINGS,
+  MOVE_SLOPE_MAX_DEG,
+  MOVE_SLOPE_MIN_DEG,
+  REACH_RADIUS_MAX_KM,
+  REACH_RADIUS_MIN_KM,
   validateAdvancedSettings,
   type AdvancedSettings,
+  type DisplaySettings,
 } from '../lib/advancedSettings'
 import { DEFAULT_FOOTPRINT, type Footprint } from '../lib/requirements'
 import { FootprintEditor } from './FootprintEditor'
@@ -34,17 +40,26 @@ function NumberField({
 export function SettingsDialog({
   settings,
   footprint,
+  display,
   onSave,
   onCancel,
 }: {
   settings: AdvancedSettings
   footprint: Footprint
-  onSave: (settings: AdvancedSettings, footprint: Footprint) => void
+  /** movement slope limit, reachable-area distance and map display options */
+  display: DisplaySettings
+  onSave: (settings: AdvancedSettings, footprint: Footprint, display: DisplaySettings) => void
   onCancel: () => void
 }) {
   const [draft, setDraft] = useState(() => copyAdvancedSettings(settings))
   const [draftFootprint, setDraftFootprint] = useState(() => ({ ...footprint }))
-  const errors = validateAdvancedSettings(draft)
+  const [draftDisplay, setDraftDisplay] = useState(() => ({ ...display }))
+  const moveError = !(draftDisplay.moveSlopeDeg >= MOVE_SLOPE_MIN_DEG && draftDisplay.moveSlopeDeg <= MOVE_SLOPE_MAX_DEG)
+    ? `Movement maximum slope must be between ${MOVE_SLOPE_MIN_DEG}° and ${MOVE_SLOPE_MAX_DEG}°.` : null
+  const reachRadiusError = !(draftDisplay.reachRadiusKm >= REACH_RADIUS_MIN_KM && draftDisplay.reachRadiusKm <= REACH_RADIUS_MAX_KM)
+    ? `Reachable-area distance must be between ${REACH_RADIUS_MIN_KM} and ${REACH_RADIUS_MAX_KM} km.` : null
+  const advancedErrors = [...validateAdvancedSettings(draft), ...(reachRadiusError ? [reachRadiusError] : [])]
+  const errors = [...advancedErrors, ...(moveError ? [moveError] : [])]
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -80,9 +95,30 @@ export function SettingsDialog({
             <FootprintEditor fp={draftFootprint} onChange={setDraftFootprint} radioName="settings-footprint-shape" />
           </fieldset>
 
+          <fieldset className="advanced-section">
+            <legend>Movement</legend>
+            <NumberField label="Movement maximum slope" value={draftDisplay.moveSlopeDeg} unit="°"
+              onChange={(value) => setDraftDisplay((d) => ({ ...d, moveSlopeDeg: value }))} />
+            {moveError && <p className="advanced-errors" role="alert">{moveError}</p>}
+            <p className="muted">Steepest terrain a rover or crew can drive up or down. Used by the Reachable area map layer.</p>
+          </fieldset>
+
           <details className="settings-advanced">
             <summary>Advanced settings</summary>
             <div className="settings-advanced-content">
+              <fieldset className="advanced-section">
+                <legend>Map display</legend>
+                <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
+                  <input type="checkbox" checked={draftDisplay.guided}
+                    onChange={(e) => setDraftDisplay((d) => ({ ...d, guided: e.target.checked }))} />
+                  <span>Terrain-guided sharpening</span>
+                </label>
+                <p className="muted">Fills the pixels between computed samples following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.</p>
+                <NumberField label="Reachable area: maximum distance" value={draftDisplay.reachRadiusKm} unit="km"
+                  onChange={(value) => setDraftDisplay((d) => ({ ...d, reachRadiusKm: value }))} />
+                <p className="muted">Search radius around the selected point. Larger distances download more elevation tiles.</p>
+              </fieldset>
+
               <fieldset className="advanced-section">
                 <legend>Landing suitability score</legend>
                 <p className="muted">Class boundaries are applied from recommended through feasible and difficult.</p>
@@ -155,23 +191,23 @@ export function SettingsDialog({
                 </div>
               </fieldset>
 
-              {errors.length > 0 && (
+              {advancedErrors.length > 0 && (
                 <ul className="advanced-errors" role="alert">
-                  {errors.map((error) => <li key={error}>{error}</li>)}
+                  {advancedErrors.map((error) => <li key={error}>{error}</li>)}
                 </ul>
               )}
             </div>
           </details>
-          {errors.length > 0 && <p className="settings-validation-hint" role="status">Open Advanced settings to review the validation errors.</p>}
+          {advancedErrors.length > 0 && <p className="settings-validation-hint" role="status">Open Advanced settings to review the validation errors.</p>}
           <p className="muted advanced-note">Changes apply only for this app session. Reloading restores the values defined in the code.</p>
         </div>
 
         <footer className="advanced-footer">
-          <button type="button" onClick={() => { setDraft(copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS)); setDraftFootprint({ ...DEFAULT_FOOTPRINT }) }}>Reset to default</button>
+          <button type="button" onClick={() => { setDraft(copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS)); setDraftFootprint({ ...DEFAULT_FOOTPRINT }); setDraftDisplay({ ...DEFAULT_DISPLAY_SETTINGS }) }}>Reset to default</button>
           <span className="advanced-spacer" />
           <button type="button" onClick={onCancel}>Cancel</button>
           <button type="button" className="advanced-save" disabled={errors.length > 0}
-            onClick={() => onSave(copyAdvancedSettings(draft), { ...draftFootprint })}>Save settings</button>
+            onClick={() => onSave(copyAdvancedSettings(draft), { ...draftFootprint }, { ...draftDisplay })}>Save settings</button>
         </footer>
       </section>
     </div>

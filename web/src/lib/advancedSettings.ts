@@ -102,3 +102,20 @@ export function validateAdvancedSettings(settings: AdvancedSettings): string[] {
   }
   return errors
 }
+
+/** Map display and movement settings (Settings dialog, outside the scoring thresholds above). */
+export interface DisplaySettings {
+  /** DEM-guided upsampling of the computed heatmaps (sharper edges); off = plain bilinear */
+  guided: boolean
+  /** steepest slope (deg) a rover or crew can drive up or down: the reachable-area layer */
+  moveSlopeDeg: number
+  /** search radius (km) of the reachable-area layer around the selected point */
+  reachRadiusKm: number
+}
+
+export const MOVE_SLOPE_MIN_DEG = 1
+export const MOVE_SLOPE_MAX_DEG = 45
+export const REACH_RADIUS_MIN_KM = 5
+export const REACH_RADIUS_MAX_KM = 300
+/** 15 deg: a common design limit for lunar rovers */
+export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = { guided: true, moveSlopeDeg: 15, reachRadiusKm: 100 }
