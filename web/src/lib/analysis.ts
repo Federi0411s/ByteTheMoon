@@ -10,6 +10,7 @@ import { MOON_RADIUS_M, type RasterField } from './raster'
 import {
   azEl,
   earthPosition,
+  ephemerisRange,
   sunPosition,
   topoFrame,
   type Ephemeris,
@@ -158,4 +159,29 @@ export function summarize(tl: TimelineSample[]): SiteSummary {
     nextEarthsetMs: firstSet('earthVisibleFrac'),
     longestDarkH: longestDark * stepH,
   }
+}
+
+/**
+ * Longest night (Sun mostly hidden: less than half the disc above the terrain horizon) among the nights
+ * that overlap [start, end], each measured over its FULL length: nights cut by the window edges are
+ * followed up to `padMs` before / after (within the loaded ephemeris), so a short window that starts
+ * or ends in the middle of a night does not report a fraction of it. Hours.
+ */
+export function longestFullNightH(eph: Ephemeris, site: { lat: number; lon: number; heightM?: number }, mask: HorizonMask | undefined,
+  start: number, end: number, stepMs: number, padMs = 30 * 86400_000): number {
+  const [e0, e1] = ephemerisRange(eph)
+  const a = Math.max(e0, start - padMs), b = Math.min(e1, end + padMs)
+  const tl = computeTimeline(eph, site, mask, a, b, stepMs)
+  let longest = 0, runStart = -1
+  const close = (i: number) => {
+    // run = samples runStart .. i-1; keep it if it overlaps [start, end]
+    if (runStart >= 0 && tl[i - 1].t >= start && tl[runStart].t <= end) longest = Math.max(longest, (i - runStart) * stepMs)
+    runStart = -1
+  }
+  for (let i = 0; i < tl.length; i++) {
+    if (tl[i].sunVisibleFrac > 0.5) close(i)
+    else if (runStart < 0) runStart = i
+  }
+  close(tl.length)
+  return longest / 3600_000
 }
