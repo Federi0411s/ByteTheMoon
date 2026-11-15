@@ -22,6 +22,8 @@ import { pyramidTiles } from './lib/pyramidTiles'
 import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
+import { RegionFiltersPanel } from './components/RegionFiltersPanel'
+import { activeFilters, defaultFilters, loadIceDistance, loadPitDistance, regionValue, type IceDistance, type PitDistance, type RegionFilterState } from './lib/regionFilters'
 import { WelcomeModal } from './components/WelcomeModal'
 import { SettingsDialog } from './components/SettingsDialog'
 import { welcomeHidden } from './lib/welcomeStorage'
@@ -279,6 +281,11 @@ export default function App() {
   const [iceError, setIceError] = useState<string>()
   const [pitsVisible, setPitsVisible] = useState(false)
   const [pitsError, setPitsError] = useState<string>()
+  // region filters: highlight the points that meet every ticked criterion (lib/regionFilters.ts)
+  const [regionFilters, setRegionFilters] = useState<RegionFilterState>(() => defaultFilters(5 * 8766))
+  const [iceDistance, setIceDistance] = useState<IceDistance | null>(null)
+  const [pitDistance, setPitDistance] = useState<PitDistance | null>(null)
+  const [filterDataError, setFilterDataError] = useState<string>()
   // welcome screen / tutorial ("Insights"); the welcome opens on start unless the user hid it
   const [insights, setInsights] = useState<'welcome' | 'tutorial' | null>(() => (welcomeHidden() ? null : 'welcome'))
 
@@ -921,6 +928,62 @@ export default function App() {
     return () => clearTimeout(handle)
   }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, focus, slopeMax, guide, advancedSettings])
 
+  // ---- region filters ----
+  const filterPeriod = useMemo(() => {
+    const [start, end] = heat && heatVersion ? heat.window : [0, 0]
+    const hours = end > start ? (end - start) / 3600_000 : 0
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    return { hours, label: hours ? `${day(start)} → ${day(end)} (${Math.round(hours).toLocaleString('en-US')} h)` : '—' }
+  }, [heat, heatVersion])
+
+  // distance data, loaded the first time the water-ice / pit filters are ticked
+  useEffect(() => {
+    const needIce = regionFilters.ice.on && !iceDistance, needPits = regionFilters.pits.on && !pitDistance
+    if (!needIce && !needPits) return
+    const grid = bundle?.layers.find((l) => l.id === 'charging_mean')
+    let cancelled = false
+    Promise.all([
+      needIce ? (grid?.halfExtentM ? loadIceDistance({ halfExtentM: grid.halfExtentM, width: grid.width }) : Promise.reject(new Error('the 4 km polar grid metadata is missing'))) : null,
+      needPits ? loadPitDistance() : null,
+    ]).then(([ice, pits]) => {
+      if (cancelled) return
+      setFilterDataError(undefined)
+      if (ice) setIceDistance(ice)
+      if (pits) setPitDistance(pits)
+    }).catch((error: unknown) => {
+      if (!cancelled) setFilterDataError(`Distance data unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    return () => { cancelled = true }
+  }, [regionFilters.ice.on, regionFilters.pits.on, iceDistance, pitDistance, bundle])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !(heat && heatVersion)) return
+    const old = layerRefs.current.__filters
+    if (old) { removeLayer(scene, old); delete layerRefs.current.__filters }
+    const on = activeFilters(regionFilters)
+    if (!on.length) return
+    const handle = setTimeout(() => {
+      const gcr = heat.gcr
+      const provider = new GlobalHeatProvider({
+        engine: heat,
+        thermal: regionFilters.temperature.on, // the regolith model only when temperature is filtered
+        value: regionValue(regionFilters, {
+          periodHours: filterPeriod.hours,
+          dose: (fSky) => radiationDose(fSky, gcr),
+          ice: iceDistance,
+          pits: pitDistance,
+        }),
+        min: 0, max: 1, colormap: 'slope', focus, guide,
+        credit: `Region filters: ${on.join(', ')}`,
+      }) as unknown as FieldImageryProvider
+      const layer = new ImageryLayer(asProvider(provider), { alpha: 0.65 })
+      scene.overlays.add(layer)
+      layerRefs.current.__filters = layer
+    }, 250) // debounce typing in the range boxes
+    return () => clearTimeout(handle)
+  }, [ready, regionFilters, heat, heatVersion, filterPeriod.hours, iceDistance, pitDistance, focus, guide])
+
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -1454,6 +1517,12 @@ export default function App() {
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
             <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              regionFiltersPanel={
+                <RegionFiltersPanel filters={regionFilters} onChange={setRegionFilters}
+                  periodHours={filterPeriod.hours} periodLabel={filterPeriod.label}
+                  available={!!(heat && heatVersion)} error={filterDataError}
+                  busy={!filterDataError && ((regionFilters.ice.on && !iceDistance) || (regionFilters.pits.on && !pitDistance))} />
+              }
               onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}
               reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}

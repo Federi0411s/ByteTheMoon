@@ -42,6 +42,8 @@ export interface HeatTile {
   tSeriesIndices?: number[]
   /** visible-sky fraction (radiation layer) */
   fSky: Float32Array
+  /** longest continuous night in the window (hours; Sun more than half hidden) */
+  dark: Float32Array
   /** Landing-score criteria; empty unless requested */
   landingScore: Float32Array
 }

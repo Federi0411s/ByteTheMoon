@@ -661,3 +661,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .tutorial-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tutorial-card-head h2 { margin: 4px 0; color: var(--text); text-transform: none; letter-spacing: 0.02em; font-size: 15px; }
 .tutorial-card p { margin: 8px 0 12px; font-size: 13px; line-height: 1.5; }
+
+/* ---- Region filters ---- */
+.panel.region-filters { padding: 0; }
+.panel.region-filters > .menu-section-body > .muted:first-child { margin-top: 0; }
+.region-ok { color: #91cf60; }
+.region-filter .layer-head { cursor: pointer; }
+.region-range { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 4px 0 2px 24px; }
+.region-range .source { grid-column: 1 / -1; margin: 0; }
+.region-clear { width: 100%; margin-top: 8px; }
