@@ -5,29 +5,33 @@ import { defineConfig, type Plugin } from 'vite'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
 
 /**
- * Dev only: serve the fine elevation tiles (pipeline/dem_tiles.py -> MOON_DATA/dem_fine, ~2 GB, not
- * in git) at /dem-fine, so on-demand refinement works locally. In production they come from a bucket
- * (VITE_DEM_FINE_URL); without one the app falls back to the shipped 666 m tiles.
+ * Dev only: serve the fine tile levels that are not in git (MOON_DATA/<name>_fine, written by
+ * pipeline/dem_tiles.py, slope_tiles.py and sky_view.py) at /<name>-fine, so on-demand refinement
+ * works locally. In production they come from a bucket (VITE_DEM_FINE_URL etc., see lib/pyramid.ts);
+ * without one the app falls back to the shipped coarser levels.
  */
-function demFine(): Plugin {
-  const root = path.resolve(process.env.MOON_DATA ?? path.resolve(import.meta.dirname, '../../data'), 'dem_fine')
+function fineTiles(): Plugin {
+  const data = path.resolve(process.env.MOON_DATA ?? path.resolve(import.meta.dirname, '../../data'))
   return {
-    name: 'dem-fine',
+    name: 'fine-tiles',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/dem-fine', (req, res) => {
-        const rel = decodeURIComponent((req.url ?? '').split('?')[0])
-        const file = path.join(root, rel)
-        if (!/^\/\d+\/\d+\/\d+\.webp$/.test(rel) || !file.startsWith(root) || !existsSync(file)) {
-          res.statusCode = 404
-          res.end()
-          return
-        }
-        res.setHeader('Content-Type', 'image/webp')
-        res.setHeader('Content-Length', statSync(file).size)
-        res.setHeader('Cache-Control', 'public, max-age=86400')
-        createReadStream(file).pipe(res)
-      })
+      for (const name of ['dem', 'slope', 'sky']) {
+        const root = path.join(data, `${name}_fine`)
+        server.middlewares.use(`/${name}-fine`, (req, res) => {
+          const rel = decodeURIComponent((req.url ?? '').split('?')[0])
+          const file = path.join(root, rel)
+          if (!/^\/\d+\/\d+\/\d+\.webp$/.test(rel) || !file.startsWith(root) || !existsSync(file)) {
+            res.statusCode = 404
+            res.end()
+            return
+          }
+          res.setHeader('Content-Type', 'image/webp')
+          res.setHeader('Content-Length', statSync(file).size)
+          res.setHeader('Cache-Control', 'public, max-age=86400')
+          createReadStream(file).pipe(res)
+        })
+      }
     },
   }
 }
@@ -42,7 +46,7 @@ export default defineConfig({
   server: { fs: { allow: ['..'] } },
   plugins: [
     react(),
-    demFine(),
+    fineTiles(),
     viteStaticCopy({
       targets: ['ThirdParty', 'Workers', 'Assets', 'Widgets'].map((dir) => ({
         src: `${cesiumSource}/${dir}`,

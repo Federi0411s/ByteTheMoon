@@ -85,6 +85,13 @@ export function LayerPanel({
   iceVisible,
   onIceVisible,
   iceError,
+  pitsVisible,
+  onPitsVisible,
+  pitsError,
+  slopeExact,
+  guided,
+  onGuided,
+  guidedAvailable,
 }: {
   layers: LayerMeta[]
   state: Record<string, LayerState>
@@ -104,6 +111,15 @@ export function LayerPanel({
   iceVisible: boolean
   onIceVisible: (visible: boolean) => void
   iceError?: string
+  pitsVisible: boolean
+  onPitsVisible: (visible: boolean) => void
+  pitsError?: string
+  /** true: steepest slope from the slope pyramid's max channel (lib/slopeMax.ts); false: the engine's sampled (average) slope */
+  slopeExact: boolean
+  /** DEM-guided upsampling of the computed heatmaps (sharper edges); off = plain bilinear */
+  guided: boolean
+  onGuided: (on: boolean) => void
+  guidedAvailable: boolean
 }) {
   const shown = layers.filter((l) => l.display !== false)
   const activeLayers = shown.filter((l) => state[l.id]?.visible).length
@@ -122,6 +138,12 @@ export function LayerPanel({
         <div className="menu-section-body">
           <p className="muted">Overlays are stacked on the map; enable only the layers you need and adjust opacity to keep them readable.</p>
           {!shown.length && <p className="muted">No overlays yet. Run the Python pipeline (see README).</p>}
+          {guidedAvailable && (
+            <label className="layer-head" title="Computed maps are sampled on a coarse grid; this fills the pixels in between following the elevation, so shadow edges and crater rims stay sharp. Off: plain bilinear interpolation.">
+              <input type="checkbox" checked={guided} onChange={(e) => onGuided(e.target.checked)} />
+              <span>Terrain-guided sharpening</span>
+            </label>
+          )}
           {shown.map((l) => {
             const s = state[l.id] ?? { visible: false, opacity: 0.55 }
             return (
@@ -179,12 +201,15 @@ export function LayerPanel({
               <div className="legend-labels">
                 {SLOPE_CLASSES.map((c, i) => <span key={c.label}>{c.label} {i ? SLOPE_CLASSES[i - 1].upTo : 0}–{c.upTo}°</span>)}
               </div>
-              <p className="muted">Combines temperature, radiation, slope, telecommunications and power with equal weight. Temporal values use the global heatmap sampling; a selected site shows its detailed score.</p>
+              <p className="muted">Combines temperature, radiation, slope, telecommunications and sunlight with equal weight. Temporal values use the global heatmap sampling; a selected site shows its detailed score.</p>
               {score.enabled && <Legend colormap="viridis" min={0} max={100} units="score" />}
               {score.enabled && (
                 <p className="source">
                   Transparent where the steepest slope inside the footprint ({footprintLabel(score.footprint)}) centred on
-                  that point exceeds the limit. The heatmap uses a 5 × 5 sample grid over the footprint; resolution follows the current map zoom.
+                  that point exceeds the limit.{' '}
+                  {slopeExact
+                    ? 'The exclusion mask uses the max-slope pyramid; the score criterion uses a 5 × 5 DEM sample grid over the footprint.'
+                    : 'The max-slope check and score criterion use DEM samples over the footprint; resolution follows the current map zoom.'}
                 </p>
               )}
             </div>
@@ -212,7 +237,7 @@ export function LayerPanel({
                   <select value={radiationMode} onChange={(e) => {
                     if (e.target.value === 'classes' || e.target.value === 'continuous') onRadiationMode(e.target.value)
                   }}>
-                    <option value="classes">Classes</option>
+                    <option value="classes">Dose levels</option>
                     <option value="continuous">Continuous dose</option>
                   </select>
                 </label>
@@ -264,7 +289,31 @@ export function LayerPanel({
               Show layer
             </label>
             {iceError && <p className="muted">{iceError}</p>}
-            <p className="source">Diviner PRP (Paige et al. 2010): light blue = stable within 0.5 m, blue = stable at the surface (T max &lt; 110 K), cyan = observed by M3.</p>
+            <div className="radiation-legend">
+              <div className="radiation-legend-item">
+                <span className="radiation-swatch" style={{ backgroundColor: '#1f6fff' }} />
+                <span>Cold trap: surface ice stable (T max &lt; 110 K on ≥ 25% of the 4 km cell)</span>
+              </div>
+            </div>
+            <p className="source">Diviner Polar Resource Product (Paige et al. 2010).</p>
+          </div>
+        </div>
+      </details>
+
+      <details className="menu-section">
+        <summary className="menu-section-summary">
+          <span>Lunar pits</span>
+          <span className="menu-section-state">{pitsError ? 'Error' : pitsVisible ? 'On' : 'Off'}</span>
+          <span className="menu-section-chevron" aria-hidden="true">›</span>
+        </summary>
+        <div className="menu-section-body">
+          <div className="layer">
+            <label className="layer-head">
+              <input type="checkbox" checked={pitsVisible} onChange={(e) => onPitsVisible(e.target.checked)} />
+              Show layer
+            </label>
+            {pitsError && <p className="muted">{pitsError}</p>}
+            <p className="source">278 pits (possible lava-tube skylights) from the LROC catalog (Wagner &amp; Robinson 2021), heights from LOLA. Click a pit for its depth and size.</p>
           </div>
         </div>
       </details>

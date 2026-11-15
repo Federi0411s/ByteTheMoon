@@ -8,7 +8,7 @@ Space Apps 2026 challenge: **Lunar Landing Site Navigator**. The goal is a fast 
 |---|---|---|
 | App type | Static web app (no backend) | Judges open a URL. All computation runs in the browser or offline in Python. |
 | 3D map | CesiumJS 1.147 with Cesium Moon 3D Tiles. Falls back to a NASA Moon Trek globe | Streams detail level by level like Google Earth. The fallback means a Cesium ion problem never blocks the demo. |
-| Heatmaps / overlays | Global layers are computed per tile in Web Workers (`GlobalHeatProvider` → `heatEngine.ts` → `heatWorker.ts`) from a LOLA elevation pyramid and the SPICE ephemeris, for the selected period. South of 85°S the 60 m LOLA maps take over (`FieldImageryProvider`). Everything is draped on the 3D surface | No backend, any place on the Moon, any date range. Changing the mission period recomputes the layers. The polar maps keep the best resolution where the landing sites are. |
+| Heatmaps / overlays | Global layers are computed per tile in Web Workers (`GlobalHeatProvider` → `heatEngine.ts` → `heatWorker.ts`) from a LOLA elevation pyramid and the SPICE ephemeris, for the selected period. Time-independent layers (elevation, slope, sky view) come from precomputed tile pyramids (`PyramidImageryProvider`). The same engine covers the poles. Everything is draped on the 3D surface | No backend, any place on the Moon, any date range. Changing the mission period recomputes the layers. |
 | Numbers | LOLA data from NASA PDS plus NASA SPICE ephemeris | Accurate and citable. We do not compute heights from the Cesium mesh, because users report it sits ~2.5 km off LOLA. |
 | Hosting | Vercel, or GitHub Pages / Cloudflare Pages. Point the free GoDaddy Registry domain at it | See §5. |
 
@@ -19,12 +19,10 @@ Space Apps 2026 challenge: **Lunar Landing Site Navigator**. The goal is a fast 
 NASA PDS LOLA ──download.py──► ../data/raw ──overlays.py──► public/data/overlays/*.png + index.json ─┐
 NAIF SPICE kernels ──────────► ../data/kernels ─ephemeris.py─► public/data/ephemeris.json ──────────┤
 LOLA LDEM 118 m global ─────────────────── dem_tiles.py ─► public/data/dem (L0-5) + dem_fine (L6-7) ┤
-LOLA LDEM 80S ───────────────────────── horizon_grid.py ─► public/data/horizons (1 km masks) ───────┤
 IAU names + LOLA ─────────────────────────── build_sites.py ─► public/data/sites.json (+horizons) ──┤
                                                                                                     ▼
           Cesium Moon 3D Tiles (ion) or Moon Trek globe ◄── GlobalHeatProvider (global layers, heatWorker.ts)
-                                                     ◄── FieldImageryProvider (60 m polar maps, live score)
-          Mission-period sun/Earth averages ◄────────────── mission.ts + missionWorker.ts (1 km horizon grid)
+                                                     ◄── PyramidImageryProvider (precomputed elevation, slope, sky view)
           Sun light direction + Sun/Earth markers ◄──────── ephemeris.ts (interpolates SPICE vectors)
           Panorama, timeline, stats ◄───────────────────── analysis.ts (horizon mask × Sun/Earth tracks)
           Custom site (double-click) ─► computeHorizon() on the elevation layer, in the browser
@@ -39,7 +37,7 @@ IAU names + LOLA ─────────────────────
 | `psr` | Permanently shadowed regions | LOLA LPSR 60 m |
 | `slope` | Surface slope | LOLA LDSM 40 m |
 | `dem_south` | Elevation, 80°S–90°S, 240 m (also used for custom-site horizons) | LOLA LDEM 80 m |
-| (derived) landing suitability | Equal-weight mean of the five Landing Score criteria: temperature, radiation, footprint slope, DSN telecommunications and solar power; transparent where max slope inside the chosen footprint exceeds the limit (≤ 10°) | computed per visible map tile; footprint slope uses a zoom-dependent 5 × 5 DEM sample grid |
+| (derived) landing suitability | Equal-weight mean of the five Landing Score criteria: temperature, radiation, footprint slope, DSN telecommunications and sunlight; transparent where max slope inside the chosen footprint exceeds the limit (≤ 10°) | computed per visible map tile; footprint slope uses a zoom-dependent 5 × 5 DEM sample grid |
 
 Adding a layer means adding one entry to `LAYERS` in `pipeline/overlays.py` and running it again. The UI picks it up automatically.
 
@@ -52,23 +50,23 @@ The selected period is the mission period when it is set, otherwise the loaded 5
 | Horizons | 32 azimuths × 40 steps to 200 km per point. Coarser DEM levels are used further away; curvature is included |
 | Sunlight / Earth visibility | Fraction of the period with the Sun / Earth above the horizon |
 | PSR | Never lit during the period |
-| Slope, elevation | DEM pyramid |
+| Slope, elevation | Precomputed pyramids (`slope_tiles.py`: mean + max of the 118 m slopes; elevation = the DEM pyramid) |
 | Charging | EQUIPOT (`pipeline/equipot_results.csv`, read directly), with the terrain horizon instead of a flat one |
 | Regolith temperature | Hayne et al. 2017, implicit solver, 6 h steps. Periods over 1 year: 12 sampled lunations, each after a 1-lunation warm-up |
-| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky))` × GCR factor. **Approximate** factor: cosine 11-year solar cycle, minimum Dec 2019, −30 % at maximum |
+| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky))` × GCR factor, f_sky precomputed at 167 m (`sky_view.py`). **Approximate** factor: cosine 11-year solar cycle, minimum Dec 2019, −30 % at maximum |
 
 DEM pyramid (`pipeline/dem_tiles.py`): 256 px geographic WebP tiles. Height = `0.5·(R·256 + G) − 10000` m, and `B = 255` marks valid pixels.
 - Levels 0–5 (≥ 666 m/px, 134 MB) ship in `web/public/data/dem`.
 - Levels 6–7 (333 / 167 m/px, 1.67 GB) go to `$MOON_DATA/dem_fine`. They are served at `/dem-fine` in dev, and in production from a CORS-open static bucket set in `VITE_DEM_FINE_URL`. Without it, the app falls back to 666 m.
 
-South of 85°S the 60 m LOLA maps (sun, Earth, PSR, slope, elevation) override the computed values. Sun and Earth are rescaled to the period by `MissionEngine`. The global computation supersedes the pipeline's 4 km polar charging, thermal and radiation rasters.
+The poles use the same engine; the LOLA 60 m polar maps and the pipeline's 4 km polar rasters are no longer drawn (kept only as reference data).
 
 ## 3. What's done and what's next
 
 Done (scaffold):
 - [x] Cesium Moon viewer with a Moon Trek fallback, site markers, fly-to
 - [x] Moon Trek fallback streams a photo LOD stack: WAC ~100 m/px global, Kaguya ~21 m/px (60S-60N), NAC ~5 m/px polar caps, ~50 NAC site mosaics at 0.5-1.5 m/px
-- [x] Mission period (top-right inputs + draggable blue range under the timeline): every heatmap and the score cover the chosen window; when it is empty they cover the whole loaded 5-year window. South of 85°S the 60 m LOLA sun/Earth maps are rescaled by period/long-term, using a 1 km grid of horizon masks (pipeline/horizon_grid.py) and the SPICE ephemeris in Web Workers
+- [x] Mission period (top-right inputs + draggable blue range under the timeline): every heatmap and the score cover the chosen window; when it is empty they cover the whole loaded 5-year window. All maps, the poles included, are computed by the global engine for that period
 - [x] Global heatmaps (sunlight, Earth, PSR, slope, elevation, charging, temperature, radiation) computed in Web Workers for the selected period. The workers have a tile scheduler, cancellation, worker restart and fetch timeouts, so toggling layers never stalls them
 - [x] Interactive heatmaps (toggle, opacity, legend) and a five-criterion landing-suitability layer with fixed equal weighting
 - [x] Click to inspect all layer values; double-click to analyse a custom site (horizon computed in the browser)
@@ -81,7 +79,7 @@ Next, in priority order:
 2. **Validation**: check Sun az/el against JPL Horizons for 2–3 sites (observer `coord@301`, API `https://ssd.jpl.nasa.gov/api/horizons.api`). Show "matches JPL to within X°" in an About panel.
 3. **Shadows**: try `viewer.shadows = true` with the Sun light on the 3D tiles at close range (a strong demo moment). If the Cesium Moon tiles turn out to be unlit, test `tileset.customShader` with `LightingModel.PBR`.
 4. **UI polish**: onboarding tooltip, presets "Compare Artemis regions", mobile layout, URL state (`?site=haworth&t=2027-06-01`) so links can be shared.
-5. Deploy the fine DEM tiles (levels 6–7) to a bucket and set `VITE_DEM_FINE_URL`.
+5. Deploy the fine tiles (levels 6–7 of `dem_fine`, `slope_fine`, `sky_fine`) to one bucket and set `VITE_DEM_FINE_URL`.
 6. Replace the approximate GCR solar-cycle factor with measured neutron-monitor or CRaTER data.
 
 ## 4. Team split (adapt to team size)

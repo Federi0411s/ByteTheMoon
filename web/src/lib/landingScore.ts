@@ -13,10 +13,11 @@
  *  - telecommunications (PROPOSED: share of time with at least one DSN station in direct link):
  *      Recommended ≥ 80 % (near-continuous contact) · Feasible 40–80 % (store-and-forward between passes)
  *      · Difficult 10–40 % (long blackouts, relay advised) · Not feasible < 10 % (needs a relay satellite)
- *  - power (PROPOSED: longest stretch without solar power, i.e. what batteries / heaters must survive):
+ *  - sunlight (PROPOSED: longest stretch with the Sun below the terrain horizon, i.e. the night batteries /
+ *    heaters must survive; independent of the solar arrays):
  *      Recommended ≤ 3 d · Feasible 3–7 d · Difficult 7–20 d (a full lunar night: ~14.8 d on flat ground,
  *      up to ~16 d with terrain shadows at sunrise / sunset) · Not feasible > 20 d (darker than any lunar
- *      night, e.g. seasonal polar shadow) or no production at all
+ *      night, e.g. seasonal polar shadow) or no sunlight at all
  */
 
 export type ScoreClass = 'recommended' | 'feasible' | 'difficult' | 'not-feasible'
@@ -28,8 +29,32 @@ export const CLASS_INFO: Record<ScoreClass, { label: string; points: number; col
   'not-feasible': { label: 'Not feasible', points: 0, color: '#ff5b5b' },
 }
 
+/** Short explanation of each criterion and its four bands, for the info pop-up next to the bars. */
+export const CRITERIA_INFO: Record<CriterionResult['id'], { what: string; bands: [ScoreClass, string][] }> = {
+  temperature: {
+    what: 'Mean surface temperature over the period',
+    bands: [['recommended', '≥ −80 °C'], ['feasible', '−80 – −130 °C'], ['difficult', '−130 – −180 °C'], ['not-feasible', '< −180 °C']],
+  },
+  radiation: {
+    what: 'Total dose over the period',
+    bands: [['recommended', '< 3·10⁸ µGy'], ['feasible', '3·10⁸ – 10⁹ µGy'], ['difficult', '10⁹ – 10¹⁰ µGy'], ['not-feasible', '> 10¹⁰ µGy']],
+  },
+  slope: {
+    what: 'Max slope in the landing footprint',
+    bands: [['recommended', '0 – 5°'], ['feasible', '5 – 8°'], ['difficult', '8 – 10°'], ['not-feasible', '> 10°']],
+  },
+  telecom: {
+    what: 'Time with at least one DSN station in direct link',
+    bands: [['recommended', '≥ 80%'], ['feasible', '40 – 80%'], ['difficult', '10 – 40%'], ['not-feasible', '< 10%']],
+  },
+  sunlight: {
+    what: 'Longest stretch without sunlight (Sun below the terrain horizon)',
+    bands: [['recommended', '≤ 3 days'], ['feasible', '3 – 7 days'], ['difficult', '7 – 20 days'], ['not-feasible', '> 20 days or none']],
+  },
+}
+
 export interface CriterionResult {
-  id: 'temperature' | 'radiation' | 'slope' | 'telecom' | 'power'
+  id: 'temperature' | 'radiation' | 'slope' | 'telecom' | 'sunlight'
   name: string
   cls: ScoreClass
   /** what was measured, human readable */
@@ -110,18 +135,18 @@ export function scoreTelecom(linkPct: number, longestGapH: number): CriterionRes
   return { id: 'telecom', name: 'Telecommunications', cls, value: `${Math.round(linkPct)}% in link`, comment }
 }
 
-export function scorePower(longestOutageH: number, producingPct: number): CriterionResult {
-  const d = longestOutageH / 24
-  const cls: ScoreClass = producingPct <= 0 ? 'not-feasible' : d <= 3 ? 'recommended' : d <= 7 ? 'feasible' : d <= 20 ? 'difficult' : 'not-feasible'
+export function scoreSunlight(longestDarkH: number, sunlitPct: number): CriterionResult {
+  const d = longestDarkH / 24
+  const cls: ScoreClass = sunlitPct <= 0 ? 'not-feasible' : d <= 3 ? 'recommended' : d <= 7 ? 'feasible' : d <= 20 ? 'difficult' : 'not-feasible'
   const comment = {
-    recommended: `Sunlit ${Math.round(producingPct)}% of the time, longest outage ${d.toFixed(1)} d: small batteries suffice.`,
-    feasible: `Longest outage ${d.toFixed(1)} d: batteries must bridge several days.`,
-    difficult: `Longest outage ${d.toFixed(1)} d (a lunar night): large batteries or a heat source needed.`,
-    'not-feasible': producingPct <= 0
-      ? 'No solar power at all in the period.'
-      : `Longest outage ${d.toFixed(1)} d, longer than a lunar night: solar power alone is not enough.`,
+    recommended: `Sunlit ${Math.round(sunlitPct)}% of the time, longest night ${d.toFixed(1)} d: small batteries suffice.`,
+    feasible: `Longest night ${d.toFixed(1)} d: batteries must bridge several days.`,
+    difficult: `Longest night ${d.toFixed(1)} d (a lunar night): large batteries or a heat source needed.`,
+    'not-feasible': sunlitPct <= 0
+      ? 'No sunlight at all in the period.'
+      : `Longest night ${d.toFixed(1)} d, longer than a lunar night: solar power alone is not enough.`,
   }[cls]
-  return { id: 'power', name: 'Power generation', cls, value: `${Math.round(producingPct)}% producing`, comment }
+  return { id: 'sunlight', name: 'Sunlight', cls, value: `${Math.round(sunlitPct)}% sunlit`, comment }
 }
 
 export function combine(criteria: (CriterionResult | undefined)[], names: string[]): LandingScore {
@@ -138,8 +163,8 @@ export function scoreLandingCell(input: {
   maxSlopeDeg: number
   linkPct: number
   longestLinkGapH: number
-  producingPct: number
-  longestPowerOutageH: number
+  sunlitPct: number
+  longestDarkH: number
 }): number {
   const points = (cls: ScoreClass) => CLASS_INFO[cls].points
   const t = input.tMeanC
@@ -151,11 +176,11 @@ export function scoreLandingCell(input: {
   const radiation: ScoreClass = totalDose < 3e8 ? 'recommended' : totalDose < 1e9 ? 'feasible' : totalDose < 1e10 ? 'difficult' : 'not-feasible'
   const slope: ScoreClass = input.maxSlopeDeg <= 5 ? 'recommended' : input.maxSlopeDeg <= 8 ? 'feasible' : input.maxSlopeDeg <= 10 ? 'difficult' : 'not-feasible'
   const telecom: ScoreClass = input.linkPct >= 80 ? 'recommended' : input.linkPct >= 40 ? 'feasible' : input.linkPct >= 10 ? 'difficult' : 'not-feasible'
-  const outageDays = input.longestPowerOutageH / 24
-  const power: ScoreClass = input.producingPct <= 0 ? 'not-feasible'
-    : outageDays <= 3 ? 'recommended'
-      : outageDays <= 7 ? 'feasible'
-        : outageDays <= 20 ? 'difficult'
+  const darkDays = input.longestDarkH / 24
+  const sunlight: ScoreClass = input.sunlitPct <= 0 ? 'not-feasible'
+    : darkDays <= 3 ? 'recommended'
+      : darkDays <= 7 ? 'feasible'
+        : darkDays <= 20 ? 'difficult'
           : 'not-feasible'
-  return (points(temperature) + points(radiation) + points(slope) + points(telecom) + points(power)) / 5
+  return (points(temperature) + points(radiation) + points(slope) + points(telecom) + points(sunlight)) / 5
 }

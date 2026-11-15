@@ -1,0 +1,46 @@
+{
+ "tiling": "geographic",
+ "tileSize": 256,
+ "format": "webp",
+ "encoding": "u8",
+ "scale": 0.002,
+ "offset": 0.098,
+ "units": "fraction",
+ "publicMaxLevel": 4,
+ "fineMaxLevel": 7,
+ "source": "Visible-sky fraction from LOLA LDEM 118 m horizons (32 azimuths, 40 steps to 200 km)",
+ "levels": {
+  "0": {
+   "tiles": 2,
+   "MB": 0.1
+  },
+  "1": {
+   "tiles": 8,
+   "MB": 0.3
+  },
+  "2": {
+   "tiles": 32,
+   "MB": 1.1
+  },
+  "3": {
+   "tiles": 128,
+   "MB": 4.2
+  },
+  "4": {
+   "tiles": 512,
+   "MB": 15.6
+  },
+  "5": {
+   "tiles": 2048,
+   "MB": 55.6
+  },
+  "6": {
+   "tiles": 8192,
+   "MB": 185.4
+  },
+  "7": {
+   "tiles": 32768,
+   "MB": 578.5
+  }
+ }
+}

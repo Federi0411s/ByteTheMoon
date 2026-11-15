@@ -1,4 +1,4 @@
-import { CLASS_INFO, type LandingScore } from '../lib/landingScore'
+import { CLASS_INFO, CRITERIA_INFO, type CriterionResult, type LandingScore } from '../lib/landingScore'
 import { WALK_TIP, DAYLIGHT_TIP, RAD_LIMITS_TIP, TEMP_LIMITS_TIP, type HumanAssessment, type HumanStatus } from '../lib/human'
 
 const HUMAN_COLOR: Record<HumanStatus, string> = { ok: '#3ddc84', limited: '#ffa23f', no: '#ff5b5b' }
@@ -52,6 +52,26 @@ function HumanSection({ human }: { human: HumanAssessment }) {
   )
 }
 
+/** ⓘ with a small pop-up: what the criterion measures and its four bands with coloured dots. */
+function CriterionInfo({ id }: { id: CriterionResult['id'] }) {
+  const { what, bands } = CRITERIA_INFO[id]
+  return (
+    <span className="info" tabIndex={0} aria-label={`${what}: ${bands.map(([c, t]) => `${CLASS_INFO[c].label} ${t}`).join(', ')}`}>
+      <span className="tip-mark">ⓘ</span>
+      <span className="info-box" role="tooltip">
+        <span className="info-what">{what}</span>
+        {bands.map(([cls, text]) => (
+          <span key={cls} className="info-band">
+            <i className="info-dot" style={{ background: CLASS_INFO[cls].color }} />
+            <span>{CLASS_INFO[cls].label}</span>
+            <b>{text}</b>
+          </span>
+        ))}
+      </span>
+    </span>
+  )
+}
+
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
 /** Landing score: one coloured bar per criterion, the human EVA check, the overall score, then the comments. */
@@ -69,7 +89,7 @@ export function ScorePanel({ result, period, isMission, human }: { result: Landi
         const info = CLASS_INFO[c.cls]
         return (
           <div key={c.id} className="score-row">
-            <div className="score-head"><span>{c.name}</span><span style={{ color: info.color }}>{info.label}</span></div>
+            <div className="score-head"><span>{c.name} <CriterionInfo id={c.id} /></span><span style={{ color: info.color }}>{info.label}</span></div>
             <div className="score-track"><div className="score-fill" style={{ width: `${Math.max(info.points, 3)}%`, background: info.color }} /></div>
           </div>
         )

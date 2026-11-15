@@ -3,6 +3,7 @@ import { loadEphemeris, type Ephemeris } from './ephemeris'
 import { loadRaster, type LayerMeta, type RasterField } from './raster'
 import type { HorizonMask } from './analysis'
 
+const RASTERS_USED = new Set(['dem_south'])
 export const DATA_URL = `${import.meta.env.BASE_URL}data`
 
 export interface Site {
@@ -44,8 +45,9 @@ export async function loadBundle(): Promise<DataBundle> {
   if (!layers.length) warnings.push('No overlays: run pipeline/overlays.py')
 
   const fields: Record<string, RasterField> = {}
+  // map layers are drawn by the global engine; only the relief basemap still reads a raster (dem_south)
   await Promise.all(
-    layers.map(async (m) => {
+    layers.filter((m) => RASTERS_USED.has(m.id)).map(async (m) => {
       try {
         fields[m.id] = await loadRaster(m, `${DATA_URL}/overlays`)
       } catch (e) {

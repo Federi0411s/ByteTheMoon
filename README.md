@@ -34,6 +34,28 @@ Heatmaps are computed in the browser from a global LOLA elevation pyramid (see [
 - **In production**, upload `dem_fine/` to a static bucket that allows cross-origin requests (e.g. Cloudflare R2 with CORS open). Set its base URL in `VITE_DEM_FINE_URL`; tiles are fetched as `{z}/{x}/{y}.webp`. If it is not set, the app falls back to the 666 m tiles everywhere.
 - On the **Moon Trek fallback**, **LOLA 3D elevation relief** builds terrain meshes from the shipped DEM tiles on demand and colorizes the same visible area. It is off by default to keep startup rendering light, and can be toggled in the basemap panel. Optional fine DEM tiles are used only when configured; otherwise the terrain stops at the shipped 666 m/px level. Polar mesh edges use a shared pole height to avoid spikes where longitude lines converge. The Cesium ion basemap supplies its own 3D terrain mesh.
 
+### Precomputed layers (time-independent)
+
+Layers that depend only on the terrain are precomputed at full resolution and drawn straight from tiles,
+with no computation in the browser. They share the elevation pyramid's tile layout: the coarse levels ship in
+`web/public/data/<name>` (slope 0–4, about 60 MB; sky view 0–5), and the finer ones, down to 167 m/px, go to
+`$MOON_DATA/<name>_fine` and a bucket:
+
+| Layer | Tiles | Made by |
+|---|---|---|
+| Elevation | `dem` (the elevation pyramid itself) | `pipeline/dem_tiles.py` |
+| Slope | `slope`: R = mean, G = max of the native 118 m slopes inside each pixel | `pipeline/slope_tiles.py` |
+| Radiation dose | `sky`: visible-sky fraction, with the same horizon model as the browser | `pipeline/sky_view.py` |
+
+The radiation dose only depends on the period through the solar-cycle factor, which is applied in the
+browser. Fine-level URLs:
+`VITE_SLOPE_FINE_URL` / `VITE_SKY_FINE_URL`, otherwise `VITE_DEM_FINE_URL` with `dem_fine` replaced by
+`slope_fine` / `sky_fine` (so one bucket with three folders is enough), otherwise `/slope-fine` and
+`/sky-fine` in dev. Without fine tiles, the layers fall back to the finest shipped level.
+Near the poles these tiles are drawn with extra rows, because Cesium picks polar imagery levels from the
+east–west spacing; otherwise everything would be smeared along the meridians. If a pyramid is
+missing entirely, the layer is computed live as before.
+
 The older radiation layer reads `radiation_overlay.json`, `radiation_classes.png` and
 `radiation_continuous.png` from `web/public/radiation`. Its controls appear in the map-layer panel only when
 that metadata JSON exists.
@@ -47,19 +69,18 @@ Each heatmap tile is computed in a Web Worker (`web/src/lib/heatWorker.ts`) for 
 | Horizons | 32 azimuths × 40 steps out to 200 km per point. Coarser DEM levels are used further away, and lunar curvature is included. Near the poles each tile's sample grid has more rows than columns (`lib/heatGrid.ts`), so the spacing stays square on the ground |
 | Sunlight / Earth visibility | Fraction of the window with the Sun / Earth above that horizon (SPICE ephemeris) |
 | Permanent shadow (PSR) | Never lit during the selected period |
-| Slope, elevation | From the same DEM tiles |
+| Slope, elevation | Precomputed tiles (see above); computed from the DEM tiles only if those are missing |
 | Surface charging | EQUIPOT model, reading `pipeline/equipot_results.csv` directly, with the terrain horizon instead of a flat one |
 | Regolith temperature | Hayne et al. 2017 1-D model, implicit solver in 6 h steps. A window over 1 year is sampled as 12 lunations spread across it, each after a 1-lunation warm-up |
-| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky)) × GCR factor`, where f_sky is the visible-sky fraction. The GCR factor is **approximate**: a cosine 11-year solar cycle, minimum Dec 2019, 30 % lower at solar maximum. The *classes* view shows terrain shielding: its thresholds (12.0 / 12.8 µGy/h at the 2019 minimum) scale with the same factor, and the legend shows the selected period's values |
+| Radiation dose | `(20.2·f_sky + 6.2·(1 − f_sky)) × GCR factor`, where f_sky is the visible-sky fraction (precomputed tiles, see above). The GCR factor is **approximate**: a cosine 11-year solar cycle, minimum Dec 2019, 30 % lower at solar maximum. The *classes* view shows terrain shielding: its thresholds (12.0 / 12.8 µGy/h at the 2019 minimum) scale with the same factor, and the legend shows the selected period's values |
 
 Resolution follows the zoom level, except around the selected site: within about 15 km of it, every layer
 is computed from the finest elevation tiles (167 m with the fine tiles, otherwise 666 m), with one sample per
 elevation pixel, once the view is close enough (map tile level 6 or deeper).
 
-South of 85°S, the 60 m LOLA polar maps (sunlight, Earth visibility, PSR, slope, elevation) replace the
-computed values. Sunlight and Earth visibility are rescaled to the selected period (`web/src/lib/mission.ts`,
-from the 1 km horizon grid). The global computation supersedes the 4 km polar charging, thermal and
-radiation rasters made by the pipeline.
+The poles are drawn by the same engine as everywhere else. The LOLA 60 m polar maps and the pipeline's
+4 km polar rasters are no longer drawn: they were long-term averages or coarser, and the per-period
+computation supersedes them.
 
 ## Rebuild the data (Python, optional)
 
@@ -73,8 +94,9 @@ python pipeline/lunar_radiation.py  # -> web/public/radiation (LOLA, about 2 min
 python pipeline/ephemeris.py     # -> web/public/data/ephemeris.json
 python pipeline/build_sites.py   # -> web/public/data/sites.json (with horizon masks)
 python pipeline/charging.py --csv pipeline/equipot_results.csv  # -> charging + thermal layers and CSVs
-python pipeline/horizon_grid.py  # -> web/public/data/horizons (1 km horizon grid for mission-period averages, ~10 min)
 python pipeline/dem_tiles.py     # -> web/public/data/dem (levels 0-5) + $MOON_DATA/dem_fine (levels 6-7), ~15-30 min
+python pipeline/slope_tiles.py   # -> web/public/data/slope + $MOON_DATA/slope_fine (mean + max slope), ~15 min
+python pipeline/sky_view.py      # -> web/public/data/sky + $MOON_DATA/sky_fine (needs dem_tiles first), ~2-3 h on 12 cores
 ```
 
 `dem_tiles.py` reads the LOLA LDEM 118 m global map and writes 256 px geographic WebP tiles. Height is
@@ -137,7 +159,7 @@ python pipeline/download.py --kernels-only
 python pipeline/ephemeris.py --start 2026-01-01 --end 2206-01-01 --step-hours 2 --chunk-years 5
 ```
 
-## Layer visibilità della Terra
+## Earth visibility layer
 
 `pipeline/earth_visibility.py` computes the fraction of time the Earth disc is above the local
 terrain horizon on the same 4 km grid as `charging_points.csv` (80S-90S). Horizons come from
@@ -150,6 +172,21 @@ it agrees with LOLA AVGVISIB_EARTH (r = 0.95, mean difference -0.02):
 
 ```powershell
 python pipeline/earth_visibility.py    # ~2 min; --step-hours, --observer-height, --dem
+```
+
+## Layer lunar pits
+
+`pipeline/pits.py` downloads the LROC lunar pit catalog (Wagner & Robinson 2021, 278 pits) to
+`pipeline/data/LUNAR_PIT_LOCATIONS.CSV` and writes `web/public/data/pits.geojson`. Each pit gets the
+LOLA surface height (and floor height = surface - depth) from the same global DEM tiles the app uses
+for the 3D terrain (`web/public/data/dem`, or the finer `MOON_DATA/dem_fine` tiles if present), in
+metres above the 1737.4 km sphere. `pipeline/lunar_pits.py` holds the pit model and prints a report
+with plots of the main LROC Atlas pits. In the app, the "Lunar pits" layer draws them (on the LOLA
+terrain when 3D elevation is on); clicking one analyses it as a site and shows its catalog data.
+
+```powershell
+python pipeline/pits.py           # --force to re-download the catalog
+python pipeline/lunar_pits.py     # report + pipeline/data/lunar_pits.png
 ```
 
 ## Data sources

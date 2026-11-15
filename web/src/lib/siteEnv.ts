@@ -5,6 +5,7 @@
  * Sampled from a z = 10 tile (nominally 17 x 17 samples), bilinear, exactly like the click inspector.
  */
 import type { HeatEngine } from './heatEngine'
+import { heatGrid } from './heatGrid'
 
 export interface SiteEnvSample {
   /** regolith surface temperature over the period, K */
@@ -15,6 +16,11 @@ export interface SiteEnvSample {
   fSky: number
   /** terrain slope (deg) */
   slope: number
+}
+
+export interface SiteTemperatureSample {
+  t: number
+  temperatureK: number
 }
 
 export async function sampleSiteEnv(heat: HeatEngine, latDeg: number, lonDeg: number): Promise<SiteEnvSample | null> {
@@ -34,4 +40,38 @@ export async function sampleSiteEnv(heat: HeatEngine, latDeg: number, lonDeg: nu
     return a[i] * (1 - wx) * (1 - wy) + a[i + 1] * wx * (1 - wy) + a[i + n] * (1 - wx) * wy + a[i + n + 1] * wx * wy
   }
   return { tMin: at(tile.tMin), tMax: at(tile.tMax), tMean: at(tile.tMean), fSky: at(tile.fSky), slope: at(tile.slope) }
+}
+
+export async function sampleSiteTemperatureTimeline(heat: HeatEngine, latDeg: number, lonDeg: number): Promise<SiteTemperatureSample[] | null> {
+  const z = 10, step = Math.PI / 2 ** z
+  const lonR = (((lonDeg + 180) % 360 + 360) % 360 - 180) * (Math.PI / 180), latR = latDeg * (Math.PI / 180)
+  const x = Math.min(2 ** (z + 1) - 1, Math.floor((lonR + Math.PI) / step))
+  const y = Math.min(2 ** z - 1, Math.floor((Math.PI / 2 - latR) / step))
+  const { nx, ny } = heatGrid(z, y, 17)
+  const kx = nx - 1, ky = ny - 1
+  const fx = ((lonR - (-Math.PI + x * step)) / step) * kx, fy = ((Math.PI / 2 - y * step - latR) / step) * ky
+  const x0 = Math.max(0, Math.min(Math.floor(fx), kx - 1)), y0 = Math.max(0, Math.min(Math.floor(fy), ky - 1))
+  const wx = fx - x0, wy = fy - y0
+  const offsets = [y0 * nx + x0, y0 * nx + x0 + 1, (y0 + 1) * nx + x0, (y0 + 1) * nx + x0 + 1]
+  const tile = await heat.tile(z, x, y, 17, heat.dem.fineMaxLevel, true, undefined, 1, undefined, offsets)
+  if (!tile?.tSeries || !tile.tTimes?.length) return null
+
+  const count = tile.tTimes.length
+  const weights = [(1 - wx) * (1 - wy), wx * (1 - wy), (1 - wx) * wy, wx * wy]
+  const seriesIndexByCell = new Map((tile.tSeriesIndices ?? []).map((index, seriesIndex) => [index, seriesIndex]))
+  const series: SiteTemperatureSample[] = []
+  for (let i = 0; i < count; i++) {
+    let temperatureK = 0, weight = 0
+    for (let j = 0; j < offsets.length; j++) {
+      const seriesIndex = seriesIndexByCell.get(offsets[j])
+      if (seriesIndex === undefined) continue
+      const value = tile.tSeries[seriesIndex * count + i]
+      if (Number.isFinite(value)) {
+        temperatureK += value * weights[j]
+        weight += weights[j]
+      }
+    }
+    if (weight > 0) series.push({ t: tile.tTimes[i], temperatureK: temperatureK / weight })
+  }
+  return series.length ? series : null
 }
