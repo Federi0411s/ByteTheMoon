@@ -5,12 +5,13 @@
  *
  * Messages (main -> worker):
  *   { type: 'init', cfg: DemConfig, hz?: HorizonConfig }   hz: precomputed horizons (lib/horizonTiles.ts), if generated
- *   { type: 'window', version, window, sun, sunTimes, earth, dsn, thermalTimes }      time window and Sun/Earth + DSN sample geometry
+ *   { type: 'window', version, window, sun, nightSun, nightTimes, earth, dsn, thermalTimes }
  *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
+ *        nightSun/nightTimes: dedicated samples for longest night (hourly up to 90 days, then every 3 h)
  *        regular steps: Sun dir xyz + distance (AU); thermalCount marks the steps that enter the
  *        statistics (the rest are warm-up before each sampled stretch)
- *   { type: 'tile', id, z, x, y, n, demMax, thermal?, g?, polar?, landing? }
+ *   { type: 'tile', id, z, x, y, n, demMax, thermal?, g?, polar?, landing?, longestNight? }
  *        polar = pole sign (-1 / +1): x, y are then the indices of a polar block (lib/heatGrid.ts), sampled
  *        on an n x n lattice of the polar stereographic plane instead of a lon/lat grid
  *        -> { id, version, nx, ny, sun, earth, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky, link, linkGap, sunlit, dark }   (Float32Array ny*nx, row 0 = north, grid from lib/heatGrid.ts;
@@ -30,7 +31,7 @@
 import { DemSampler, demLevelFor, demPixelM } from './dem'
 import { fromPolar, heatGrid, polarBlockSize } from './heatGrid'
 import { HorizonSampler, MAX_TILES_PER_JOB } from './horizonTiles'
-import { discEdgeAz, sunVisible } from './sunDisc'
+import { discEdgeAz, sunDiscHorizonMargin, sunVisible } from './sunDisc'
 import type { EquipotTable } from './equipot'
 
 const R = 1737400
@@ -47,7 +48,8 @@ const SITE_MAX_LAT = (89.9999 / 180) * Math.PI
 let dem: DemSampler
 let hzs: HorizonSampler | null = null
 let sun = new Float32Array(0)
-let sunTimes = new Float64Array(0)
+let nightSun = new Float32Array(0)
+let nightTimes = new Float64Array(0)
 let earth = new Float32Array(0)
 let dsn = new Float64Array(0)
 let version = 0
@@ -250,6 +252,51 @@ function horizonAtAz(hz: Float32Array, off: number, azDeg: number) {
   return hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % hzN] * w
 }
 
+function nightMargin(F: Frame, hz: Float32Array, off: number, j: number) {
+  const o = j * 4
+  const sx = nightSun[o], sy = nightSun[o + 1], sz = nightSun[o + 2], r = nightSun[o + 3]
+  const el = Math.asin(sx * F.ux + sy * F.uy + sz * F.uz) * R2D
+  const east = sx * F.ex + sy * F.ey
+  const north = sx * F.nx + sy * F.ny + sz * F.nz
+  let az = Math.atan2(east, north) * R2D
+  if (az < 0) az += 360
+  const w = discEdgeAz(el, r)
+  return sunDiscHorizonMargin(
+    el,
+    r,
+    horizonAtAz(hz, off, az),
+    horizonAtAz(hz, off, az - w),
+    horizonAtAz(hz, off, az + w),
+  )
+}
+
+function longestNightHours(F: Frame, hz: Float32Array, off: number) {
+  const n = nightTimes.length
+  if (n < 2) return 0
+  let previousMargin = nightMargin(F, hz, off, 0)
+  let previousTime = nightTimes[0]
+  let darkStart = previousMargin > 0 ? NaN : windowStart
+  let longestMs = 0
+  for (let j = 1; j < n; j++) {
+    const margin = nightMargin(F, hz, off, j)
+    const t = nightTimes[j]
+    const isLit = margin > 0
+    if ((previousMargin > 0) !== isLit) {
+      const crossing = previousTime + (-previousMargin / (margin - previousMargin)) * (t - previousTime)
+      if (isLit) {
+        longestMs = Math.max(longestMs, crossing - darkStart)
+        darkStart = NaN
+      } else {
+        darkStart = crossing
+      }
+    }
+    previousMargin = margin
+    previousTime = t
+  }
+  if (Number.isFinite(darkStart)) longestMs = Math.max(longestMs, windowEnd - darkStart)
+  return longestMs / 3600_000
+}
+
 /**
  * Visible share of the Sun's light (lib/sunDisc.ts: limb-darkened disc, horizon line across the disc)
  * for the Sun at elevation el, radius r (deg), direction (east, north) in the local frame. Only called
@@ -285,7 +332,7 @@ function hzRange(hz: Float32Array, off: number): [number, number] {
 }
 
 /** Results of sunAndCharging() for one point (reused object: no allocation per sample). */
-const sunOut = { frac: NaN, cMean: NaN, cMin: NaN, cBelow: NaN, sunlitPct: NaN, longestDarkH: NaN }
+const sunOut = { frac: NaN, cMean: NaN, cMin: NaN, cBelow: NaN, sunlitPct: NaN }
 
 /**
  * One pass over the window's Sun positions for a point: the Sun's visible fraction (as
@@ -297,12 +344,11 @@ const sunOut = { frac: NaN, cMean: NaN, cMin: NaN, cBelow: NaN, sunlitPct: NaN, 
 function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, hMax: number, charging = true) {
   const T = sun.length / 4
   if (!T) {
-    sunOut.frac = sunOut.cMean = sunOut.cMin = sunOut.cBelow = sunOut.sunlitPct = sunOut.longestDarkH = NaN
+    sunOut.frac = sunOut.cMean = sunOut.cMin = sunOut.cBelow = sunOut.sunlitPct = NaN
     return
   }
   const cosTail = eq ? Math.cos(eq.tailHalfAngleDeg / R2D) : 0
-  let acc = 0, sum = 0, min = Infinity, below = 0, darkStart = NaN, longestDarkMs = 0
-  let previousVisible = NaN, previousTime = windowStart
+  let acc = 0, sum = 0, min = Infinity, below = 0
   // sin(elevation) bounds outside which the Sun is surely fully visible / hidden for every step (largest
   // disc of the window): decided without asin, which is otherwise the bulk of the loop
   const [sinHi, sinLo] = sinBounds(hMin, hMax, sunRMax)
@@ -323,21 +369,6 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
       else if (!(el - hMin <= -2 * r)) visible = sunLight(hz, off, el, r, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
     }
     acc += visible
-    const t = sunTimes[j]
-    const isLit = visible > 0.5
-    if (j === 0) {
-      if (!isLit) darkStart = windowStart
-    } else if ((previousVisible > 0.5) !== isLit) {
-      const crossing = previousTime + ((0.5 - previousVisible) / (visible - previousVisible)) * (t - previousTime)
-      if (isLit) {
-        longestDarkMs = Math.max(longestDarkMs, crossing - darkStart)
-        darkStart = NaN
-      } else {
-        darkStart = crossing
-      }
-    }
-    previousVisible = visible
-    previousTime = t
     if (!eq || !charging) continue
     // surface charging
     const inTail = sx * earth[o] + sy * earth[o + 1] + sz * earth[o + 2] > cosTail
@@ -360,11 +391,9 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
     if (V < min) min = V
     if (V < chargeThreshold) below++
   }
-  if (Number.isFinite(darkStart)) longestDarkMs = Math.max(longestDarkMs, windowEnd - darkStart)
   sunOut.frac = acc / T
   // light-weighted sunlit % (an hour at 30 % of the Sun's light counts 0.3 h), as the site panel
   sunOut.sunlitPct = (100 * acc) / T
-  sunOut.longestDarkH = longestDarkMs / 3600_000
   if (eq && charging) { sunOut.cMean = sum / T; sunOut.cMin = min; sunOut.cBelow = below / T } else sunOut.cMean = sunOut.cMin = sunOut.cBelow = NaN
 }
 
@@ -760,7 +789,7 @@ interface LandingRequest {
 
 async function tile(m: {
   id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean
-  thermalSeriesIndices?: number[]; g?: number; polar?: number
+  thermalSeriesIndices?: number[]; g?: number; polar?: number; longestNight?: boolean
   landing?: LandingRequest
 }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
@@ -777,7 +806,8 @@ async function tile(m: {
   const seriesIndexByCell = new Map(seriesIndices.map((index, seriesIndex) => [index, seriesIndex]))
   const tSeries = new Float32Array(m.thermal && seriesIndices.length ? seriesIndices.length * steps : 0)
   tSeries.fill(NaN)
-  const dark = new Float32Array(N) // longest continuous night in the window (h)
+  const dark = new Float32Array(N) // longest interval with no direct sunlight, when requested (h)
+  dark.fill(NaN)
   const fSky = new Float32Array(N) // visible-sky fraction, as pipeline/lunar_radiation.py: mean(1 - sin H) / 2
   // landing criteria (empty unless requested): DSN link % and longest gap (h), sunlit % of the window
   const L = m.landing ? N : 0
@@ -834,7 +864,7 @@ async function tile(m: {
       cMean[c] = sunOut.cMean
       cMin[c] = sunOut.cMin
       cBelow[c] = sunOut.cBelow
-      dark[c] = sunOut.longestDarkH
+      if (m.longestNight) dark[c] = longestNightHours(F, hzc, off)
       e[c] = m.landing ? NaN : visibleFraction(earth, F, hzc, off, hMin, hMax) // (the score uses the DSN link instead)
       let sky = 0
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
@@ -934,7 +964,8 @@ self.onmessage = (ev: MessageEvent) => {
     chargeThreshold = m.threshold
   } else if (m.type === 'window') {
     sun = m.sun
-    sunTimes = m.sunTimes
+    nightSun = m.nightSun
+    nightTimes = m.nightTimes
     earth = m.earth
     dsn = m.dsn
     windowStart = m.window[0]

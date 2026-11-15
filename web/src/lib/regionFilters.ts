@@ -26,7 +26,7 @@ export const FILTER_ORDER: FilterKey[] = [
 
 export const FILTER_DEFS: Record<FilterKey, FilterDef> = {
   sunHours: { label: 'Sunlight', unit: 'h', limits: [0, null], help: 'Hours of sunlight in the selected period' },
-  nightHours: { label: 'Longest night', unit: 'h', limits: [0, null], help: 'Longest continuous darkness in the selected period' },
+  nightHours: { label: 'Longest night', unit: 'h', limits: [0, null], help: 'No direct sunlight; partial sunlight counts as day, eclipses excluded' },
   radiation: { label: 'Radiation dose', unit: 'µGy/h', limits: [0, 30], help: 'Cosmic-ray dose, lower where terrain hides the sky' },
   temperature: { label: 'Temperature (mean)', unit: '°C', limits: [-273, 150], help: 'Mean surface temperature over the selected period, matching the thermal-mean map (regolith model; slower)' },
   slope: { label: 'Slope', unit: '°', limits: [0, 90], help: 'Terrain slope' },

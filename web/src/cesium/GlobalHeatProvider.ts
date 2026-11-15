@@ -25,7 +25,7 @@ export type HeatValues = {
   cMean: number; cMin: number; cBelow: number // EQUIPOT surface charging (V, V, fraction)
   tMean: number; tMin: number; tMax: number // regolith surface temperature (K), only with `thermal`
   fSky: number // visible-sky fraction (radiation)
-  dark: number // longest continuous night in the window (h)
+  dark: number // longest interval with no direct sunlight in the window (h)
   link: number; linkGap: number; sunlit: number // landing criteria (DSN link %, longest gap h, sunlit %), only with `landing`
   /** per-pixel value from the `pixel` option (NaN without it) */
   pixel: number
@@ -56,6 +56,8 @@ export interface GlobalHeatOptions {
   thermal?: boolean
   /** calculate the Landing Score criteria for the suitability heatmap */
   landing?: LandingHeatOptions
+  /** calculate longest night at higher temporal resolution */
+  longestNight?: boolean
   /**
    * The fields `value` reads (default: all). Only these are interpolated per pixel, which is most of
    * the drawing cost: the score layer needs 5-7 of the 16.
@@ -385,7 +387,7 @@ export class GlobalHeatProvider {
     const gridWest = -Math.PI + gx * g * step
     const landing = this.landingFor(() => rectPoints(gridWest, r.south, gridWest + g * step, r.north))
     const [t, extras] = await Promise.all([
-      this.o.engine.tile(z, gx, y, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, g, landing, undefined, this.priorityFor(r, z)),
+      this.o.engine.tile(z, gx, y, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, g, landing, undefined, this.priorityFor(r, z), !!this.o.longestNight),
       this.extrasFor(r, x, y, z),
     ])
     // failed or dropped: reject, so Cesium keeps showing the parent tile instead of a transparent hole
@@ -436,7 +438,7 @@ export class GlobalHeatProvider {
         for (let j = 0; j <= 2; j++) for (let i = 0; i <= 2; i++) pts.push(fromPolar((bx + i / 2) * S, (by + j / 2) * S, pole))
         return pts
       })
-      jobs.push(this.o.engine.polarBlock(z, pole, bx, by, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, landing, priority))
+      jobs.push(this.o.engine.polarBlock(z, pole, bx, by, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, landing, priority, !!this.o.longestNight))
     }
     const [blocks, extras] = await Promise.all([Promise.all(jobs), this.extrasFor(r, x, y, z)])
     if (blocks.some((b) => !b)) throw new Error(this.disposed ? 'layer removed' : 'heatmap tile failed')

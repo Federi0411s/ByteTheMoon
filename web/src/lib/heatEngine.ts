@@ -41,7 +41,7 @@ export interface HeatTile {
   tSeriesIndices?: number[]
   /** visible-sky fraction (radiation layer) */
   fSky: Float32Array
-  /** longest continuous night in the window (hours; Sun more than half hidden) */
+  /** longest interval with no direct sunlight in the window (hours; only calculated when requested) */
   dark: Float32Array
   /** Landing-score criteria (empty unless requested): DSN link % of the window, longest link gap (h), sunlit % */
   link: Float32Array
@@ -73,6 +73,8 @@ interface DemIndex {
 
 /** Time samples per window: enough for multi-year averages, still cheap per tile. */
 const MAX_STEPS = 3000
+const LONGEST_NIGHT_STEP_MS = 3 * 3600_000
+const LONGEST_NIGHT_HOURLY_UNTIL_MS = 90 * 86400_000
 /** "Time below" threshold of the charging layer (same default as pipeline/charging.py) */
 export const CHARGE_THRESHOLD_V = -100
 /** Regolith model: regular steps of <= 6 h; windows longer than a year are sampled (see setWindow) */
@@ -256,13 +258,11 @@ export class HeatEngine {
     const N = Math.max(48, Math.min(MAX_STEPS, Math.round((end - start) / 3600_000)))
     const dt = (end - start) / N
     // golden-ratio jitter inside each step: avoids aliasing between the step and the lunar day
-    const sunTimes = new Float64Array(N)
     const sampleTime = (j: number) => start + (j + ((j * 0.6180339887) % 1)) * dt
-    const pack = (pos: (e: Ephemeris, t: number) => number[], radiusKm: number, times?: Float64Array) => {
+    const pack = (pos: (e: Ephemeris, t: number) => number[], radiusKm: number) => {
       const out = new Float32Array(N * 4)
       for (let j = 0; j < N; j++) {
         const t = sampleTime(j)
-        if (times) times[j] = t
         const p = pos(eph, t)
         const d = Math.hypot(p[0], p[1], p[2])
         out[j * 4] = p[0] / d
@@ -272,7 +272,23 @@ export class HeatEngine {
       }
       return out
     }
-    const sun = pack(sunPosition, SUN_RADIUS_KM, sunTimes), earth = pack(earthPosition, EARTH_RADIUS_KM)
+    const sun = pack(sunPosition, SUN_RADIUS_KM), earth = pack(earthPosition, EARTH_RADIUS_KM)
+    const nightStepMs = end - start <= LONGEST_NIGHT_HOURLY_UNTIL_MS ? 3600_000 : LONGEST_NIGHT_STEP_MS
+    const nightCount = Math.max(2, Math.ceil((end - start) / nightStepMs) + 1)
+    const nightTimes = new Float64Array(nightCount)
+    const nightSun = new Float32Array(nightCount * 4)
+    for (let j = 0; j < nightCount; j++) {
+      const t = start + ((end - start) * j) / (nightCount - 1)
+      nightTimes[j] = t
+      const p = sunPosition(eph, t)
+      const d = Math.hypot(p[0], p[1], p[2])
+      nightSun.set([
+        p[0] / d,
+        p[1] / d,
+        p[2] / d,
+        (Math.asin((SUN_RADIUS_KM * 1000) / d) * 180) / Math.PI,
+      ], j * 4)
+    }
     const dsn = new Float64Array(N * 18)
     for (let j = 0; j < N; j++) {
       dsn.set(dsnStationGeometry(eph, sampleTime(j)), j * 18)
@@ -309,7 +325,7 @@ export class HeatEngine {
     this.window = [start, end]
     this.gcr = gcrFactor(start, end)
     this.version++
-    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, sunTimes, earth, dsn, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
+    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, nightSun, nightTimes, earth, dsn, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
     for (const s of this.slots) s.worker.postMessage(this.lastWindow)
     this.cache.clear()
     this.order.length = 0
@@ -394,18 +410,19 @@ export class HeatEngine {
    * `wanted` lets the caller drop the request while it is still queued (e.g. its layer was removed).
    * Resolves null on failure; failures are not cached.
    */
-  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, landing?: LandingHeatOptions, thermalSeriesIndices?: number[], priority?: () => number): Promise<HeatTile | null> {
+  tile(z: number, x: number, y: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, g = 1, landing?: LandingHeatOptions, thermalSeriesIndices?: number[], priority?: () => number, longestNight = false): Promise<HeatTile | null> {
     // x is the group index when g > 1 (g tiles of row y computed together, see heatGrid.tileGroup)
     // per-cell temperature series (site panels, reports) are one-off answers: computed fresh, never cached
     const series = thermalSeriesIndices?.length ? thermalSeriesIndices : undefined
     return this.request(
       `${z}/${x}/${y}/${n}/${demMax}/g${g}${landingKey(landing)}`,
-      { type: 'tile', z, x, y, n, demMax, thermal, g, landing, thermalSeriesIndices: series },
+      { type: 'tile', z, x, y, n, demMax, thermal, g, landing, thermalSeriesIndices: series, longestNight },
       `${z}/${x}/${y}/${g}`,
       thermal,
       wanted,
       !series,
       priority,
+      longestNight,
     )
   }
 
@@ -414,20 +431,21 @@ export class HeatEngine {
    * the polar stereographic plane (lib/heatGrid.ts), row 0 = top (largest y). Same caching and
    * failure rules as tile().
    */
-  polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, landing?: LandingHeatOptions, priority?: () => number): Promise<HeatTile | null> {
+  polarBlock(z: number, p: number, bx: number, by: number, n: number, demMax: number, thermal = false, wanted?: () => boolean, landing?: LandingHeatOptions, priority?: () => number, longestNight = false): Promise<HeatTile | null> {
     return this.request(
       `P${p}/${z}/${bx}/${by}/${n}/${demMax}${landingKey(landing)}`,
-      { type: 'tile', z, x: bx, y: by, n, demMax, thermal, polar: p, landing },
+      { type: 'tile', z, x: bx, y: by, n, demMax, thermal, polar: p, landing, longestNight },
       `P${p}/${z}/${bx}/${by}`,
       thermal,
       wanted,
       true,
       priority,
+      longestNight,
     )
   }
 
-  private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true, priority?: () => number): Promise<HeatTile | null> {
-    const key = `${this.version}/${id}/${thermal ? 't' : ''}`
+  private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true, priority?: () => number, longestNight = false): Promise<HeatTile | null> {
+    const key = `${this.version}/${id}/${thermal ? 't' : ''}${longestNight ? 'n' : ''}`
     let hitKey = key
     let p = cacheable ? this.cache.get(key) : undefined
     // a tile computed with the regolith model also answers requests without it

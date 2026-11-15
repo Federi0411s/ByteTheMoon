@@ -93,9 +93,9 @@ export async function compareSavedSites({
     const linkStepH = dsn.length > 1 ? (dsn[1].t - dsn[0].t) / 3600_000 : 0
     const linkPercent = (100 * dsn.filter((sample) => sample.any).length) / dsn.length
     let lit = 0, darkRun = 0, longestDark = 0
-    walkSeries.sunlit.forEach((isSunlit, i) => {
+    walkSeries.sunlit.forEach((_, i) => {
       lit += walkSeries.light[i] // light-weighted sunlit % (an hour at 30 % of the Sun's light counts 0.3 h)
-      darkRun = isSunlit ? 0 : darkRun + 1
+      darkRun = walkSeries.light[i] > 0 ? 0 : darkRun + 1
       longestDark = Math.max(longestDark, darkRun)
     })
     const sunlitPercent = (100 * lit) / walkSeries.sunlit.length

@@ -142,6 +142,7 @@ export function findSunTransitions(
   eph: Ephemeris,
   site: { lat: number; lon: number; heightM?: number },
   mask: HorizonMask | undefined,
+  visibleThreshold = 0.5,
 ): SunTransition[] {
   const [start, end] = ephemerisRange(eph)
   if (!(end > start)) return []
@@ -154,16 +155,16 @@ export function findSunTransitions(
   const stepMs = 3600_000
   const transitions: SunTransition[] = []
   let previousT = start
-  let previousDaylight = visibleAt(start) > 0.5
+  let previousDaylight = visibleAt(start) > visibleThreshold
 
   while (previousT < end) {
     const t = Math.min(end, previousT + stepMs)
-    const daylight = visibleAt(t) > 0.5
+    const daylight = visibleAt(t) > visibleThreshold
     if (daylight !== previousDaylight) {
       let low = previousT, high = t
       while (high - low > 1) {
         const mid = (low + high) / 2
-        if ((visibleAt(mid) > 0.5) === previousDaylight) low = mid
+        if ((visibleAt(mid) > visibleThreshold) === previousDaylight) low = mid
         else high = mid
       }
       transitions.push({ t: high, daylight })
@@ -220,10 +221,9 @@ export function indexTimeline(tl: TimelineSample[]): TimelineSummaryIndex {
   let darkRun = 0
   for (let i = n - 1; i >= 0; i--) {
     const sample = tl[i]
-    const sunlit = sample.sunVisibleFrac > 0.5
+    const sunlit = sample.sunVisibleFrac > 0
     const earthVisible = sample.earthVisibleFrac > 0.5
-    // sunlit % weighted by the share of the Sun's light visible (an hour at 30 % counts 0.3 h);
-    // nights (longest night, next sunset) are still "less than half the light visible"
+    // sunlit % is light-weighted; longest night counts only intervals with no direct sunlight.
     sunlitPrefix[i] = sunlitPrefix[i + 1] + sample.sunVisibleFrac
     earthVisiblePrefix[i] = earthVisiblePrefix[i + 1] + Number(earthVisible)
     bothVisiblePrefix[i] = bothVisiblePrefix[i + 1] + (earthVisible ? sample.sunVisibleFrac : 0)
@@ -275,7 +275,7 @@ export function summarize(tl: TimelineSample[]): SiteSummary {
 }
 
 /**
- * Longest night (Sun mostly hidden: less than half of its light above the terrain horizon) among the nights
+ * Longest night (no direct sunlight above the terrain horizon) among the nights
  * that overlap [start, end], each measured over its FULL length: nights cut by the window edges are
  * followed up to `padMs` before / after (within the loaded ephemeris), so a short window that starts
  * or ends in the middle of a night does not report a fraction of it. Hours.
@@ -292,7 +292,7 @@ export function longestFullNightH(eph: Ephemeris, site: { lat: number; lon: numb
     runStart = -1
   }
   for (let i = 0; i < tl.length; i++) {
-    if (tl[i].sunVisibleFrac > 0.5) close(i)
+    if (tl[i].sunVisibleFrac > 0) close(i)
     else if (runStart < 0) runStart = i
   }
   close(tl.length)
