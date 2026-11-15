@@ -9,6 +9,7 @@ import { fmtDate, fmtDateTime } from './time'
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
+const MAX_POWER_SAMPLES = 20_000
 
 export interface ReportOverlay {
   id: string
@@ -247,11 +248,15 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
     samples.push(...computeTimeline(request.ephemeris, request.site, request.site.horizon, request.endMs, request.endMs))
   }
   const stats = periodStats(samples, request.endMs)
-  const powerTimes = sampleTimes(request.startMs, request.endMs, 2400, HOUR_MS)
+  const powerTimes = sampleTimes(request.startMs, request.endMs, MAX_POWER_SAMPLES, HOUR_MS)
   const powerSamples = powerTimes.map((time) => powerAt(request.ephemeris, request.site, request.site.horizon, time, request.panel))
   const powerSummary = powerStats(powerSamples, request.endMs)
   const dsnTimes = sampleTimes(request.startMs, request.endMs, 12000, HOUR_MS)
   const dsnStepMs = dsnTimes[1] - dsnTimes[0]
+  const powerStepMs = powerTimes[1] - powerTimes[0]
+  const temperatureStepMs = request.temperatureTimeline && request.temperatureTimeline.length > 1
+    ? request.temperatureTimeline[1].t - request.temperatureTimeline[0].t
+    : undefined
   const dsnSamples = dsnTimes.map((time) => dsnAt(request.ephemeris, request.site, request.site.horizon, time))
   const dsnSummary = dsnStats(dsnSamples, request.endMs)
   const current = request.panoramaNow ?? computeTimeline(
@@ -314,7 +319,8 @@ export async function downloadTechnicalReport(request: TechnicalReportRequest): 
 
   newPage()
   section(landingDayReport ? 'Landing-day timelines' : 'Mission timelines')
-  paragraph(`Temperature and power are plotted as mean curves against the selected interval. Temperature uses representative lunations for intervals longer than one year, so its connecting line is a guide between sampled periods. DSN links are binary (0 = no link, 1 = link): the three station traces are separated into lanes so simultaneous links remain visible. A second chart sums them from 0 to 3. DSN sampling: ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`}; contact transitions are approximate at that resolution.`)
+  const temperatureCadence = temperatureStepMs === undefined ? 'unavailable' : `${(temperatureStepMs / HOUR_MS).toFixed(1)} h`
+  paragraph(`Temperature and power are plotted as sampled values, without time-bucket averaging. Temperature sampling: ${temperatureCadence}; power sampling: ${powerStepMs / HOUR_MS < 24 ? `${(powerStepMs / HOUR_MS).toFixed(1)} h` : `${(powerStepMs / DAY_MS).toFixed(1)} d`}. DSN links are binary (0 = no link, 1 = link): the three station traces are separated into lanes so simultaneous links remain visible. A second chart sums them from 0 to 3. DSN sampling: ${dsnStepMs / HOUR_MS < 24 ? `${(dsnStepMs / HOUR_MS).toFixed(1)} h` : `${(dsnStepMs / DAY_MS).toFixed(1)} d`}; contact transitions are approximate at that resolution.`)
   if (request.temperatureTimeline?.length) {
     reserve(60)
     addTemperatureChart(doc, request.temperatureTimeline, request.startMs, request.endMs, margin, y, contentWidth)
@@ -587,56 +593,27 @@ function addChartDates(doc: import('jspdf').jsPDF, chart: { chartX: number; char
   doc.text(label(endMs), chart.chartX + chart.chartWidth, chart.chartY + chart.plotHeight + 4, { align: 'right' })
 }
 
-interface TimeBucketMean {
-  start: number
-  end: number
-  mean: number
-}
-
-function meanBuckets<T>(samples: T[], startMs: number, endMs: number, timeOf: (sample: T) => number, valueOf: (sample: T) => number, maxBuckets: number): TimeBucketMean[] {
-  const count = Math.min(maxBuckets, Math.max(4, Math.ceil(samples.length / 20)))
-  const duration = (endMs - startMs) / count
-  const buckets = Array.from({ length: count }, (_, index) => ({
-    start: startMs + index * duration,
-    end: startMs + (index + 1) * duration,
-    sum: 0,
-    count: 0,
-  }))
-  for (const sample of samples) {
-    const time = timeOf(sample), value = valueOf(sample)
-    if (time < startMs || time > endMs || !Number.isFinite(value)) continue
-    const index = Math.min(count - 1, Math.floor((time - startMs) / duration))
-    const bucket = buckets[index]
-    bucket.sum += value
-    bucket.count++
-  }
-  return buckets
-    .filter((bucket) => bucket.count > 0)
-    .map(({ start, end, sum, count: sampleCount }) => ({ start, end, mean: sum / sampleCount }))
-}
-
-function drawMeanCurve(
+function drawSampleCurve(
   doc: import('jspdf').jsPDF,
   chart: { chartX: number; chartY: number; chartWidth: number; plotHeight: number },
-  buckets: TimeBucketMean[],
+  samples: { t: number; value: number }[],
   min: number,
   max: number,
   startMs: number,
   endMs: number,
   color: [number, number, number],
 ) {
-  const px = (bucket: TimeBucketMean) => chart.chartX + (((bucket.start + bucket.end) / 2 - startMs) / (endMs - startMs)) * chart.chartWidth
   const py = (value: number) => chart.chartY + ((max - value) / (max - min)) * chart.plotHeight
   doc.setDrawColor(...color)
-  doc.setFillColor(...color)
   doc.setLineWidth(0.7)
-  let previous: TimeBucketMean | undefined
-  for (const bucket of buckets) {
-    if (previous && bucket.start - previous.end < 1) {
-      doc.line(px(previous), py(previous.mean), px(bucket), py(bucket.mean))
-    }
-    doc.circle(px(bucket), py(bucket.mean), 0.8, 'F')
-    previous = bucket
+  for (let index = 1; index < samples.length; index++) {
+    const previous = samples[index - 1], current = samples[index]
+    doc.line(
+      chart.chartX + ((previous.t - startMs) / (endMs - startMs)) * chart.chartWidth,
+      py(previous.value),
+      chart.chartX + ((current.t - startMs) / (endMs - startMs)) * chart.chartWidth,
+      py(current.value),
+    )
   }
 }
 
@@ -649,14 +626,19 @@ function addTemperatureChart(
   y: number,
   width: number,
 ) {
-  const buckets = meanBuckets(samples, startMs, endMs, (sample) => sample.t, (sample) => sample.temperatureK - 273.15, 12)
-  let low = Math.floor(Math.min(...buckets.map((bucket) => bucket.mean))), high = Math.ceil(Math.max(...buckets.map((bucket) => bucket.mean)))
+  const values = samples.map((sample) => ({ t: sample.t, value: sample.temperatureK - 273.15 }))
+  let minValue = Infinity, maxValue = -Infinity
+  for (const sample of values) {
+    minValue = Math.min(minValue, sample.value)
+    maxValue = Math.max(maxValue, sample.value)
+  }
+  let low = Math.floor(minValue), high = Math.ceil(maxValue)
   if (low === high) { low -= 1; high += 1 }
   const padding = Math.max(2, (high - low) * 0.08)
   low = Math.floor(low - padding)
   high = Math.ceil(high + padding)
-  const chart = chartFrame(doc, 'Mean surface temperature (°C)', x, y, width, 38, [`${high}`, `${((high + low) / 2).toFixed(0)}`, `${low}`])
-  drawMeanCurve(doc, chart, buckets, low, high, startMs, endMs, [190, 83, 42])
+  const chart = chartFrame(doc, 'Surface temperature (°C)', x, y, width, 38, [`${high}`, `${((high + low) / 2).toFixed(0)}`, `${low}`])
+  drawSampleCurve(doc, chart, values, low, high, startMs, endMs, [190, 83, 42])
   addChartDates(doc, chart, startMs, endMs)
 }
 
@@ -669,11 +651,11 @@ function addPowerChart(
   y: number,
   width: number,
 ) {
-  const buckets = meanBuckets(samples, startMs, endMs, (sample) => sample.t, (sample) => sample.power, 120)
-  const peak = Math.max(...buckets.map((bucket) => bucket.mean))
+  const values = samples.map((sample) => ({ t: sample.t, value: sample.power }))
+  const peak = Math.max(...values.map((sample) => sample.value))
   const top = peak > 0 ? Math.ceil(peak / 10) * 10 : 1
-  const chart = chartFrame(doc, 'Mean solar-array power generation (W)', x, y, width, 38, [`${top.toFixed(0)}`, `${(top / 2).toFixed(0)}`, '0'])
-  drawMeanCurve(doc, chart, buckets, 0, top, startMs, endMs, [39, 127, 105])
+  const chart = chartFrame(doc, 'Solar-array power generation (W)', x, y, width, 38, [`${top.toFixed(0)}`, `${(top / 2).toFixed(0)}`, '0'])
+  drawSampleCurve(doc, chart, values, 0, top, startMs, endMs, [39, 127, 105])
   addChartDates(doc, chart, startMs, endMs)
 }
 

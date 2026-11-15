@@ -4,6 +4,7 @@ import type { TimelineSample } from '../lib/analysis'
 import { downloadTechnicalReport, type ReportFilterImage, type ReportOverlay } from '../lib/technicalReport'
 import type { Site } from '../lib/data'
 import type { HeatEngine } from '../lib/heatEngine'
+import type { SiteThermalSeries } from '../lib/regolith'
 import type { SiteEnv } from './EnvPanel'
 import type { PanelConfig } from '../lib/power'
 import { sampleSiteTemperatureTimeline } from '../lib/siteEnv'
@@ -15,6 +16,7 @@ export function TechnicalReportDialog({
   heat,
   panel,
   env,
+  temperatureSeries,
   panoramaTimeline,
   panoramaNow,
   currentMs,
@@ -29,6 +31,7 @@ export function TechnicalReportDialog({
   heat?: HeatEngine | null
   panel: PanelConfig
   env?: SiteEnv
+  temperatureSeries?: SiteThermalSeries
   panoramaTimeline: TimelineSample[]
   panoramaNow?: TimelineSample
   currentMs: number
@@ -59,9 +62,12 @@ export function TechnicalReportDialog({
       }
       const [filterImages, temperatureTimeline] = await Promise.all([
         includeMap ? captureMap(site, overlays) : Promise.resolve([] as ReportFilterImage[]),
-        heat
-          ? sampleSiteTemperatureTimeline(heat, site.lat, site.lon)
-          : Promise.resolve(null),
+        temperatureSeries
+          ? Promise.resolve(Array.from(temperatureSeries.tC, (temperatureC, index) => ({
+              t: period[0] + index * temperatureSeries.stepH * 3600_000,
+              temperatureK: temperatureC + 273.15,
+            })))
+          : heat ? sampleSiteTemperatureTimeline(heat, site.lat, site.lon) : Promise.resolve(null),
       ])
       await downloadTechnicalReport({
         site,
@@ -110,7 +116,7 @@ export function TechnicalReportDialog({
         <p className="muted">
           The report includes a site data table and temperature, power-generation and DSN-contact timelines for the selected UTC interval below.
         </p>
-        <p className="muted">Temperature and power are shown over time. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.</p>
+        <p className="muted">Temperature and power charts show sampled values, not averages over time buckets. Three separate binary DSN traces show each station’s link; a second chart shows how many are connected simultaneously.</p>
 
         <section className="report-period">
           <h3>Analysis interval</h3>

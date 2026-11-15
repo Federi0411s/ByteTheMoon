@@ -34,7 +34,7 @@ import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './c
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
 import type { SiteEnv } from './components/EnvPanel'
-import { computeTimeline, longestFullNightH, summarize } from './lib/analysis'
+import { computeTimeline, findSunTransitions, longestFullNightH, nextSunTransition, summarize } from './lib/analysis'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade } from './lib/raster'
 import { DEFAULT_FOOTPRINT, SLOPE_MAX_DEG, footprintAxes, footprintLabel } from './lib/requirements'
@@ -1320,6 +1320,15 @@ export default function App() {
     return { ...s, longestDarkH: longestFullNightH(ephemeris, selected, selected.horizon, summaryStart, scorePeriod[1], step) }
   }, [timeline, summaryStart, selected, ephemeris, scorePeriod])
   const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
+  const sunTransitions = useMemo(() => {
+    if (!selected || !ephemeris) return []
+    return findSunTransitions(ephemeris, selected, selected.horizon)
+  }, [selected, ephemeris])
+  const sunlightCountdown = useMemo(() => {
+    if (!now) return undefined
+    const next = nextSunTransition(sunTransitions, t)
+    return { daylight: now.sunVisibleFrac > 0.5, remainingMs: next ? next.t - t : undefined }
+  }, [now, sunTransitions, t])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
   // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
   const powerTl = useMemo(() => {
@@ -1342,11 +1351,11 @@ export default function App() {
     if (!selected || !ephemeris || !analysisPeriodInWindow) return []
     return dsnTimeline(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], scoreStep)
   }, [selected, ephemeris, scorePeriod, scoreStep, analysisPeriodInWindow])
-  // hour-by-hour sunlight + surface temperature at the site over the period (lib/regolith.ts)
+  // Hourly sunlight + surface temperature at the site over the period (lib/regolith.ts).
   const walkSeries = useMemo(() => {
     if (!selected || !ephemeris || !analysisPeriodInWindow) return undefined
-    return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], Math.max(3600_000, scoreStep), bundle?.fields.dem_south)
-  }, [selected, ephemeris, scorePeriod, scoreStep, bundle, analysisPeriodInWindow])
+    return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], 3600_000, bundle?.fields.dem_south)
+  }, [selected, ephemeris, scorePeriod, bundle, analysisPeriodInWindow])
   // sunlight criterion: share of the period sunlit and longest night (Sun below the terrain horizon)
   const sunStats = useMemo(() => {
     if (!walkSeries) return undefined
@@ -1579,7 +1588,7 @@ export default function App() {
               onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}
               reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}
-              now={now} nowMs={t}
+              now={now} nowMs={t} sunlightCountdown={sunlightCountdown}
               periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
@@ -1668,6 +1677,7 @@ export default function App() {
               heat={heat}
               panel={panel}
               env={siteEnvForPeriod?.env ?? undefined}
+              temperatureSeries={walkSeries}
               panoramaTimeline={timeline}
               panoramaNow={now}
               currentMs={t}

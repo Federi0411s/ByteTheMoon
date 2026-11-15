@@ -416,6 +416,13 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .kv { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .kv b { color: var(--text); font-weight: 600; }
 .inspect { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--border); }
+.sun-countdown { display: grid; gap: 5px; margin: 10px 0; padding: 11px 12px; border: 1px solid transparent; border-radius: 8px; }
+.sun-countdown.day { border-color: #e7bd53; background: #ffe8a3; color: #29220d; }
+.sun-countdown.night { border-color: #39496f; background: #131d37; color: #f0f4ff; }
+.sun-countdown-state { font-size: 11px; font-weight: 800; letter-spacing: 0.09em; }
+.sun-countdown-action { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; opacity: 0.78; }
+.sun-countdown-time { font-size: 24px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.sun-countdown-note { font-size: 10px; opacity: 0.75; }
 
 .terrain-preview {
   position: relative;

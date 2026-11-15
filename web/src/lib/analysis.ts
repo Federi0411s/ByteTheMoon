@@ -125,6 +125,58 @@ export function computeTimeline(
   return out
 }
 
+export interface SunTransition {
+  t: number
+  daylight: boolean
+}
+
+/** Find day/night crossings across the loaded ephemeris, refining each crossing to one minute. */
+export function findSunTransitions(
+  eph: Ephemeris,
+  site: { lat: number; lon: number; heightM?: number },
+  mask: HorizonMask | undefined,
+): SunTransition[] {
+  const [start, end] = ephemerisRange(eph)
+  if (!(end > start)) return []
+  const topo = topoFrame(site.lat, site.lon, site.heightM ?? 0)
+  const visibleAt = (t: number) => {
+    const sun = azEl(topo, sunPosition(eph, t))
+    const radius = Math.asin((SUN_RADIUS_KM * 1000) / sun.distM) / D2R
+    return discFraction(sun.el - horizonAt(mask, sun.az), radius)
+  }
+  const stepMs = 3600_000
+  const transitions: SunTransition[] = []
+  let previousT = start
+  let previousDaylight = visibleAt(start) > 0.5
+
+  while (previousT < end) {
+    const t = Math.min(end, previousT + stepMs)
+    const daylight = visibleAt(t) > 0.5
+    if (daylight !== previousDaylight) {
+      let low = previousT, high = t
+      while (high - low > 60_000) {
+        const mid = (low + high) / 2
+        if ((visibleAt(mid) > 0.5) === previousDaylight) low = mid
+        else high = mid
+      }
+      transitions.push({ t: high, daylight })
+    }
+    previousT = t
+    previousDaylight = daylight
+  }
+  return transitions
+}
+
+export function nextSunTransition(transitions: SunTransition[], afterMs: number): SunTransition | undefined {
+  let low = 0, high = transitions.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (transitions[mid].t <= afterMs) low = mid + 1
+    else high = mid
+  }
+  return transitions[low]
+}
+
 export interface SiteSummary {
   litPct: number
   earthPct: number

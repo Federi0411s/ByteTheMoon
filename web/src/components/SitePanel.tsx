@@ -22,6 +22,16 @@ const fmtDur = (ms: number | null) => {
   return h >= 48 ? `${(h / 24).toFixed(1)} d` : `${h.toFixed(0)} h`
 }
 
+function fmtCountdown(ms: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60_000))
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days) return `${days} d ${hours} h`
+  if (hours) return `${hours} h ${minutes} min`
+  return `${minutes} min`
+}
+
 function SavedSiteEditor({ site, onSave, onRemove }: { site: Site; onSave: (name: string) => void; onRemove: () => void }) {
   const [siteName, setSiteName] = useState(site.name)
   return (
@@ -88,6 +98,7 @@ export function SitePanel({
   summary,
   now,
   nowMs,
+  sunlightCountdown,
   periodLabel,
   inspect,
   expanded,
@@ -124,6 +135,7 @@ export function SitePanel({
   summary?: SiteSummary
   now?: TimelineSample
   nowMs: number
+  sunlightCountdown?: { daylight: boolean; remainingMs?: number }
   periodLabel: string
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
   expanded: boolean
@@ -213,6 +225,18 @@ export function SitePanel({
           <p className="muted">
             {selected.lat.toFixed(3)}°, {selected.lon.toFixed(3)}° · horizon: {selected.horizon ? selected.horizon.source : 'flat (no terrain data here)'}
           </p>
+          {sunlightCountdown && (
+            <div className={`sun-countdown ${sunlightCountdown.daylight ? 'day' : 'night'}`} role="status">
+              <span className="sun-countdown-state">{sunlightCountdown.daylight ? 'DAYLIGHT' : 'NIGHT'}</span>
+              <span className="sun-countdown-action">{sunlightCountdown.daylight ? 'NIGHTFALL IN' : 'DAYLIGHT IN'}</span>
+              <strong className="sun-countdown-time">
+                {sunlightCountdown.remainingMs === undefined
+                  ? 'Not in loaded forecast'
+                  : fmtCountdown(sunlightCountdown.remainingMs)}
+              </strong>
+              <span className="sun-countdown-note">Based on the Sun clearing the local terrain horizon</span>
+            </div>
+          )}
           <TerrainPreview
             mask={selected.horizon}
             active={terrainViewActive}
@@ -238,8 +262,6 @@ export function SitePanel({
               <div className="kv"><span>Earth in view</span><b>{summary.earthPct.toFixed(0)}%</b></div>
               <div className="kv"><span>Both</span><b>{summary.bothPct.toFixed(0)}%</b></div>
               <div className="kv"><span>Longest night</span><b>{fmtDur(summary.longestDarkH * 3600_000)}</b></div>
-              <div className="kv"><span>Time to sunset</span><b>{fmtDur(summary.nextSunsetMs)}</b></div>
-              <div className="kv"><span>Time to Earthset</span><b>{fmtDur(summary.nextEarthsetMs)}</b></div>
             </div>
           )}
           {env && <EnvPanel {...env} />}
