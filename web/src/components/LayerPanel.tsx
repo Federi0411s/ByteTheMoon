@@ -211,7 +211,7 @@ export function LayerPanel({
 
       <details className="menu-section">
         <summary className="menu-section-summary">
-          <span>Water ice</span>
+          <span>Water ice South Pole</span>
           <span className="menu-section-state">{iceError ? 'Error' : iceVisible ? 'On' : 'Off'}</span>
           <span className="menu-section-chevron" aria-hidden="true">›</span>
         </summary>
