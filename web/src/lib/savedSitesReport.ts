@@ -51,6 +51,27 @@ export async function downloadSavedSitesReport(
     site.score.criteria.filter((criterion) => criterion.cls === 'recommended' || criterion.cls === 'feasible')
   const weaknesses = (site: SavedSiteComparison) =>
     site.score.criteria.filter((criterion) => criterion.cls === 'difficult' || criterion.cls === 'not-feasible')
+  const setTextColor = (hex: string) => {
+    const color = hex.replace('#', '')
+    doc.setTextColor(
+      Number.parseInt(color.slice(0, 2), 16),
+      Number.parseInt(color.slice(2, 4), 16),
+      Number.parseInt(color.slice(4, 6), 16),
+    )
+  }
+  const criterionLines = (criteria: CriterionResult[], columnWidth: number) => {
+    doc.setFontSize(8.5)
+    return criteria.map((criterion) => {
+      const suffix = ` · ${CLASS_INFO[criterion.cls].label} (${criterion.value})`
+      doc.setFont('helvetica', 'bold')
+      const nameWidth = doc.getTextWidth(criterion.name)
+      return {
+        criterion,
+        nameWidth,
+        suffixLines: doc.splitTextToSize(suffix, Math.max(12, columnWidth - nameWidth)),
+      }
+    })
+  }
 
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(18)
@@ -62,47 +83,83 @@ export async function downloadSavedSitesReport(
   y += 7
   paragraph(`Generated ${fmtDateTime(Date.now())} UTC. Analysis period: ${periodLabel}, ${fmtDateTime(period[0])} – ${fmtDateTime(period[1])} UTC.`)
   paragraph('Ranking prioritizes feasible sites, then sorts by the average landing score. The score is the mean of temperature, radiation, slope, telecommunications and sunlight classes.')
-  heading('Overall ranking')
+  heading('Site ranking')
 
-  const columns = [10, 78, 28, 27, width - 143]
-  const headers = ['#', 'Landing site', 'Score', 'Status', 'Coordinates']
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(8)
-  doc.setTextColor(75, 86, 100)
-  let x = margin
-  headers.forEach((header, index) => {
-    doc.text(header, x + 1, y)
-    x += columns[index]
-  })
-  y += 4
-  doc.setDrawColor(190, 198, 208)
-  doc.line(margin, y, pageWidth - margin, y)
-  y += 4
   comparisons.forEach((comparison, index) => {
-    const { site, score } = comparison
-    const values = [
-      `${index + 1}`,
-      site.name,
-      `${Math.round(score.score)} / 100`,
-      score.feasible ? 'Feasible' : 'Not feasible',
-      `${site.lat.toFixed(3)}°, ${site.lon.toFixed(3)}°`,
-    ]
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(8)
-    const cellLines = values.map((value, column) => doc.splitTextToSize(value, columns[column] - 3))
-    const height = Math.max(7, ...cellLines.map((lines) => lines.length * 3.8 + 2))
-    reserve(height)
-    if (index % 2 === 0) {
-      doc.setFillColor(245, 247, 250)
-      doc.rect(margin, y - 3, width, height, 'F')
+    const padding = 4
+    const columnGap = 9
+    const columnWidth = (width - padding * 2 - columnGap) / 2
+    const strongLines = criterionLines(strengths(comparison), columnWidth)
+    const weakLines = criterionLines(weaknesses(comparison), columnWidth)
+    const title = `#${index + 1} · ${comparison.site.name}`
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9.5)
+    const titleLines = doc.splitTextToSize(title, width - padding * 2 - 27)
+    const headerHeight = titleLines.length * 4.4
+    const contentHeight = (items: ReturnType<typeof criterionLines>) =>
+      items.length ? items.reduce((total, item) => total + item.suffixLines.length * 4.2 + 1.2, 0) : 5
+    const columnsHeight = Math.max(contentHeight(strongLines), contentHeight(weakLines))
+    const cardHeight = 5 + headerHeight + 4 + 5 + 2 + columnsHeight + 2 + 5 + 5
+    reserve(cardHeight + 4)
+
+    const cardTop = y
+    const titleY = cardTop + 5
+    const sectionY = titleY + headerHeight + 4
+    const contentY = sectionY + 5
+    const dividerY = contentY + columnsHeight + 2
+    const evaY = dividerY + 5
+    const leftX = margin + padding
+    const rightX = leftX + columnWidth + columnGap
+
+    doc.setFillColor(250, 251, 253)
+    doc.setDrawColor(205, 214, 225)
+    doc.setLineWidth(0.25)
+    doc.roundedRect(margin, cardTop, width, cardHeight, 2, 2, 'FD')
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9.5)
+    doc.setTextColor(33, 54, 80)
+    doc.text(titleLines, leftX, titleY)
+    setTextColor('#ff8a3d')
+    doc.text(`${Math.round(comparison.score.score)} / 100`, pageWidth - margin - padding, titleY, { align: 'right' })
+
+    doc.setFontSize(8.5)
+    doc.setTextColor(75, 86, 100)
+    doc.text('Strengths', leftX, sectionY)
+    doc.text('Weaknesses', rightX, sectionY)
+
+    const drawCriteria = (items: ReturnType<typeof criterionLines>, x: number, empty: string) => {
+      if (!items.length) {
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(8.5)
+        doc.setTextColor(110, 120, 132)
+        doc.text(empty, x, contentY)
+        return
+      }
+      let lineY = contentY
+      for (const item of items) {
+        setTextColor(CLASS_INFO[item.criterion.cls].color)
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(8.5)
+        doc.text(item.criterion.name, x, lineY)
+        doc.setFont('helvetica', 'normal')
+        doc.text(item.suffixLines[0], x + item.nameWidth, lineY)
+        for (let line = 1; line < item.suffixLines.length; line++) {
+          doc.text(item.suffixLines[line], x, lineY + line * 4.2)
+        }
+        lineY += item.suffixLines.length * 4.2 + 1.2
+      }
     }
-    x = margin
-    cellLines.forEach((lines, column) => {
-      doc.setTextColor(column === 2 ? 33 : 45, column === 2 ? 54 : 54, column === 2 ? 80 : 66)
-      doc.text(lines, x + 1, y)
-      x += columns[column]
-    })
-    y += height
+    drawCriteria(strongLines, leftX, 'No criteria in the feasible range.')
+    drawCriteria(weakLines, rightX, 'No difficult or infeasible criteria.')
+
+    doc.setDrawColor(205, 214, 225)
+    doc.line(margin + padding, dividerY, pageWidth - margin - padding, dividerY)
+    setTextColor('#35c98b')
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8.5)
+    doc.text(`EVA: ${comparison.human.verdict} · longest walk ${comparison.human.walk.value}`, leftX, evaY)
+    y = cardTop + cardHeight + 4
   })
 
   for (let index = 0; index < comparisons.length; index++) {
