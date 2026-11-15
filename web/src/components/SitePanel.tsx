@@ -15,6 +15,8 @@ import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
 import { TerrainPreview } from './TerrainPreview'
 import { TimelineBars } from './TimelineBars'
+import { SavedSitesMenu } from './SavedSitesMenu'
+import type { SavedSiteComparison } from '../lib/savedSiteComparison'
 
 const fmtDur = (ms: number | null) => {
   if (ms === null) return '—'
@@ -110,7 +112,12 @@ export function SitePanel({
   onFootprint,
   onSaveSite,
   onRemoveSite,
+  savedSites,
+  comparisonPeriod,
+  comparisonPeriodLabel,
   savedSitesError,
+  comparisonDisabledReason,
+  compareSavedSites,
   showSiteMarkers,
   onShowSiteMarkersChange,
   env,
@@ -143,7 +150,12 @@ export function SitePanel({
   onFootprint: (fp: Footprint) => void
   onSaveSite: (name: string) => void
   onRemoveSite: () => void
+  savedSites: Site[]
+  comparisonPeriod: [number, number]
+  comparisonPeriodLabel: string
   savedSitesError?: string
+  comparisonDisabledReason?: string
+  compareSavedSites: (onProgress: (completed: number, total: number) => void, signal: AbortSignal) => Promise<SavedSiteComparison[]>
   showSiteMarkers: boolean
   onShowSiteMarkersChange: (show: boolean) => void
   dsn?: { now?: DsnSample }
@@ -189,6 +201,14 @@ export function SitePanel({
         ))}
       </select>
       <FootprintButton fp={footprint} onChange={onFootprint} />
+      <SavedSitesMenu
+        sites={savedSites}
+        onSelect={onSelect}
+        period={comparisonPeriod}
+        periodLabel={comparisonPeriodLabel}
+        comparisonDisabledReason={comparisonDisabledReason}
+        compare={compareSavedSites}
+      />
       <p className="muted">Click the map or search coordinates to inspect and analyse a custom landing site.</p>
       {landing && <ScorePanel {...landing} />}
       {savedSitesError && <p className="site-save-error" role="alert">{savedSitesError}</p>}
