@@ -157,7 +157,6 @@ export function SitePanel({
   const groups = [...new Set(sites.map((s) => s.group))]
   return (
     <section className="panel" id="landing-sites-panel">
-      {landing && <ScorePanel {...landing} />}
       <div className="site-panel-heading">
         <h2>Landing sites</h2>
         <button className="site-panel-expand" onClick={onToggleExpanded} aria-expanded={expanded} aria-controls="landing-sites-panel"
@@ -190,6 +189,7 @@ export function SitePanel({
       </select>
       <FootprintButton fp={footprint} onChange={onFootprint} />
       <p className="muted">Click the map or search coordinates to inspect and analyse a custom landing site.</p>
+      {landing && <ScorePanel {...landing} />}
       {savedSitesError && <p className="site-save-error" role="alert">{savedSitesError}</p>}
 
       {inspect && (
