@@ -132,8 +132,8 @@ export const INFO = {
   landingSite: {
     question: 'What makes a good landing site?',
     answer:
-      'A good landing site is a compromise: gentle slope, long sunlight, Earth in view for communications, and ' +
-      'close to (but not inside) ice-rich craters.',
+      'A good landing site is a compromise: gentle slope, a high percentage of sunlight during the selected mission ' +
+      'period, Earth in view for communications, and close to (but not inside) ice-rich craters.',
   },
   pits: {
     question: 'What are lunar pits?',

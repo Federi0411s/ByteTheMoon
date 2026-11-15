@@ -646,7 +646,7 @@ async function tile(m: {
         const maxSlope = maxFootprintSlope(lon, lat, t.slope[c], t.slopeLevel, m.landing.footprint)
         const [linkPct, longestLinkGapH] = stationLinkStats(F, t.hz, off, t.elev[c])
         const doseRate = (20.2 * fSky[c] + 6.2 * (1 - fSky[c])) * m.landing.gcr
-        const values = [tMean[c], tMin[c], tMax[c], doseRate, linkPct, longestLinkGapH, sunOut.sunlitPct, sunOut.longestDarkH, maxSlope]
+        const values = [tMean[c], tMin[c], tMax[c], doseRate, linkPct, longestLinkGapH, sunOut.sunlitPct, maxSlope]
         if (values.every(Number.isFinite)) {
           landingScore[c] = scoreLandingCell({
             tMeanC: tMean[c] - 273.15,
@@ -656,7 +656,6 @@ async function tile(m: {
             linkPct,
             longestLinkGapH,
             sunlitPct: sunOut.sunlitPct,
-            longestDarkH: sunOut.longestDarkH,
           }, m.landing.scoreSettings)
           slope[c] = maxSlope
         } else {

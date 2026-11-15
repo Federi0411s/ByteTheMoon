@@ -124,13 +124,13 @@ export function SettingsDialog({
                       onChange={(value) => updateSection('telecom', 'difficultPercent', value)} />
                   </div>
                   <div className="advanced-criterion-group">
-                    <h3>Longest darkness interval</h3>
-                    <NumberField label="Recommended at or below" value={draft.darkness.recommendedDays} unit="days"
-                      onChange={(value) => updateSection('darkness', 'recommendedDays', value)} />
-                    <NumberField label="Feasible at or below" value={draft.darkness.feasibleDays} unit="days"
-                      onChange={(value) => updateSection('darkness', 'feasibleDays', value)} />
-                    <NumberField label="Difficult at or below" value={draft.darkness.difficultDays} unit="days"
-                      onChange={(value) => updateSection('darkness', 'difficultDays', value)} />
+                    <h3>Sunlight</h3>
+                    <NumberField label="Recommended at or above" value={draft.sunlight.recommendedPercent} unit="%"
+                      onChange={(value) => updateSection('sunlight', 'recommendedPercent', value)} />
+                    <NumberField label="Feasible at or above" value={draft.sunlight.feasiblePercent} unit="%"
+                      onChange={(value) => updateSection('sunlight', 'feasiblePercent', value)} />
+                    <NumberField label="Difficult at or above" value={draft.sunlight.difficultPercent} unit="%"
+                      onChange={(value) => updateSection('sunlight', 'difficultPercent', value)} />
                   </div>
                 </div>
               </fieldset>

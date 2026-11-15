@@ -100,6 +100,7 @@ export function ScorePanel({
       <p className="muted">
         Over the {periodLabel}: {periodText}.
         Recommended 100 · Feasible 70 · Difficult 40 · Not feasible 0 points; the score is the mean.
+        Sunlight is the percentage of this period with the Sun above the local terrain horizon.
       </p>
       {criteria.map((c) => {
         const info = CLASS_INFO[c.cls]

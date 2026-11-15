@@ -15,11 +15,8 @@ import { DEFAULT_ADVANCED_SETTINGS, type AdvancedSettings } from './advancedSett
  *  - telecommunications (PROPOSED: share of time with at least one DSN station in direct link):
  *      Recommended ≥ 80 % (near-continuous contact) · Feasible 40–80 % (store-and-forward between passes)
  *      · Difficult 10–40 % (long blackouts, relay advised) · Not feasible < 10 % (needs a relay satellite)
- *  - sunlight (PROPOSED: longest stretch with the Sun below the terrain horizon, i.e. the night batteries /
- *    heaters must survive; independent of the solar arrays):
- *      Recommended ≤ 3 d · Feasible 3–7 d · Difficult 7–20 d (a full lunar night: ~14.8 d on flat ground,
- *      up to ~16 d with terrain shadows at sunrise / sunset) · Not feasible > 20 d (darker than any lunar
- *      night, e.g. seasonal polar shadow) or no sunlight at all
+ *  - sunlight (percentage of the selected mission period with the Sun above the local terrain horizon):
+ *      Recommended ≥ 80 % · Feasible 50–80 % · Difficult 20–50 % · Not feasible < 20 %
  */
 
 export type ScoreClass = 'recommended' | 'feasible' | 'difficult' | 'not-feasible'
@@ -130,35 +127,33 @@ export function scoreTelecom(linkPct: number, longestGapH: number, settings: Adv
   return { id: 'telecom', name: 'Telecommunications', cls, value: `${Math.round(linkPct)}% in link`, comment }
 }
 
-export function scoreSunlight(longestDarkH: number, sunlitPct: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
-  const d = longestDarkH / 24
-  const { recommendedDays, feasibleDays, difficultDays } = settings.darkness
-  const cls: ScoreClass = sunlitPct <= 0 ? 'not-feasible'
-    : d <= recommendedDays ? 'recommended'
-      : d <= feasibleDays ? 'feasible'
-        : d <= difficultDays ? 'difficult'
-          : 'not-feasible'
+export function scoreSunlight(sunlitPct: number, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): CriterionResult {
+  const pct = Math.round(sunlitPct * 10) / 10
+  const { recommendedPercent, feasiblePercent, difficultPercent } = settings.sunlight
+  const cls: ScoreClass = pct >= recommendedPercent ? 'recommended'
+    : pct >= feasiblePercent ? 'feasible'
+      : pct >= difficultPercent ? 'difficult'
+        : 'not-feasible'
   const comment = {
-    recommended: `Sunlit ${Math.round(sunlitPct)}% of the time, longest night ${d.toFixed(1)} d: small batteries suffice (≤ ${recommendedDays} d).`,
-    feasible: `Longest night ${d.toFixed(1)} d: batteries must bridge several days (${recommendedDays}–${feasibleDays} d).`,
-    difficult: `Longest night ${d.toFixed(1)} d (a lunar night): large batteries or a heat source needed (${feasibleDays}–${difficultDays} d).`,
-    'not-feasible': sunlitPct <= 0
-      ? 'No sunlight at all in the period.'
-      : `Longest night ${d.toFixed(1)} d, above ${difficultDays} d: solar power alone is not enough.`,
+    recommended: `Sunlight is available for ${pct.toFixed(1)}% of the mission period, meeting the ≥ ${recommendedPercent}% target.`,
+    feasible: `Sunlight is available for ${pct.toFixed(1)}% of the mission period, meeting the ≥ ${feasiblePercent}% target but below ${recommendedPercent}%.`,
+    difficult: `Sunlight is available for ${pct.toFixed(1)}% of the mission period, meeting the ≥ ${difficultPercent}% target but below ${feasiblePercent}%.`,
+    'not-feasible': pct <= 0
+      ? 'No sunlight is available during the selected mission period.'
+      : `Sunlight is available for ${pct.toFixed(1)}% of the mission period, below the ${difficultPercent}% minimum target.`,
   }[cls]
-  return { id: 'sunlight', name: 'Sunlight', cls, value: `${Math.round(sunlitPct)}% sunlit`, comment }
+  return { id: 'sunlight', name: 'Sunlight', cls, value: `${pct.toFixed(1)}% of period`, comment }
 }
 
 const fmtDoseBand = (value: number) => value.toExponential(0).replace('e+', '·10^').replace('e', '·10^')
 
 /** Current score boundaries, used by the info pop-ups beside each criterion. */
 export function criteriaInfo(settings: AdvancedSettings): Record<CriterionResult['id'], { what: string; bands: [ScoreClass, string][] }> {
-  const { temperature, radiation, slope, telecom, darkness } = settings
+  const { temperature, radiation, slope, telecom, sunlight } = settings
   const t = (value: number) => `${value} °C`
   const dose = (value: number) => `${fmtDoseBand(value)} µGy`
   const angle = (value: number) => `${value}°`
   const percent = (value: number) => `${value}%`
-  const days = (value: number) => `${value} days`
   return {
     temperature: {
       what: 'Mean surface temperature over the period',
@@ -189,11 +184,11 @@ export function criteriaInfo(settings: AdvancedSettings): Record<CriterionResult
         ['not-feasible', `< ${percent(telecom.difficultPercent)}`]],
     },
     sunlight: {
-      what: 'Longest stretch without sunlight (Sun below the terrain horizon)',
-      bands: [['recommended', `≤ ${days(darkness.recommendedDays)}`],
-        ['feasible', `${days(darkness.recommendedDays)} to ${days(darkness.feasibleDays)}`],
-        ['difficult', `${days(darkness.feasibleDays)} to ${days(darkness.difficultDays)}`],
-        ['not-feasible', `> ${days(darkness.difficultDays)} or none`]],
+      what: 'Percentage of the selected mission period with the Sun above the local terrain horizon',
+      bands: [['recommended', `≥ ${percent(sunlight.recommendedPercent)}`],
+        ['feasible', `${percent(sunlight.feasiblePercent)} to < ${percent(sunlight.recommendedPercent)}`],
+        ['difficult', `${percent(sunlight.difficultPercent)} to < ${percent(sunlight.feasiblePercent)}`],
+        ['not-feasible', `< ${percent(sunlight.difficultPercent)}`]],
     },
   }
 }
@@ -213,7 +208,6 @@ export function scoreLandingCell(input: {
   linkPct: number
   longestLinkGapH: number
   sunlitPct: number
-  longestDarkH: number
 }, settings: AdvancedSettings = DEFAULT_ADVANCED_SETTINGS): number {
   const points = (cls: ScoreClass) => CLASS_INFO[cls].points
   const t = input.tMeanC
@@ -234,11 +228,10 @@ export function scoreLandingCell(input: {
     : input.linkPct >= settings.telecom.feasiblePercent ? 'feasible'
       : input.linkPct >= settings.telecom.difficultPercent ? 'difficult'
         : 'not-feasible'
-  const darkDays = input.longestDarkH / 24
-  const sunlight: ScoreClass = input.sunlitPct <= 0 ? 'not-feasible'
-    : darkDays <= settings.darkness.recommendedDays ? 'recommended'
-      : darkDays <= settings.darkness.feasibleDays ? 'feasible'
-        : darkDays <= settings.darkness.difficultDays ? 'difficult'
-          : 'not-feasible'
+  const sunlightPct = Math.round(input.sunlitPct * 10) / 10
+  const sunlight: ScoreClass = sunlightPct >= settings.sunlight.recommendedPercent ? 'recommended'
+    : sunlightPct >= settings.sunlight.feasiblePercent ? 'feasible'
+      : sunlightPct >= settings.sunlight.difficultPercent ? 'difficult'
+        : 'not-feasible'
   return (points(temperature) + points(radiation) + points(slope) + points(telecom) + points(sunlight)) / 5
 }
