@@ -22,6 +22,11 @@ import { pyramidTiles } from './lib/pyramidTiles'
 import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
+import { WelcomeModal } from './components/WelcomeModal'
+import { welcomeHidden } from './lib/welcomeStorage'
+import { Tutorial } from './components/Tutorial'
+import { BasicsDialog } from './components/BasicsDialog'
+import { INSIGHTS_BUTTON } from './content/insights'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
 import { sampleSiteEnv } from './lib/siteEnv'
@@ -273,6 +278,8 @@ export default function App() {
   const [iceError, setIceError] = useState<string>()
   const [pitsVisible, setPitsVisible] = useState(false)
   const [pitsError, setPitsError] = useState<string>()
+  // welcome screen / tutorial / basics ("Insights"); the welcome opens on start unless the user hid it
+  const [insights, setInsights] = useState<'welcome' | 'tutorial' | 'basics' | null>(() => (welcomeHidden() ? null : 'welcome'))
 
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
@@ -1401,7 +1408,11 @@ export default function App() {
     <div className="app">
       <div ref={containerRef} className="globe" />
       <header className="brand">
-        <h1>ByteTheMoon</h1>
+        <div className="brand-title">
+          <h1>ByteTheMoon</h1>
+          <button type="button" className="insights-button" title={INSIGHTS_BUTTON.title}
+            onClick={() => setInsights('welcome')}>{INSIGHTS_BUTTON.label}</button>
+        </div>
         <span className="muted">Lunar Landing Site Navigator{sceneRef.current && ` · basemap: ${sceneRef.current.basemap === 'ion' ? 'Cesium Moon 3D' : 'NASA Moon Trek'}`}</span>
       </header>
       {terrainViewActive && (
@@ -1500,6 +1511,12 @@ export default function App() {
         </>
       )}
       {!ready && <div className="loading">Loading the Moon…</div>}
+      {insights === 'welcome' && (
+        <WelcomeModal onStartTutorial={() => setInsights('tutorial')} onLearnBasics={() => setInsights('basics')}
+          onClose={() => setInsights(null)} />
+      )}
+      {insights === 'tutorial' && <Tutorial onClose={() => setInsights(null)} />}
+      {insights === 'basics' && <BasicsDialog onBack={() => setInsights('welcome')} onClose={() => setInsights(null)} />}
     </div>
   )
 }

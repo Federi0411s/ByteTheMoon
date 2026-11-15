@@ -91,7 +91,7 @@ export function LayerPanel({
   return (
     <section className="panel layer-menu">
       <h2>Map controls</h2>
-      <details className="menu-section">
+      <details className="menu-section" data-tour="landing-suitability">
         <summary className="menu-section-summary">
           <span>Landing suitability</span>
           <span className="menu-section-state">{suitabilityStatus}</span>
@@ -113,7 +113,7 @@ export function LayerPanel({
         </div>
       </details>
 
-      <details className="menu-section">
+      <details className="menu-section" data-tour="map-layers">
         <summary className="menu-section-summary">
           <span>Map layers</span>
           <span className="menu-section-state">{activeLayers}/{shown.length} active</span>
@@ -150,7 +150,7 @@ export function LayerPanel({
         </div>
       </details>
 
-      <details className="menu-section">
+      <details className="menu-section" data-tour="radiation">
         <summary className="menu-section-summary">
           <span>Radiation</span>
           <span className="menu-section-state">{radiationStatus}</span>
@@ -209,7 +209,7 @@ export function LayerPanel({
         </div>
       </details>
 
-      <details className="menu-section">
+      <details className="menu-section" data-tour="water-ice">
         <summary className="menu-section-summary">
           <span>Water ice South Pole</span>
           <span className="menu-section-state">{iceError ? 'Error' : iceVisible ? 'On' : 'Off'}</span>
