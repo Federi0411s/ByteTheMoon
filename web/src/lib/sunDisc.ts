@@ -60,6 +60,12 @@ export function discLight(d: number): number {
   return TABLE[i] + (TABLE[i + 1] - TABLE[i]) * (f - i)
 }
 
+/** Signed distance from the solar disc's lower limb to an oblique horizon, in disc radii. */
+export function sunDiscHorizonMargin(el: number, r: number, hC: number, hL: number, hR: number): number {
+  const slope = (hR - hL) / (2 * r)
+  return (el - hC) / (r * Math.sqrt(1 + slope * slope)) + 1
+}
+
 /** Azimuth offset (deg) of the disc's side edges from its centre, for a disc of radius r at elevation el (deg). */
 export function discEdgeAz(elDeg: number, rDeg: number): number {
   return rDeg / Math.max(Math.cos((elDeg * Math.PI) / 180), 1e-3)
@@ -70,6 +76,5 @@ export function discEdgeAz(elDeg: number, rDeg: number): number {
  * hC: horizon elevation at the Sun's azimuth, hL / hR: at azimuth -/+ discEdgeAz(el, r).
  */
 export function sunVisible(el: number, r: number, hC: number, hL: number, hR: number): number {
-  const s = (hR - hL) / (2 * r) // horizon slope across the disc (deg of elevation per deg across)
-  return discLight((el - hC) / (r * Math.sqrt(1 + s * s)))
+  return discLight(sunDiscHorizonMargin(el, r, hC, hL, hR) - 1)
 }

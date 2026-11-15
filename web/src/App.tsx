@@ -1154,6 +1154,7 @@ export default function App() {
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: regionFilters.temperature.on, // the regolith model only when temperature is filtered
+        longestNight: regionFilters.nightHours.on,
         sky: pyramids.sky ? pyramidTiles(pyramids.sky) : undefined,
         value: regionValue(regionFilters, {
           periodHours: filterPeriod.hours,
@@ -1471,13 +1472,14 @@ export default function App() {
     if (!selected || !ephemeris) return undefined
     const range = ephemerisRange(ephemeris)
     const transitions = findSunTransitions(ephemeris, selected, selected.horizon)
-    const initialDaylight = transitions.length
-      ? !transitions[0].daylight
-      : computeTimeline(ephemeris, selected, selected.horizon, range[0], range[0])[0]?.sunVisibleFrac > 0.5
+    const nightTransitions = findSunTransitions(ephemeris, selected, selected.horizon, 0)
+    const initialSunlight = nightTransitions.length
+      ? !nightTransitions[0].daylight
+      : computeTimeline(ephemeris, selected, selected.horizon, range[0], range[0])[0]?.sunVisibleFrac > 0
     return {
       range,
       transitions,
-      darkIntervals: darkIntervalsFromTransitions(range[0], range[1], initialDaylight, transitions),
+      darkIntervals: darkIntervalsFromTransitions(range[0], range[1], initialSunlight, nightTransitions),
     }
   }, [selected, ephemeris])
   const summaryStart = landingDay !== undefined ? scorePeriod[0] : t
@@ -1526,11 +1528,15 @@ export default function App() {
     return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], 3600_000, bundle?.fields.dem_south)
   }, [selected, ephemeris, scorePeriod, bundle, analysisPeriodInWindow])
   // sunlight criterion: share of the period sunlit, weighted by the share of the Sun's light visible
-  // (an hour at 30 % counts 0.3 h), and longest night (less than half the light visible)
+  // (an hour at 30 % counts 0.3 h), and longest night (no direct sunlight above the horizon)
   const sunStats = useMemo(() => {
     if (!walkSeries) return undefined
     let lit = 0, run = 0, longest = 0
-    walkSeries.sunlit.forEach((v, i) => { lit += walkSeries.light[i]; run = v ? 0 : run + 1; longest = Math.max(longest, run) })
+    walkSeries.sunlit.forEach((_, i) => {
+      lit += walkSeries.light[i]
+      run = walkSeries.light[i] > 0 ? 0 : run + 1
+      longest = Math.max(longest, run)
+    })
     return { pct: (100 * lit) / walkSeries.sunlit.length, longestDarkH: longest * walkSeries.stepH }
   }, [walkSeries])
   const landing = useMemo(() => {

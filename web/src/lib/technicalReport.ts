@@ -46,10 +46,10 @@ function periodStats(samples: TimelineSample[], endMs: number) {
   for (let i = 0; i + 1 < samples.length; i++) {
     const sample = samples[i]
     const hours = Math.max(0, Math.min(endMs, samples[i + 1].t) - sample.t) / HOUR_MS
-    const sun = sample.sunVisibleFrac > 0.5
+    const sun = sample.sunVisibleFrac > 0
     const earth = sample.earthVisibleFrac > 0.5
     totalHours += hours
-    // sunlit hours weighted by the share of the Sun's light visible; dark spells: less than half of it
+    // Sunlit hours are light-weighted; night begins only when the Sun is fully below the horizon.
     sunHours += hours * sample.sunVisibleFrac
     if (earth) bothHours += hours * sample.sunVisibleFrac
     if (sun) currentDarkHours = 0
