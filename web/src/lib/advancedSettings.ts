@@ -19,10 +19,10 @@ export interface AdvancedSettings {
     feasiblePercent: number
     difficultPercent: number
   }
-  darkness: {
-    recommendedDays: number
-    feasibleDays: number
-    difficultDays: number
+  sunlight: {
+    recommendedPercent: number
+    feasiblePercent: number
+    difficultPercent: number
   }
   eva: {
     minimumTemperatureC: number
@@ -40,7 +40,7 @@ export const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
   radiation: { recommendedDoseUGy: 3e8, feasibleDoseUGy: 1e9, difficultDoseUGy: 1e10 },
   slope: { recommendedDeg: 5, feasibleDeg: 8, difficultDeg: 10 },
   telecom: { recommendedPercent: 80, feasiblePercent: 40, difficultPercent: 10 },
-  darkness: { recommendedDays: 3, feasibleDays: 7, difficultDays: 20 },
+  sunlight: { recommendedPercent: 80, feasiblePercent: 50, difficultPercent: 20 },
   eva: {
     minimumTemperatureC: -157,
     maximumTemperatureC: 121,
@@ -58,7 +58,7 @@ export function copyAdvancedSettings(settings: AdvancedSettings): AdvancedSettin
     radiation: { ...settings.radiation },
     slope: { ...settings.slope },
     telecom: { ...settings.telecom },
-    darkness: { ...settings.darkness },
+    sunlight: { ...settings.sunlight },
     eva: { ...settings.eva },
   }
 }
@@ -68,7 +68,7 @@ export function validateAdvancedSettings(settings: AdvancedSettings): string[] {
   const allValues = Object.values(settings).flatMap((section) => Object.values(section))
   if (allValues.some((value) => !Number.isFinite(value))) errors.push('All values must be finite numbers.')
 
-  const { temperature, radiation, slope, telecom, darkness, eva } = settings
+  const { temperature, radiation, slope, telecom, sunlight, eva } = settings
   if (!(temperature.recommendedC > temperature.feasibleC && temperature.feasibleC > temperature.difficultC)) {
     errors.push('Temperature bands must descend from recommended to difficult.')
   }
@@ -86,8 +86,11 @@ export function validateAdvancedSettings(settings: AdvancedSettings): string[] {
       telecom.difficultPercent >= 0)) {
     errors.push('Telecommunications bands must descend from recommended to difficult within 0–100%.')
   }
-  if (!(darkness.recommendedDays >= 0 && darkness.recommendedDays < darkness.feasibleDays && darkness.feasibleDays < darkness.difficultDays)) {
-    errors.push('Darkness-duration bands must increase from recommended to difficult.')
+  if (!(sunlight.recommendedPercent <= 100 &&
+      sunlight.recommendedPercent > sunlight.feasiblePercent &&
+      sunlight.feasiblePercent > sunlight.difficultPercent &&
+      sunlight.difficultPercent >= 0)) {
+    errors.push('Sunlight percentage bands must descend from recommended to difficult within 0–100%.')
   }
   if (!(eva.minimumTemperatureC < eva.maximumTemperatureC)) errors.push('The minimum EVA temperature must be below the maximum.')
   if (!(eva.maximumWalkHours > 0 && eva.maximumWalkHours <= 24 && eva.coldWalkHours > 0 && eva.coldWalkHours <= 24)) {

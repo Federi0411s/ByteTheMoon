@@ -1385,12 +1385,12 @@ export default function App() {
     if (!selected || !ephemeris || !analysisPeriodInWindow) return undefined
     return siteThermalSeries(ephemeris, selected, selected.horizon, scorePeriod[0], scorePeriod[1], 3600_000, bundle?.fields.dem_south)
   }, [selected, ephemeris, scorePeriod, bundle, analysisPeriodInWindow])
-  // sunlight criterion: share of the period sunlit and longest night (Sun below the terrain horizon)
+  // Sunlight criterion: share of the selected mission period with the Sun above the terrain horizon.
   const sunStats = useMemo(() => {
     if (!walkSeries) return undefined
-    let lit = 0, run = 0, longest = 0
-    for (const v of walkSeries.sunlit) { lit += v; run = v ? 0 : run + 1; longest = Math.max(longest, run) }
-    return { pct: (100 * lit) / walkSeries.sunlit.length, longestDarkH: longest * walkSeries.stepH }
+    let lit = 0
+    for (const v of walkSeries.sunlit) lit += v
+    return { pct: (100 * lit) / walkSeries.sunlit.length }
   }, [walkSeries])
   const landing = useMemo(() => {
     if (!selected || !analysisPeriodInWindow) return undefined
@@ -1412,7 +1412,7 @@ export default function App() {
       env ? scoreRadiation(env.doseUGyH, (scorePeriod[1] - scorePeriod[0]) / 3600_000, advancedSettings) : undefined,
       slope,
       telecom,
-      sunStats ? scoreSunlight(sunStats.longestDarkH, sunStats.pct, advancedSettings) : undefined,
+      sunStats ? scoreSunlight(sunStats.pct, advancedSettings) : undefined,
     ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
   }, [selected, siteEnvForPeriod, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow, advancedSettings])
 

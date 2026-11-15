@@ -92,12 +92,8 @@ export async function compareSavedSites({
     }
     const linkStepH = dsn.length > 1 ? (dsn[1].t - dsn[0].t) / 3600_000 : 0
     const linkPercent = (100 * dsn.filter((sample) => sample.any).length) / dsn.length
-    let lit = 0, darkRun = 0, longestDark = 0
-    for (const isSunlit of walkSeries.sunlit) {
-      lit += isSunlit
-      darkRun = isSunlit ? 0 : darkRun + 1
-      longestDark = Math.max(longestDark, darkRun)
-    }
+    let lit = 0
+    for (const isSunlit of walkSeries.sunlit) lit += isSunlit
     const sunlitPercent = (100 * lit) / walkSeries.sunlit.length
     const slope = slopeAt?.(site) ?? env.slope
     const score = combine([
@@ -105,7 +101,7 @@ export async function compareSavedSites({
       scoreRadiation(doseUGyH, (end - start) / 3600_000, settings),
       scoreSlope(slope, footprintLabel(footprint).replace(/^(circle|ellipse)/, 'landing $1'), settings),
       scoreTelecom(linkPercent, longestGap * linkStepH, settings),
-      scoreSunlight(longestDark * walkSeries.stepH, sunlitPercent, settings),
+      scoreSunlight(sunlitPercent, settings),
     ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
     if (score.missing.length) throw new Error(`One or more score factors could not be calculated for ${site.name}.`)
     const human = assessHuman(doseUGyH, walkSeries, (end - start) / 86400_000, isMission, settings)

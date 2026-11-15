@@ -82,7 +82,7 @@ export async function downloadSavedSitesReport(
   doc.text('SAVED LANDING SITE COMPARISON', margin, y)
   y += 7
   paragraph(`Generated ${fmtDateTime(Date.now())} UTC. Analysis period: ${periodLabel}, ${fmtDateTime(period[0])} – ${fmtDateTime(period[1])} UTC.`)
-  paragraph('Ranking prioritizes feasible sites, then sorts by the average landing score. The score is the mean of temperature, radiation, slope, telecommunications and sunlight classes.')
+  paragraph('Ranking prioritizes feasible sites, then sorts by the average landing score. The score is the mean of temperature, radiation, slope, telecommunications and sunlight classes; sunlight is the percentage of the selected mission period with the Sun above local terrain.')
   heading('Site ranking')
 
   comparisons.forEach((comparison, index) => {

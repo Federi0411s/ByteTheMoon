@@ -68,7 +68,7 @@ Each heatmap tile is computed in a Web Worker (`web/src/lib/heatWorker.ts`) for 
 | Layer | Method |
 |---|---|
 | Horizons | 32 azimuths × 40 steps out to 200 km per point. Coarser DEM levels are used further away, and lunar curvature is included. Near the poles each tile's sample grid has more rows than columns (`lib/heatGrid.ts`), so the spacing stays square on the ground |
-| Sunlight / Earth visibility | Fraction of the window with the Sun / Earth above that horizon (SPICE ephemeris) |
+| Sunlight / Earth visibility | Fraction of the selected mission window with the Sun / Earth above that horizon (SPICE ephemeris) |
 | Permanent shadow (PSR) | Never lit during the selected period |
 | Slope, elevation | Precomputed tiles (see above); computed from the DEM tiles only if those are missing |
 | Surface charging | EQUIPOT model, reading `pipeline/equipot_results.csv` directly, with the terrain horizon instead of a flat one |
