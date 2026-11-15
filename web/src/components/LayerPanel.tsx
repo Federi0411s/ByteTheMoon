@@ -109,7 +109,7 @@ export function LayerPanel({
                 <input type="checkbox" checked={score.enabled} onChange={(e) => onScore({ ...score, enabled: e.target.checked })} />
                 Show score heatmap
               </label>
-              <p className="muted">Combines temperature, radiation, slope, telecommunications and sunlight with equal weight. Temporal values use the global heatmap sampling; a selected site shows its detailed score.</p>
+              <p className="muted">Combines temperature, radiation, slope, telecommunications and sunlight with equal weight. Drawn within 500 km of the selected site or point (select one first), at the highest resolution available there.</p>
               {score.enabled && <Legend colormap="viridis" min={0} max={100} units="score" />}
             </div>
           )}

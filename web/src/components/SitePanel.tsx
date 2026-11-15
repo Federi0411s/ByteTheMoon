@@ -1,10 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type ReactNode } from 'react'
 import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
-import { FootprintEditor } from './FootprintEditor'
-import type { Footprint } from '../lib/requirements'
 import { PowerPanel } from './PowerPanel'
 import { ScorePanel } from './ScorePanel'
 import type { LandingScore } from '../lib/landingScore'
@@ -15,6 +13,8 @@ import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
 import { TerrainPreview } from './TerrainPreview'
 import { TimelineBars } from './TimelineBars'
+import { SavedSitesMenu } from './SavedSitesMenu'
+import type { SavedSiteComparison } from '../lib/savedSiteComparison'
 
 const fmtDur = (ms: number | null) => {
   if (ms === null) return '—'
@@ -76,25 +76,12 @@ function CoordinateSearch({ onSearch }: { onSearch: (lat: number, lon: number) =
   )
 }
 
-/** Dropdown-style button (like the site chooser) that opens the landing footprint editor. */
-function FootprintButton({ fp, onChange }: { fp: Footprint; onChange: (fp: Footprint) => void }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="footprint-picker">
-      <button type="button" className="footprint-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span>Landing footprint</span>
-        <span className="chevron">{open ? '▴' : '▾'}</span>
-      </button>
-      {open && <FootprintEditor fp={fp} onChange={onChange} />}
-    </div>
-  )
-}
-
 export function SitePanel({
   sites,
   selected,
   onSelect,
   onSearchCoordinates,
+  regionFiltersPanel,
   onGenerateReport,
   reportDisabled,
   timeline,
@@ -106,11 +93,15 @@ export function SitePanel({
   expanded,
   onToggleExpanded,
   onClose,
-  footprint,
-  onFootprint,
   onSaveSite,
   onRemoveSite,
+  onRemoveSavedSite,
+  savedSites,
+  comparisonPeriod,
+  comparisonPeriodLabel,
   savedSitesError,
+  comparisonDisabledReason,
+  compareSavedSites,
   showSiteMarkers,
   onShowSiteMarkersChange,
   env,
@@ -126,6 +117,7 @@ export function SitePanel({
   selected?: Site
   onSelect: (s: Site) => void
   onSearchCoordinates: (lat: number, lon: number) => void
+  regionFiltersPanel: ReactNode
   onGenerateReport: () => void
   reportDisabled: boolean
   timeline: TimelineSample[]
@@ -138,12 +130,15 @@ export function SitePanel({
   onToggleExpanded: () => void
   /** close the analysis of the selected point / site */
   onClose: () => void
-  /** landing footprint (probability region) used by the slope checks */
-  footprint: Footprint
-  onFootprint: (fp: Footprint) => void
   onSaveSite: (name: string) => void
   onRemoveSite: () => void
+  onRemoveSavedSite: (site: Site) => void
+  savedSites: Site[]
+  comparisonPeriod: [number, number]
+  comparisonPeriodLabel: string
   savedSitesError?: string
+  comparisonDisabledReason?: string
+  compareSavedSites: (onProgress: (completed: number, total: number) => void, signal: AbortSignal) => Promise<SavedSiteComparison[]>
   showSiteMarkers: boolean
   onShowSiteMarkersChange: (show: boolean) => void
   dsn?: { now?: DsnSample }
@@ -179,6 +174,7 @@ export function SitePanel({
         Show landing-site markers
       </label>
       <CoordinateSearch onSearch={onSearchCoordinates} />
+      {regionFiltersPanel}
       <select value={selected?.id ?? ''} onChange={(e) => { const s = sites.find((x) => x.id === e.target.value); if (s) onSelect(s) }} aria-label="Site">
         <option value="" disabled>Choose a site…</option>
         {selected?.group === 'Custom' && <option value={selected.id}>{selected.name}</option>}
@@ -188,7 +184,15 @@ export function SitePanel({
           </optgroup>
         ))}
       </select>
-      <FootprintButton fp={footprint} onChange={onFootprint} />
+      <SavedSitesMenu
+        sites={savedSites}
+        onSelect={onSelect}
+        onRemove={onRemoveSavedSite}
+        period={comparisonPeriod}
+        periodLabel={comparisonPeriodLabel}
+        comparisonDisabledReason={comparisonDisabledReason}
+        compare={compareSavedSites}
+      />
       <p className="muted">Click the map or search coordinates to inspect and analyse a custom landing site.</p>
       {landing && <ScorePanel {...landing} />}
       {savedSitesError && <p className="site-save-error" role="alert">{savedSitesError}</p>}

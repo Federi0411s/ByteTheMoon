@@ -1,5 +1,12 @@
 import type { LayerMeta } from './raster'
 
+const RAD_PRIMARY_UGY_H = 20.2
+const RAD_ALBEDO_UGY_H = 6.2
+
+/** GCR + soil-albedo dose rate from the visible sky fraction and the selected solar-cycle factor. */
+export const radiationDose = (visibleSkyFraction: number, gcrFactor: number) =>
+  (RAD_PRIMARY_UGY_H * visibleSkyFraction + RAD_ALBEDO_UGY_H * (1 - visibleSkyFraction)) * gcrFactor
+
 export interface RadiationClassLegendItem {
   color: string
   label: string

@@ -6,6 +6,7 @@ import {
   Color,
   ConstantPositionProperty,
   Ellipsoid,
+  CallbackProperty,
   type Entity,
   ImageryLayer,
   LabelStyle,
@@ -22,8 +23,10 @@ import { pyramidTiles } from './lib/pyramidTiles'
 import { DemReliefProvider } from './cesium/DemReliefProvider'
 import { DemTerrainProvider } from './cesium/DemTerrainProvider'
 import { PitsLayer, pitInfoRows, type PitProps } from './cesium/PitsLayer'
+import { RegionFiltersPanel } from './components/RegionFiltersPanel'
+import { activeFilters, defaultFilters, loadIceDistance, loadPitDistance, regionValue, type IceDistance, type PitDistance, type RegionFilterState } from './lib/regionFilters'
 import { WelcomeModal } from './components/WelcomeModal'
-import { AdvancedModeDialog } from './components/AdvancedModeDialog'
+import { SettingsDialog } from './components/SettingsDialog'
 import { welcomeHidden } from './lib/welcomeStorage'
 import { Tutorial } from './components/Tutorial'
 import { INSIGHTS_BUTTON } from './content/insights'
@@ -46,10 +49,11 @@ import {
   loadEphemerisWindow,
   sunPosition,
 } from './lib/ephemeris'
-import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
+import { loadRadiationMetadata, radiationDose, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreConfig } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
+import { compareSavedSites } from './lib/savedSiteComparison'
 import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
 import { siteThermalSeries } from './lib/regolith'
@@ -72,6 +76,7 @@ const CALENDAR_RANGE: [number, number] = [
 const D2R = Math.PI / 180
 const MOON_RADIUS_M = 1737400
 const FOCUS_RADIUS_M = 15_000 // refined heatmaps around the selected site
+const SCORE_RADIUS_M = 500_000 // the landing-suitability map covers this radius around the selected site
 const RELIEF_EDGE_RAD = 80 * D2R // the relief basemap (LOLA LDEM 80S) ends here
 const RELIEF_FADE_RAD = 1 * D2R
 const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
@@ -87,10 +92,7 @@ const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
  * terrain horizons: D = PRIMARY * f_sky + ALBEDO * (1 - f_sky), f_sky = mean(1 - sin H) / 2, scaled by
  * the solar-cycle GCR factor of the selected period (lib/heatEngine.gcrFactor; 1 = 2019 minimum).
  */
-const RAD_PRIMARY_UGY_H = 20.2 // free-space GCR, Si (Chang'e 4, 2019 solar minimum)
-const RAD_ALBEDO_UGY_H = 6.2 // neutral secondaries per unit soil fraction
 const RAD_CONTINUOUS_RANGE: [number, number] = [8, 14.5] // covers solar minimum to maximum
-const radiationDose = (fSky: number, gcr: number) => (RAD_PRIMARY_UGY_H * fSky + RAD_ALBEDO_UGY_H * (1 - fSky)) * gcr
 /** class thresholds from the overlay legend ("<= 12.0", "<= 12.8", "> 12.8"); pipeline defaults otherwise */
 function radiationThresholds(m: RadiationOverlayMetadata): [number, number] {
   const nums = m.classLegend.map((c) => Number(/([\d.]+)/.exec(c.label)?.[1])).filter(Number.isFinite)
@@ -207,24 +209,21 @@ export default function App() {
   const iceLoadedRef = useRef(false)
   const pitsRef = useRef<PitsLayer | null>(null)
   const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
+  // site marker -> site (click to select) and the marker under the mouse (grows a little, animated)
+  const siteByMarker = useRef(new Map<Entity, Site>())
+  // latest selection actions for the map click handler (registered once per scene)
+  const clickActions = useRef<{ selectSite: (s: Site) => void; clearSelection: () => void; hasSelection: boolean }>({ selectSite: () => {}, clearSelection: () => {}, hasSelection: false })
+  const hover = useRef<{ entity?: Entity; since: number; prev?: Entity; prevSince: number }>({ since: 0, prevSince: 0 })
 
   const [ready, setReady] = useState(false)
   const [bundle, setBundle] = useState<DataBundle | null>(null)
   const [savedSitesState, setSavedSitesState] = useState<{ sites: Site[]; error?: string }>(() => {
     try {
-      const raw = localStorage.getItem(SAVED_SITES_KEY)
-      if (!raw) return { sites: [] }
-      const parsed: unknown = JSON.parse(raw)
-      if (!Array.isArray(parsed) || parsed.some((site) =>
-        !site || typeof site.id !== 'string' || typeof site.name !== 'string' ||
-        typeof site.lat !== 'number' || typeof site.lon !== 'number' || site.group !== 'Saved',
-      )) {
-        throw new Error('Saved landing sites have an invalid format.')
-      }
-      return { sites: parsed as Site[] }
+      localStorage.removeItem(SAVED_SITES_KEY)
+      return { sites: [] }
     } catch (error) {
-      console.error('Could not load saved landing sites.', error)
-      return { sites: [], error: 'Saved landing sites could not be loaded from this browser.' }
+      console.error('Could not clear saved landing sites from the previous app session.', error)
+      return { sites: [], error: 'Saved landing sites from the previous session could not be cleared from this browser.' }
     }
   })
   const { sites: savedSites, error: savedSitesError } = savedSitesState
@@ -235,7 +234,7 @@ export default function App() {
   const [layerState, setLayerState] = useState<Record<string, LayerState>>({})
   const [score, setScore] = useState<ScoreConfig>({ enabled: false, maxSlope: 8, footprint: DEFAULT_FOOTPRINT, opacity: 0.7 })
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(() => copyAdvancedSettings(DEFAULT_ADVANCED_SETTINGS))
-  const [advancedModeOpen, setAdvancedModeOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [panel, setPanel] = useState<PanelConfig>(DEFAULT_PANEL) // solar arrays
   const [t, setT] = useState(() => Math.floor(Date.now() / 1000) * 1000) // current UTC time, whole seconds (clamped to the ephemeris on load)
   const [playing, setPlaying] = useState(false)
@@ -281,6 +280,11 @@ export default function App() {
   const [iceError, setIceError] = useState<string>()
   const [pitsVisible, setPitsVisible] = useState(false)
   const [pitsError, setPitsError] = useState<string>()
+  // region filters: highlight the points that meet every ticked criterion (lib/regionFilters.ts)
+  const [regionFilters, setRegionFilters] = useState<RegionFilterState>(() => defaultFilters(5 * 8766))
+  const [iceDistance, setIceDistance] = useState<IceDistance | null>(null)
+  const [pitDistance, setPitDistance] = useState<PitDistance | null>(null)
+  const [filterDataError, setFilterDataError] = useState<string>()
   // welcome screen / tutorial ("Insights"); the welcome opens on start unless the user hid it
   const [insights, setInsights] = useState<'welcome' | 'tutorial' | null>(() => (welcomeHidden() ? null : 'welcome'))
 
@@ -591,11 +595,21 @@ export default function App() {
     const scene = sceneRef.current
     if (!ready || !scene || !bundle) return
     markers.current.sites.forEach((e) => scene.viewer.entities.remove(e))
-    markers.current.sites = allSites.map((s) =>
-      scene.viewer.entities.add({
+    siteByMarker.current.clear()
+    // hover animation: 9 px -> 13 px over 150 ms when the mouse is on the marker, back when it leaves
+    const sizeOf = (e: () => Entity | undefined) => new CallbackProperty(() => {
+      const h = hover.current, me = e(), now = performance.now()
+      const k = (t: number) => { const x = Math.min(1, (now - t) / 150); return x * (2 - x) }
+      if (me && h.entity === me) return 9 + 4 * k(h.since)
+      if (me && h.prev === me) return 13 - 4 * k(h.prevSince)
+      return 9
+    }, false)
+    markers.current.sites = allSites.map((s) => {
+      let self: Entity | undefined
+      const entity = scene.viewer.entities.add({
         position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
         point: {
-          pixelSize: 9,
+          pixelSize: sizeOf(() => self),
           color: s.group === 'Saved'
             ? Color.fromCssColorString('#32cd32')
             : FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
@@ -608,8 +622,11 @@ export default function App() {
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
           disableDepthTestDistance: 500_000, // always on top nearby, hidden behind the Moon from afar
         },
-      }),
-    )
+      })
+      self = entity
+      siteByMarker.current.set(entity, s)
+      return entity
+    })
   }, [ready, bundle, allSites])
 
   useEffect(() => {
@@ -904,16 +921,36 @@ export default function App() {
     if (!ready || !scene || !(heat && heatVersion)) return
     const old = layerRefs.current.__score
     if (old) { removeLayer(scene, old); delete layerRefs.current.__score }
-    if (!score.enabled) return
+    // not global: only around the selected site / point, so the whole area gets refined quality
+    if (!score.enabled || selLat === undefined || selLon === undefined) return
     const handle = setTimeout(() => {
       const limit = Math.min(Math.max(score.maxSlope, 0.5), SLOPE_MAX_DEG)
+      const lat0 = selLat * D2R, lon0 = selLon * D2R
+      const dLat = SCORE_RADIUS_M / MOON_RADIUS_M
+      const south = Math.max(-Math.PI / 2, lat0 - dLat), north = Math.min(Math.PI / 2, lat0 + dLat)
+      // a pole inside the circle, or a box crossing the antimeridian: take every longitude
+      const polar = lat0 + dLat >= Math.PI / 2 || lat0 - dLat <= -Math.PI / 2
+      const dLon = polar ? Math.PI : Math.asin(Math.min(1, Math.sin(dLat) / Math.cos(lat0)))
+      const wrap = lon0 - dLon < -Math.PI || lon0 + dLon > Math.PI
+      const boundsRad: [number, number, number, number] = polar || wrap ? [-Math.PI, south, Math.PI, north] : [lon0 - dLon, south, lon0 + dLon, north]
+      const sinLat0 = Math.sin(lat0), cosLat0 = Math.cos(lat0), cosR = Math.cos(dLat)
+      const inCircle = (lon: number, lat: number) => sinLat0 * Math.sin(lat) + cosLat0 * Math.cos(lat) * Math.cos(lon - lon0) >= cosR
+      const slopeMask = slopeMax ? (rect: [number, number, number, number], z: number) => slopeMax.checkerBanded(rect, z, fpA, fpB, fpAz, limit) : undefined
       const provider = new GlobalHeatProvider({
         engine: heat,
         thermal: true,
         landing: { footprint: [fpA, fpB, fpAz], gcr: heat.gcr, scoreSettings: advancedSettings },
         value: (v) => (Number.isFinite(v.landingScore) && v.slope <= limit ? v.landingScore : NaN),
-        mask: slopeMax ? (rect, z) => slopeMax.checker(rect, z, fpA, fpB, fpAz, limit) : undefined,
-        min: 0, max: 100, colormap: 'viridis', focus, guide,
+        mask: async (rect, z) => {
+          const keep = slopeMask ? await slopeMask(rect, z) : undefined
+          return keep ? (lon, lat) => inCircle(lon, lat) && keep(lon, lat) : inCircle
+        },
+        boundsRad,
+        maximumLevel: 13,
+        // the whole circle at the selected site's refined quality: finest elevation tiles, one sample
+        // per elevation pixel (capped at 33 per tile side for the regolith model) from tile level 5 on
+        focus: { boundsRad, center: [lon0, lat0], radiusM: SCORE_RADIUS_M, samples: 33, demLevel: heat.dem.fineMaxLevel, minLevel: 5 },
+        min: 0, max: 100, colormap: 'viridis', guide,
         credit: 'Landing suitability: equal-weight Landing Score criteria (temperature, radiation, LOLA slope, DSN and sunlight)',
       }) as unknown as FieldImageryProvider
       const layer = new ImageryLayer(asProvider(provider), { alpha: score.opacity })
@@ -921,7 +958,63 @@ export default function App() {
       layerRefs.current.__score = layer
     }, 150) // debounce slider drags
     return () => clearTimeout(handle)
-  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, focus, slopeMax, guide, advancedSettings])
+  }, [ready, score, fpA, fpB, fpAz, heat, heatVersion, selLat, selLon, slopeMax, guide, advancedSettings])
+
+  // ---- region filters ----
+  const filterPeriod = useMemo(() => {
+    const [start, end] = heat && heatVersion ? heat.window : [0, 0]
+    const hours = end > start ? (end - start) / 3600_000 : 0
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    return { hours, label: hours ? `${day(start)} → ${day(end)} (${Math.round(hours).toLocaleString('en-US')} h)` : '—' }
+  }, [heat, heatVersion])
+
+  // distance data, loaded the first time the water-ice / pit filters are ticked
+  useEffect(() => {
+    const needIce = regionFilters.ice.on && !iceDistance, needPits = regionFilters.pits.on && !pitDistance
+    if (!needIce && !needPits) return
+    const grid = bundle?.layers.find((l) => l.id === 'charging_mean')
+    let cancelled = false
+    Promise.all([
+      needIce ? (grid?.halfExtentM ? loadIceDistance({ halfExtentM: grid.halfExtentM, width: grid.width }) : Promise.reject(new Error('the 4 km polar grid metadata is missing'))) : null,
+      needPits ? loadPitDistance() : null,
+    ]).then(([ice, pits]) => {
+      if (cancelled) return
+      setFilterDataError(undefined)
+      if (ice) setIceDistance(ice)
+      if (pits) setPitDistance(pits)
+    }).catch((error: unknown) => {
+      if (!cancelled) setFilterDataError(`Distance data unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    return () => { cancelled = true }
+  }, [regionFilters.ice.on, regionFilters.pits.on, iceDistance, pitDistance, bundle])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !(heat && heatVersion)) return
+    const old = layerRefs.current.__filters
+    if (old) { removeLayer(scene, old); delete layerRefs.current.__filters }
+    const on = activeFilters(regionFilters)
+    if (!on.length) return
+    const handle = setTimeout(() => {
+      const gcr = heat.gcr
+      const provider = new GlobalHeatProvider({
+        engine: heat,
+        thermal: regionFilters.temperature.on, // the regolith model only when temperature is filtered
+        value: regionValue(regionFilters, {
+          periodHours: filterPeriod.hours,
+          dose: (fSky) => radiationDose(fSky, gcr),
+          ice: iceDistance,
+          pits: pitDistance,
+        }),
+        min: 0, max: 1, colormap: 'slope', focus, guide,
+        credit: `Region filters: ${on.join(', ')}`,
+      }) as unknown as FieldImageryProvider
+      const layer = new ImageryLayer(asProvider(provider), { alpha: 0.65 })
+      scene.overlays.add(layer)
+      layerRefs.current.__filters = layer
+    }, 250) // debounce typing in the range boxes
+    return () => clearTimeout(handle)
+  }, [ready, regionFilters, heat, heatVersion, filterPeriod.hours, iceDistance, pitDistance, focus, guide])
 
   // ---- radiation overlay (global engine / precomputed sky view) ----
   useEffect(() => {
@@ -1173,16 +1266,37 @@ export default function App() {
       const g = Cartographic.fromCartesian(c, Ellipsoid.MOON)
       return g ? { lat: CMath.toDegrees(g.latitude), lon: CMath.toDegrees(g.longitude) } : null
     }
+    const siteAt = (pos: Cartesian2) => {
+      const picked = viewer.scene.pick(pos) as { id?: unknown } | undefined
+      return picked && picked.id ? siteByMarker.current.get(picked.id as Entity) : undefined
+    }
     handler.setInputAction((e: { position: Cartesian2 }) => {
+      // a site marker: select it (one click)
+      const site = siteAt(e.position)
+      if (site) { clickActions.current.selectSite(site); return }
       const pit = pitsRef.current?.pitFromPick(viewer.scene.pick(e.position))
       if (pit) {
         inspectPit(pit)
         return
       }
+      // empty map while something is selected: deselect, instead of jumping to a new point
+      if (clickActions.current.hasSelection) { clickActions.current.clearSelection(); return }
       const p = pick(e.position)
       if (!p) return
       inspectCustomPoint(p.lat, p.lon)
     }, ScreenSpaceEventType.LEFT_CLICK)
+    handler.setInputAction((e: { endPosition: Cartesian2 }) => {
+      const site = siteAt(e.endPosition)
+      const entity = site ? markers.current.sites.find((m) => siteByMarker.current.get(m) === site) : undefined
+      const h = hover.current
+      if (entity !== h.entity) {
+        h.prev = h.entity
+        h.prevSince = performance.now()
+        h.entity = entity
+        h.since = performance.now()
+        viewer.scene.canvas.style.cursor = entity ? 'pointer' : ''
+      }
+    }, ScreenSpaceEventType.MOUSE_MOVE)
     return () => handler.destroy()
   }, [ready, bundle, inspectCustomPoint, inspectPit])
 
@@ -1378,6 +1492,7 @@ export default function App() {
     setSelected(undefined)
     setSitePanelExpanded(false)
   }
+  clickActions.current = { selectSite, clearSelection, hasSelection: !!selected }
 
   const saveSelectedSite = (name: string) => {
     if (!selected || (selected.group !== 'Custom' && selected.group !== 'Saved')) return
@@ -1385,32 +1500,53 @@ export default function App() {
     const nextSites = savedSites.some((site) => site.id === saved.id)
       ? savedSites.map((site) => site.id === saved.id ? saved : site)
       : [...savedSites, saved]
-    try {
-      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
-      if (markers.current.custom && sceneRef.current) {
-        sceneRef.current.viewer.entities.remove(markers.current.custom)
-        markers.current.custom = undefined
-      }
-      setSavedSitesState({ sites: nextSites })
-      setSelected(saved)
-    } catch (error) {
-      console.error('Could not save landing site.', error)
-      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be saved. Check browser storage settings and try again.' }))
+    if (markers.current.custom && sceneRef.current) {
+      sceneRef.current.viewer.entities.remove(markers.current.custom)
+      markers.current.custom = undefined
+    }
+    setSavedSitesState({ sites: nextSites })
+    setSelected(saved)
+  }
+
+  const removeSavedSite = (site: Site) => {
+    const nextSites = savedSites.filter((saved) => saved.id !== site.id)
+    setSavedSitesState({ sites: nextSites })
+    if (selected?.id === site.id) {
+      setSelected(undefined)
+      setInspect(undefined)
     }
   }
 
   const removeSelectedSite = () => {
-    if (!selected || selected.group !== 'Saved') return
-    const nextSites = savedSites.filter((site) => site.id !== selected.id)
-    try {
-      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
-      setSavedSitesState({ sites: nextSites })
-      setSelected(undefined)
-      setInspect(undefined)
-    } catch (error) {
-      console.error('Could not remove landing site.', error)
-      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be removed. Check browser storage settings and try again.' }))
+    if (selected?.group === 'Saved') removeSavedSite(selected)
+  }
+
+  const comparisonDisabledReason = savedSites.length < 2 ? undefined
+    : !ephemeris ? 'Ephemeris data are required for a mission-site comparison.'
+      : !heat ? 'Global terrain tiles are not available; saved-site scores cannot be calculated.'
+        : !analysisPeriodInWindow ? 'The selected analysis interval is outside the loaded ephemeris window.'
+          : !heatWindowMatchesPeriod ? 'The heatmap engine is still preparing the selected analysis interval.'
+            : undefined
+  const runSavedSitesComparison = async (
+    onProgress: (completed: number, total: number) => void,
+    signal: AbortSignal,
+  ) => {
+    if (!ephemeris || !heat || !analysisPeriodInWindow || !heatWindowMatchesPeriod) {
+      throw new Error(comparisonDisabledReason ?? 'Site comparison data are not ready.')
     }
+    return compareSavedSites({
+      sites: savedSites,
+      ephemeris,
+      heat,
+      period: scorePeriod,
+      isMission: missionInWindow || landingDay !== undefined,
+      settings: advancedSettings,
+      footprint: score.footprint,
+      slopeField: bundle?.fields.slope,
+      dem: bundle?.fields.dem_south,
+      onProgress,
+      signal,
+    })
   }
 
   return (
@@ -1434,15 +1570,24 @@ export default function App() {
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
             <SitePanel sites={allSites} selected={selected} onSelect={selectSite} onSearchCoordinates={searchCoordinates}
+              regionFiltersPanel={
+                <RegionFiltersPanel filters={regionFilters} onChange={setRegionFilters}
+                  periodHours={filterPeriod.hours} periodLabel={filterPeriod.label}
+                  available={!!(heat && heatVersion)} error={filterDataError}
+                  busy={!filterDataError && ((regionFilters.ice.on && !iceDistance) || (regionFilters.pits.on && !pitDistance))} />
+              }
               onGenerateReport={() => { setPlaying(false); setReportOpen(true) }}
               reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}
               now={now} nowMs={t}
               periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
-              footprint={score.footprint} onFootprint={(footprint) => setScore((s) => ({ ...s, footprint }))}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
-              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
+              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite}
+              onRemoveSavedSite={removeSavedSite}
+              savedSites={savedSites} comparisonPeriod={scorePeriod} comparisonPeriodLabel={periodLabel}
+              comparisonDisabledReason={comparisonDisabledReason} compareSavedSites={runSavedSitesComparison}
+              savedSitesError={savedSitesError}
               env={analysisPeriodInWindow && siteEnvKey ? { env: siteEnvForPeriod?.env ?? undefined, loading: !siteEnvForPeriod } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
@@ -1450,21 +1595,23 @@ export default function App() {
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
-          {advancedModeOpen && (
-            <AdvancedModeDialog
+          {settingsOpen && (
+            <SettingsDialog
               settings={advancedSettings}
-              onSave={(settings) => { setAdvancedSettings(settings); setAdvancedModeOpen(false) }}
-              onCancel={() => setAdvancedModeOpen(false)}
+              footprint={score.footprint}
+              onSave={(settings, footprint) => {
+                setAdvancedSettings(settings)
+                setScore((current) => ({ ...current, footprint }))
+                setSettingsOpen(false)
+              }}
+              onCancel={() => setSettingsOpen(false)}
             />
           )}
           <aside className="side right">
-            <section className="panel advanced-mode-card">
-              <button type="button" className="advanced-mode-button" onClick={() => setAdvancedModeOpen(true)}>
-                <span>Advanced Mode</span>
-                <span aria-hidden="true">⚙</span>
-              </button>
-              <p className="muted">Configure environmental and crew limits for this session.</p>
-            </section>
+            <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings" title="Settings">
+              <span aria-hidden="true">⚙</span>
+            </button>
             {bundle.ephemeris && (
               <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
                 status={{

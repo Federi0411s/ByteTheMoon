@@ -42,6 +42,8 @@ export interface HeatTile {
   tSeriesIndices?: number[]
   /** visible-sky fraction (radiation layer) */
   fSky: Float32Array
+  /** longest continuous night in the window (hours; Sun more than half hidden) */
+  dark: Float32Array
   /** Landing-score criteria; empty unless requested */
   landingScore: Float32Array
 }
@@ -114,6 +116,8 @@ export class HeatEngine {
   private readonly slots: Slot[] = []
   private readonly queue: Job[] = []
   private readonly cache = new Map<string, Promise<HeatTile | null>>()
+  /** requesters' `wanted` callbacks per pending cache key (see request) */
+  private readonly wanters = new Map<string, Set<() => boolean>>()
   private readonly order: string[] = []
   private seq = 0
   private lastWindow: Record<string, unknown> | null = null
@@ -368,13 +372,23 @@ export class HeatEngine {
 
   private request(id: string, msg: Record<string, unknown>, affinityKey: string, thermal: boolean, wanted?: () => boolean, cacheable = true): Promise<HeatTile | null> {
     const key = `${this.version}/${id}/${thermal ? 't' : ''}`
+    let hitKey = key
     let p = cacheable ? this.cache.get(key) : undefined
     // a tile computed with the regolith model also answers requests without it
-    if (!p && cacheable && !thermal) p = this.cache.get(`${key}t`)
-    if (p) return p
+    if (!p && cacheable && !thermal) { hitKey = `${key}t`; p = this.cache.get(hitKey) }
+    if (p) {
+      // a shared pending job stays wanted while ANY requester still wants it (otherwise a removed
+      // layer's dropped job also failed the new layer that asked for the same tile)
+      this.wanters.get(hitKey)?.add(wanted ?? (() => true))
+      return p
+    }
     const version = this.version
-    p = this.enqueue<HeatTile & { version: number; error?: string }>(msg, affinityKey, wanted)
+    const wanters = new Set<() => boolean>([wanted ?? (() => true)])
+    if (cacheable) this.wanters.set(key, wanters)
+    const anyWanted = () => { for (const w of wanters) if (w()) return true; return false }
+    p = this.enqueue<HeatTile & { version: number; error?: string }>(msg, affinityKey, anyWanted)
       .then((d) => {
+        if (cacheable) this.wanters.delete(key)
         const ok = d && !d.error && d.version === version
         if (!ok && cacheable) this.cache.delete(key) // never keep a failure: the next request recomputes
         if (d?.error) console.warn('heatmap tile failed:', d.error)
