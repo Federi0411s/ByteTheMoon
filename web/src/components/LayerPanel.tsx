@@ -300,7 +300,13 @@ export function LayerPanel({
               Show layer
             </label>
             {iceError && <p className="muted">{iceError}</p>}
-            <p className="source">Diviner PRP (Paige et al. 2010): light blue = stable within 0.5 m, blue = stable at the surface (T max &lt; 110 K), cyan = observed by M3.</p>
+            <div className="radiation-legend">
+              <div className="radiation-legend-item">
+                <span className="radiation-swatch" style={{ backgroundColor: '#1f6fff' }} />
+                <span>Cold trap: surface ice stable (T max &lt; 110 K on ≥ 25% of the 4 km cell)</span>
+              </div>
+            </div>
+            <p className="source">Diviner Polar Resource Product (Paige et al. 2010).</p>
           </div>
         </div>
       </details>

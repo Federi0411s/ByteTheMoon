@@ -798,7 +798,7 @@ export default function App() {
         opacity: radiationOpacity,
       })
     }
-    if (iceVisible) active.push({ id: '__ice', title: 'Water ice', source: 'LOLA-derived polar water-ice overlay', opacity: 1 })
+    if (iceVisible) active.push({ id: '__ice', title: 'Water ice', source: 'Diviner PRP cold traps (Paige et al. 2010)', opacity: 1 })
     return active
   }, [displayLayers, layerState, score, radiationVisible, radiationMode, radiationOpacity, iceVisible])
   const reportPeriod: [number, number] = missionValid && missionInWindow
