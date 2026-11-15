@@ -112,6 +112,7 @@ export function SitePanel({
   onFootprint,
   onSaveSite,
   onRemoveSite,
+  onRemoveSavedSite,
   savedSites,
   comparisonPeriod,
   comparisonPeriodLabel,
@@ -150,6 +151,7 @@ export function SitePanel({
   onFootprint: (fp: Footprint) => void
   onSaveSite: (name: string) => void
   onRemoveSite: () => void
+  onRemoveSavedSite: (site: Site) => void
   savedSites: Site[]
   comparisonPeriod: [number, number]
   comparisonPeriodLabel: string
@@ -204,6 +206,7 @@ export function SitePanel({
       <SavedSitesMenu
         sites={savedSites}
         onSelect={onSelect}
+        onRemove={onRemoveSavedSite}
         period={comparisonPeriod}
         periodLabel={comparisonPeriodLabel}
         comparisonDisabledReason={comparisonDisabledReason}

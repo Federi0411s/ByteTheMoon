@@ -210,19 +210,11 @@ export default function App() {
   const [bundle, setBundle] = useState<DataBundle | null>(null)
   const [savedSitesState, setSavedSitesState] = useState<{ sites: Site[]; error?: string }>(() => {
     try {
-      const raw = localStorage.getItem(SAVED_SITES_KEY)
-      if (!raw) return { sites: [] }
-      const parsed: unknown = JSON.parse(raw)
-      if (!Array.isArray(parsed) || parsed.some((site) =>
-        !site || typeof site.id !== 'string' || typeof site.name !== 'string' ||
-        typeof site.lat !== 'number' || typeof site.lon !== 'number' || site.group !== 'Saved',
-      )) {
-        throw new Error('Saved landing sites have an invalid format.')
-      }
-      return { sites: parsed as Site[] }
+      localStorage.removeItem(SAVED_SITES_KEY)
+      return { sites: [] }
     } catch (error) {
-      console.error('Could not load saved landing sites.', error)
-      return { sites: [], error: 'Saved landing sites could not be loaded from this browser.' }
+      console.error('Could not clear saved landing sites from the previous app session.', error)
+      return { sites: [], error: 'Saved landing sites from the previous session could not be cleared from this browser.' }
     }
   })
   const { sites: savedSites, error: savedSitesError } = savedSitesState
@@ -1377,32 +1369,25 @@ export default function App() {
     const nextSites = savedSites.some((site) => site.id === saved.id)
       ? savedSites.map((site) => site.id === saved.id ? saved : site)
       : [...savedSites, saved]
-    try {
-      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
-      if (markers.current.custom && sceneRef.current) {
-        sceneRef.current.viewer.entities.remove(markers.current.custom)
-        markers.current.custom = undefined
-      }
-      setSavedSitesState({ sites: nextSites })
-      setSelected(saved)
-    } catch (error) {
-      console.error('Could not save landing site.', error)
-      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be saved. Check browser storage settings and try again.' }))
+    if (markers.current.custom && sceneRef.current) {
+      sceneRef.current.viewer.entities.remove(markers.current.custom)
+      markers.current.custom = undefined
+    }
+    setSavedSitesState({ sites: nextSites })
+    setSelected(saved)
+  }
+
+  const removeSavedSite = (site: Site) => {
+    const nextSites = savedSites.filter((saved) => saved.id !== site.id)
+    setSavedSitesState({ sites: nextSites })
+    if (selected?.id === site.id) {
+      setSelected(undefined)
+      setInspect(undefined)
     }
   }
 
   const removeSelectedSite = () => {
-    if (!selected || selected.group !== 'Saved') return
-    const nextSites = savedSites.filter((site) => site.id !== selected.id)
-    try {
-      localStorage.setItem(SAVED_SITES_KEY, JSON.stringify(nextSites))
-      setSavedSitesState({ sites: nextSites })
-      setSelected(undefined)
-      setInspect(undefined)
-    } catch (error) {
-      console.error('Could not remove landing site.', error)
-      setSavedSitesState((state) => ({ ...state, error: 'Landing site could not be removed. Check browser storage settings and try again.' }))
-    }
+    if (selected?.group === 'Saved') removeSavedSite(selected)
   }
 
   const comparisonDisabledReason = savedSites.length < 2 ? undefined
@@ -1463,6 +1448,7 @@ export default function App() {
               footprint={score.footprint} onFootprint={(footprint) => setScore((s) => ({ ...s, footprint }))}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
               onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite}
+              onRemoveSavedSite={removeSavedSite}
               savedSites={savedSites} comparisonPeriod={scorePeriod} comparisonPeriodLabel={periodLabel}
               comparisonDisabledReason={comparisonDisabledReason} compareSavedSites={runSavedSitesComparison}
               savedSitesError={savedSitesError}
