@@ -93,6 +93,7 @@ export function SitePanel({
   onSearchCoordinates,
   regionFiltersPanel,
   onGenerateReport,
+  onGenerateCsv,
   reportDisabled,
   timeline,
   summary,
@@ -130,6 +131,7 @@ export function SitePanel({
   onSearchCoordinates: (lat: number, lon: number) => void
   regionFiltersPanel: ReactNode
   onGenerateReport: () => void
+  onGenerateCsv: () => void
   reportDisabled: boolean
   timeline: TimelineSample[]
   summary?: SiteSummary
@@ -267,20 +269,29 @@ export function SitePanel({
           {env && <EnvPanel {...env} />}
           {dsn && <DsnPanel now={dsn.now} />}
           {power && <PowerPanel {...power} />}
-          <button className="report-open-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
-            <span className="report-button-copy">
-              <span className="report-button-title">Generate technical report (PDF)</span>
-              <span className="report-button-note">Your mission report is ready for liftoff</span>
-            </span>
-            <span className="report-rocket" aria-hidden="true">
-              <svg viewBox="0 0 56 56" fill="none">
-                <path d="M28 5C21 13 19 22 20 31l8 7 8-7c1-9-1-18-8-26Z" fill="#141a2b" />
-                <circle cx="28" cy="20" r="3.2" fill="#ffcf70" />
-                <path d="m20 27-7 8 9-2m14-6 7 8-9-2M24 34l-2 7 6-3 6 3-2-7" />
-                <path className="rocket-flame" d="M25 39c-1 4 0 7 3 10 3-3 4-6 3-10l-3 2Z" fill="#ff8a3d" />
-              </svg>
-            </span>
-          </button>
+          <div className="report-actions-row">
+            <button className="report-open-button report-pdf-button" type="button" disabled={reportDisabled} onClick={onGenerateReport}>
+              <span className="report-button-copy">
+                <span className="report-button-title">Generate PDF</span>
+                <span className="report-button-note">Technical site report</span>
+              </span>
+              <span className="report-rocket" aria-hidden="true">
+                <svg viewBox="0 0 56 56" fill="none">
+                  <path d="M28 5C21 13 19 22 20 31l8 7 8-7c1-9-1-18-8-26Z" fill="#141a2b" />
+                  <circle cx="28" cy="20" r="3.2" fill="#ffcf70" />
+                  <path d="m20 27-7 8 9-2m14-6 7 8-9-2M24 34l-2 7 6-3 6 3-2-7" />
+                  <path className="rocket-flame" d="M25 39c-1 4 0 7 3 10 3-3 4-6 3-10l-3 2Z" fill="#ff8a3d" />
+                </svg>
+              </span>
+            </button>
+            <button className="report-open-button report-csv-button" type="button" disabled={reportDisabled} onClick={onGenerateCsv}>
+              <span className="report-button-copy">
+                <span className="report-button-title">Generate CSV</span>
+                <span className="report-button-note">Report data and timelines</span>
+              </span>
+              <span className="report-csv-icon" aria-hidden="true">CSV</span>
+            </button>
+          </div>
           {reportDisabled && <p className="muted">Wait for the selected analysis interval data to finish loading before generating a report.</p>}
         </>
       )}
