@@ -4,6 +4,9 @@ import type { Site } from '../lib/data'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
 import { PowerPanel } from './PowerPanel'
+import { ScorePanel } from './ScorePanel'
+import type { LandingScore } from '../lib/landingScore'
+import type { HumanAssessment } from '../lib/human'
 import { EnvPanel, type SiteEnv } from './EnvPanel'
 import type { PanelConfig, PowerSummary } from '../lib/power'
 import { Panorama } from './Panorama'
@@ -94,6 +97,7 @@ export function SitePanel({
   env,
   dsn,
   power,
+  landing,
   terrainViewActive,
   terrainViewLoading,
   terrainViewError,
@@ -122,6 +126,7 @@ export function SitePanel({
   dsn?: { now?: DsnSample }
   env?: { env?: SiteEnv; loading: boolean }
   power?: { panel: PanelConfig; onPanel: (p: PanelConfig) => void; summary?: PowerSummary }
+  landing?: { result: LandingScore; period: [number, number]; isMission: boolean; human?: HumanAssessment }
   terrainViewActive: boolean
   terrainViewLoading: boolean
   terrainViewError?: string
@@ -217,6 +222,7 @@ export function SitePanel({
           {env && <EnvPanel {...env} />}
           {dsn && <DsnPanel now={dsn.now} />}
           {power && <PowerPanel {...power} />}
+          {landing && <ScorePanel {...landing} />}
         </>
       )}
     </section>
