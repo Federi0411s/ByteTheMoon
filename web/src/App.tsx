@@ -46,10 +46,11 @@ import {
   loadEphemerisWindow,
   sunPosition,
 } from './lib/ephemeris'
-import { loadRadiationMetadata, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
+import { loadRadiationMetadata, radiationDose, radiationLayerMeta, type RadiationOverlayMetadata } from './lib/radiation'
 import { BasemapPanel, type BasemapState } from './components/BasemapPanel'
 import { LayerPanel, type LayerState, type ScoreConfig } from './components/LayerPanel'
 import { SitePanel } from './components/SitePanel'
+import { compareSavedSites } from './lib/savedSiteComparison'
 import { dsnAt, dsnTimeline } from './lib/dsn'
 import { assessHuman } from './lib/human'
 import { siteThermalSeries } from './lib/regolith'
@@ -87,10 +88,7 @@ const SAVED_SITES_KEY = 'bytethemoon.saved-sites'
  * terrain horizons: D = PRIMARY * f_sky + ALBEDO * (1 - f_sky), f_sky = mean(1 - sin H) / 2, scaled by
  * the solar-cycle GCR factor of the selected period (lib/heatEngine.gcrFactor; 1 = 2019 minimum).
  */
-const RAD_PRIMARY_UGY_H = 20.2 // free-space GCR, Si (Chang'e 4, 2019 solar minimum)
-const RAD_ALBEDO_UGY_H = 6.2 // neutral secondaries per unit soil fraction
 const RAD_CONTINUOUS_RANGE: [number, number] = [8, 14.5] // covers solar minimum to maximum
-const radiationDose = (fSky: number, gcr: number) => (RAD_PRIMARY_UGY_H * fSky + RAD_ALBEDO_UGY_H * (1 - fSky)) * gcr
 /** class thresholds from the overlay legend ("<= 12.0", "<= 12.8", "> 12.8"); pipeline defaults otherwise */
 function radiationThresholds(m: RadiationOverlayMetadata): [number, number] {
   const nums = m.classLegend.map((c) => Number(/([\d.]+)/.exec(c.label)?.[1])).filter(Number.isFinite)
@@ -1407,6 +1405,34 @@ export default function App() {
     }
   }
 
+  const comparisonDisabledReason = savedSites.length < 2 ? undefined
+    : !ephemeris ? 'Ephemeris data are required for a mission-site comparison.'
+      : !heat ? 'Global terrain tiles are not available; saved-site scores cannot be calculated.'
+        : !analysisPeriodInWindow ? 'The selected analysis interval is outside the loaded ephemeris window.'
+          : !heatWindowMatchesPeriod ? 'The heatmap engine is still preparing the selected analysis interval.'
+            : undefined
+  const runSavedSitesComparison = async (
+    onProgress: (completed: number, total: number) => void,
+    signal: AbortSignal,
+  ) => {
+    if (!ephemeris || !heat || !analysisPeriodInWindow || !heatWindowMatchesPeriod) {
+      throw new Error(comparisonDisabledReason ?? 'Site comparison data are not ready.')
+    }
+    return compareSavedSites({
+      sites: savedSites,
+      ephemeris,
+      heat,
+      period: scorePeriod,
+      isMission: missionInWindow || landingDay !== undefined,
+      settings: advancedSettings,
+      footprint: score.footprint,
+      slopeField: bundle?.fields.slope,
+      dem: bundle?.fields.dem_south,
+      onProgress,
+      signal,
+    })
+  }
+
   return (
     <div className="app">
       <div ref={containerRef} className="globe" />
@@ -1436,7 +1462,10 @@ export default function App() {
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
               footprint={score.footprint} onFootprint={(footprint) => setScore((s) => ({ ...s, footprint }))}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
-              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite} savedSitesError={savedSitesError}
+              onSaveSite={saveSelectedSite} onRemoveSite={removeSelectedSite}
+              savedSites={savedSites} comparisonPeriod={scorePeriod} comparisonPeriodLabel={periodLabel}
+              comparisonDisabledReason={comparisonDisabledReason} compareSavedSites={runSavedSitesComparison}
+              savedSitesError={savedSitesError}
               env={analysisPeriodInWindow && siteEnvKey ? { env: siteEnvForPeriod?.env ?? undefined, loading: !siteEnvForPeriod } : undefined}
               dsn={ephemeris ? { now: dsnNow } : undefined}
               power={ephemeris ? { panel, onPanel: setPanel, summary: powerSummary } : undefined}
