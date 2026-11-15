@@ -59,6 +59,34 @@ export class PyramidTiles {
     return [lz, px]
   }
 
+  /** Decoded data values resampled to a Cesium map tile's 256 x 256 pixel centres. */
+  async mapTileValues(z: number, x: number, y: number): Promise<Float32Array | null | undefined> {
+    const [lz, pixels] = await this.covering(z, x, y)
+    if (!pixels) return pixels
+
+    const factor = 2 ** (z - lz)
+    const ox = (x - (x >> (z - lz)) * factor) * PYR_TILE
+    const oy = (y - (y >> (z - lz)) * factor) * PYR_TILE
+    const out = new Float32Array(PYR_TILE * PYR_TILE)
+    if (factor === 1) {
+      for (let i = 0; i < out.length; i++) out[i] = this.value(pixels, i)
+      return out
+    }
+    for (let j = 0; j < PYR_TILE; j++) {
+      const sy = Math.min(Math.max((oy + j + 0.5) / factor - 0.5, 0), PYR_TILE - 1)
+      const y0 = Math.min(sy | 0, PYR_TILE - 2), wy = sy - y0
+      for (let i = 0; i < PYR_TILE; i++) {
+        const sx = Math.min(Math.max((ox + i + 0.5) / factor - 0.5, 0), PYR_TILE - 1)
+        const x0 = Math.min(sx | 0, PYR_TILE - 2), wx = sx - x0
+        const k = y0 * PYR_TILE + x0
+        out[j * PYR_TILE + i] =
+          (this.value(pixels, k) * (1 - wx) + this.value(pixels, k + 1) * wx) * (1 - wy) +
+          (this.value(pixels, k + PYR_TILE) * (1 - wx) + this.value(pixels, k + PYR_TILE + 1) * wx) * wy
+      }
+    }
+    return out
+  }
+
   private async slot() {
     if (this.active >= MAX_FETCHES) await new Promise<void>((res) => this.waiting.push(res))
     this.active++

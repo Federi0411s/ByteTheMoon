@@ -71,6 +71,8 @@ export interface GlobalHeatOptions {
    * being smeared bilinearly. Unset = plain bilinear.
    */
   guide?: PyramidTiles
+  /** Precomputed sky view, when the radiation filter must use the same source as its map layer. */
+  sky?: PyramidTiles
   focus?: { boundsRad: [number, number, number, number]; samples: number; demLevel: number; minLevel: number; center?: [number, number]; radiusM?: number }
 }
 
@@ -241,17 +243,19 @@ export class GlobalHeatProvider {
     }
     // near the poles, neighbouring tiles of the row share one computation (see tileGroup)
     const g = tileGroup(z, y), gx = Math.floor(x / g)
-    const [t, keep, guide] = await Promise.all([
+    const [t, keep, guide, skyValues] = await Promise.all([
       this.o.engine.tile(z, gx, y, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, g, this.o.landing),
       this.prepareMask(r, z),
       this.guideFor(x, y, z),
+      this.o.sky?.mapTileValues(z, x, y) ?? Promise.resolve(undefined),
     ])
     // failed or dropped: reject, so Cesium keeps showing the parent tile instead of a transparent hole
     if (!t) throw new Error(this.disposed ? 'layer removed' : 'heatmap tile failed')
+    if (this.o.sky && skyValues === undefined) throw new Error('sky-view tile fetch failed')
     const px = new Uint8Array(TILE * TILE * 4)
     const step = Math.PI / 2 ** z
     const gridWest = -Math.PI + gx * g * step
-    if (!this.paint(px, r, t, gridWest, g * step, keep, guide)) return emptyTile()
+    if (!this.paint(px, r, t, gridWest, g * step, keep, guide, skyValues)) return emptyTile()
     return { width: TILE, height: TILE, arrayBufferView: px }
   }
 
@@ -291,10 +295,16 @@ export class GlobalHeatProvider {
       }
       jobs.push(this.o.engine.polarBlock(z, pole, bx, by, n, demMax, !!this.o.thermal || !!this.o.landing, this.wanted, this.o.landing))
     }
-    const [blocks, keep, guide] = await Promise.all([Promise.all(jobs), this.prepareMask(r, z), this.guideFor(x, y, z)])
+    const [blocks, keep, guide, skyValues] = await Promise.all([
+      Promise.all(jobs),
+      this.prepareMask(r, z),
+      this.guideFor(x, y, z),
+      this.o.sky?.mapTileValues(z, x, y) ?? Promise.resolve(undefined),
+    ])
     if (blocks.some((b) => !b)) throw new Error(this.disposed ? 'layer removed' : 'heatmap tile failed')
+    if (this.o.sky && skyValues === undefined) throw new Error('sky-view tile fetch failed')
     const px = new Uint8Array(TILE * TILE * 4)
-    if (!this.paintPolar(px, r, blocks as HeatTile[], bx0, by0, nbx, nby, S, pole, keep, guide)) return emptyTile()
+    if (!this.paintPolar(px, r, blocks as HeatTile[], bx0, by0, nbx, nby, S, pole, keep, guide, skyValues)) return emptyTile()
     return { width: TILE, height: TILE, arrayBufferView: px }
   }
 
@@ -327,7 +337,7 @@ export class GlobalHeatProvider {
   }
 
   /** As paint(), from polar blocks bx0.. (nbx) x by0.. (nby) of side S (m) around pole `pole`. */
-  private paintPolar(px: Uint8Array, r: Rectangle, blocks: HeatTile[], bx0: number, by0: number, nbx: number, nby: number, S: number, pole: number, keep?: (lon: number, lat: number) => boolean, guide?: Float32Array): boolean {
+  private paintPolar(px: Uint8Array, r: Rectangle, blocks: HeatTile[], bx0: number, by0: number, nbx: number, nby: number, S: number, pole: number, keep?: (lon: number, lat: number) => boolean, guide?: Float32Array, skyValues?: Float32Array | null): boolean {
     let any = false
     const { value, polar, polarBelowLat = -Math.PI / 2, min, max, contrast = 1 } = this.o
     const lut = this.lut
@@ -359,6 +369,7 @@ export class GlobalHeatProvider {
           const fx = Math.min(Math.max((x - (bx0 + bi) * S) / S, 0), 1) * k
           const fy = Math.min(Math.max(((by0 + bj + 1) * S - y) / S, 0), 1) * k
           interpolate(v, t, fx, fy, guide ? guide[j * TILE + i] : NaN, relief(t))
+          if (skyValues !== undefined) v.fSky = skyValues?.[j * TILE + i] ?? NaN
           val = value(v, lon, lat)
         }
         if (val !== val) continue
@@ -378,7 +389,7 @@ export class GlobalHeatProvider {
 
   /** Fills px (row 0 = north); returns false if the tile is entirely transparent. */
   /** gridWest / gridWidth: longitude extent of the sample grid (the tile's group, >= the tile). */
-  private paint(px: Uint8Array, r: Rectangle, t: HeatTile, gridWest = r.west, gridWidth = r.east - r.west, keep?: (lon: number, lat: number) => boolean, guide?: Float32Array): boolean {
+  private paint(px: Uint8Array, r: Rectangle, t: HeatTile, gridWest = r.west, gridWidth = r.east - r.west, keep?: (lon: number, lat: number) => boolean, guide?: Float32Array, skyValues?: Float32Array | null): boolean {
     let any = false
     const { value, polar, polarBelowLat = -Math.PI / 2, min, max, contrast = 1 } = this.o
     const lut = this.lut
@@ -403,6 +414,7 @@ export class GlobalHeatProvider {
         if (val !== val) {
           const fx = Math.min(Math.max((lon - gridWest) / gridWidth, 0), 1) * kx
           interpolate(v, t, fx, fy, guide ? guide[j * TILE + i] : NaN, sigR)
+          if (skyValues !== undefined) v.fSky = skyValues?.[j * TILE + i] ?? NaN
           val = value(v, lon, lat)
         }
         if (val !== val) continue
