@@ -116,6 +116,21 @@ export class DemSampler {
     }
   }
 
+  /**
+   * Layout for the GPU horizons (lib/gpuHorizon.ts), which replicate sample(): encoding, and per polar
+   * cap its pseudo-level offset, grid, edge (as sin(latitude)) and polar level per global level. A cap
+   * with a different encoding is left out (sample() never reads it either).
+   */
+  gpuLayout() {
+    const cap = (c: PolarCap | null) => c && c.cfg.offset === this.cfg.offset && c.cfg.scale === this.cfg.scale
+      ? { z0: c.z0, half: c.cfg.halfExtentM, base: c.cfg.basePixelM, sinEdge: Math.sin(c.lat), kForLevel: Array.from({ length: 13 }, (_, z) => this.polarLevel(c, z)) }
+      : null
+    return { offset: this.cfg.offset, scale: this.cfg.scale, caps: [cap(this.south), cap(this.north)] }
+  }
+
+  /** Decoded tile by numeric key (as in the `hold` lists of ensureBox): undefined = not loaded, null = missing. */
+  tileByKey(k: number): Tile | undefined { return this.tiles.get(k) }
+
   /** Latitude (radians) south of which heights come from the south polar DEM; -pi/2 without one. */
   get polarCapLat() { return this.polarLat }
 

@@ -83,6 +83,28 @@ The poles are drawn by the same engine as everywhere else. The LOLA 60 m polar m
 4 km polar rasters are no longer drawn: they were long-term averages or coarser, and the per-period
 computation supersedes them.
 
+#### GPU acceleration (WebGPU)
+
+Where the browser supports WebGPU (Chrome, Edge, recent Safari; any GPU vendor), each worker computes a
+tile's heavy parts on the graphics card. These are the terrain horizons and their 1° refinement
+(`lib/gpuHorizon.ts`), the time integration of sunlight, charging, Earth and DSN visibility, longest night
+and absorbed flux (`lib/gpuTime.ts`), and the regolith temperature model (`lib/gpuThermal.ts`). The CPU
+still loads the elevation tiles and computes slopes. With warm caches, a 33 × 33 landing-score tile takes
+about 0.1–0.3 s instead of 3–7 s on one CPU core. The GPU results match the CPU to within 0.01 K in
+temperature and 0.0002 in sunlit fraction. To check this in the browser console, run
+`moonHeat.compareThermalBackends(z, x, y, { landing: true })`.
+
+- **Fallbacks.** Without WebGPU, or if a GPU kernel fails or the device is lost, the CPU code runs
+  instead. Each worker measures the speed of both and sends each tile to whichever is faster at the
+  moment, so a slow or busy integrated GPU and the CPU cores share the work.
+- **Settings.** Settings › Advanced › Computation shows which graphics card is in use and can switch to
+  the processor only (`moonHeat.setBackend('cpu')` in the console).
+- **Two GPUs.** A page can use only one GPU. On Windows laptops with two GPUs, Chrome and Edge run on
+  the integrated one unless the browser is set to *High performance* in Windows Settings › System ›
+  Display › Graphics, or `chrome://flags/#force-high-performance-gpu` is on.
+- **Rendering on demand.** Cesium redraws only when something changes: the camera moves, tiles load, or
+  the app's state changes. An idle globe no longer uses the GPU and CPU the computations need.
+
 ## Rebuild the data (Python, optional)
 
 The generated data in `web/public/data` is committed, so you only need this to change or add layers.

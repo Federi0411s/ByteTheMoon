@@ -33,6 +33,7 @@ import { Tutorial } from './components/Tutorial'
 import { INSIGHTS_BUTTON } from './content/insights'
 import { GlobalHeatProvider, type GlobalHeatOptions, type HeatValues } from './cesium/GlobalHeatProvider'
 import { HeatEngine } from './lib/heatEngine'
+import type { GpuInfo } from './lib/gpu'
 import { sampleSiteEnv } from './lib/siteEnv'
 import type { SiteEnv } from './components/EnvPanel'
 import {
@@ -265,6 +266,8 @@ export default function App() {
   // the computed heatmaps (GlobalHeatProvider `guide`; off = plain bilinear)
   const [display, setDisplay] = useState<DisplaySettings>(() => ({ ...DEFAULT_DISPLAY_SETTINGS }))
   const guided = display.guided
+  // the graphics card the heatmap workers compute on (lib/gpu.ts), reported once they start
+  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null | undefined>(undefined)
   const guide = useMemo(() => (guided && pyramids.dem ? pyramidTiles(pyramids.dem) : undefined), [guided, pyramids])
   useEffect(() => {
     let cancelled = false
@@ -702,6 +705,10 @@ export default function App() {
     return () => { scene.overlays.remove(layer, true) }
   }, [ready, bundle, basemapState.relief])
 
+  // render on demand (cesium/createViewer.ts): any state change may change the scene (time, layers,
+  // opacity, selection...), so a frame is requested after every render of the app
+  useEffect(() => { sceneRef.current?.viewer.scene.requestRender() })
+
   // ---- approximate ground resolution at the screen centre (for the basemap panel) ----
   useEffect(() => {
     const scene = sceneRef.current
@@ -754,9 +761,18 @@ export default function App() {
       setHeat(e)
       ;(window as unknown as { moonHeat: HeatEngine | null }).moonHeat = e // console debugging, like window.moon
       if (!e) console.info('Global heatmaps off: run pipeline/dem_tiles.py to generate web/public/data/dem')
+      if (e) {
+        e.onGpu = (g) => {
+          setGpuInfo(g)
+          console.info(g ? `Heatmaps compute on the GPU: ${g.vendor} ${g.architecture} (${g.integrated ? 'integrated' : 'dedicated'})` : 'Heatmaps compute on the CPU (WebGPU unavailable)')
+        }
+        if (e.gpu !== undefined) setGpuInfo(e.gpu)
+      }
     })
     return () => { disposed = true; engine?.dispose() }
   }, [ready])
+  // Settings > Computation: graphics card + processor, or processor only
+  useEffect(() => { heat?.setBackend(display.compute === 'cpu' ? 'cpu' : 'auto') }, [heat, display.compute])
   useEffect(() => {
     if (!heat || !ephemeris || !analysisPeriodInWindow) return
     const [a, b] = scorePeriod
@@ -1825,6 +1841,7 @@ export default function App() {
               footprint={score.footprint}
               mapRadiusKm={score.radiusKm}
               display={display}
+              gpu={gpuInfo}
               onSave={(settings, footprint, radiusKm, nextDisplay) => {
                 setAdvancedSettings(settings)
                 setScore((current) => ({ ...current, footprint, radiusKm }))

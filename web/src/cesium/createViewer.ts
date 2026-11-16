@@ -112,7 +112,15 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
     selectionIndicator: false,
     skyAtmosphere: false,
     shadows: false,
+    // the fast GPU where the browser lets the page choose (macOS, Linux; on Windows the browser /
+    // OS setting decides, see lib/gpu.ts)
+    contextOptions: { webgl: { powerPreference: 'high-performance' } },
+    // render on demand (see renderOnDemand): an idle globe no longer redraws 60 times a second at
+    // device-pixel resolution, which left less GPU and CPU for the heatmap computations
+    requestRenderMode: true,
+    maximumRenderTimeChange: Infinity,
   })
+  renderOnDemand(viewer)
   crispText(viewer) // device-pixel rendering + supersampled labels
   keepCreditsClear(viewer) // Cesium ion credits bottom-left, sliding right of the left panel when needed
   const scene = viewer.scene
@@ -156,6 +164,23 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
 
   // Initial camera is set by the app with viewFromEarth() once the ephemeris has loaded.
   return result
+}
+
+/**
+ * Cesium itself redraws when the camera moves, while globe / imagery tiles are still loading and when
+ * layers change. On top of that: input on the canvas keeps frames coming for a moment (hover
+ * animations of the markers are CallbackProperties), the app calls scene.requestRender() after every
+ * React render (App.tsx), and a once-a-second frame catches any other change made outside both.
+ */
+function renderOnDemand(viewer: Viewer) {
+  const scene = viewer.scene
+  let until = 0
+  const kick = () => { until = performance.now() + 400; scene.requestRender() }
+  for (const ev of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown'] as const) {
+    viewer.canvas.addEventListener(ev, kick, { passive: true })
+  }
+  scene.postRender.addEventListener(() => { if (performance.now() < until) scene.requestRender() })
+  const heartbeat = setInterval(() => { if (!viewer.isDestroyed()) scene.requestRender(); else clearInterval(heartbeat) }, 1000)
 }
 
 /**

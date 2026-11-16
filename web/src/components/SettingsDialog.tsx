@@ -14,6 +14,10 @@ import {
 import { DEFAULT_FOOTPRINT, type Footprint } from '../lib/requirements'
 import { FootprintEditor } from './FootprintEditor'
 import { InfoTip } from './InfoTip'
+import type { GpuInfo } from '../lib/gpu'
+
+const gpuLabel = (g: GpuInfo) => `${g.vendor ? g.vendor[0].toUpperCase() + g.vendor.slice(1) : 'Unknown'}${g.architecture ? ` (${g.architecture})` : ''}${g.description ? ` ${g.description}` : ''}, ${g.integrated ? 'integrated' : 'dedicated'}`
+
 
 const DEFAULT_RADIUS_KM = 500
 const MIN_RADIUS_KM = 10
@@ -47,6 +51,7 @@ export function SettingsDialog({
   footprint,
   mapRadiusKm,
   display,
+  gpu,
   onSave,
   onCancel,
 }: {
@@ -56,6 +61,8 @@ export function SettingsDialog({
   mapRadiusKm: number
   /** movement slope limit, reachable-area distance and map display options */
   display: DisplaySettings
+  /** the graphics card the heatmap workers compute on (null: none usable, undefined: not known yet) */
+  gpu?: GpuInfo | null
   onSave: (settings: AdvancedSettings, footprint: Footprint, mapRadiusKm: number, display: DisplaySettings) => void
   onCancel: () => void
 }) {
@@ -135,6 +142,25 @@ export function SettingsDialog({
                 <NumberField label="Reachable area: maximum distance" value={draftDisplay.reachRadiusKm} unit="km"
                   onChange={(value) => setDraftDisplay((d) => ({ ...d, reachRadiusKm: value }))} />
                 <p className="muted">Search radius around the selected point. Larger distances download more elevation tiles.</p>
+              </fieldset>
+
+              <fieldset className="advanced-section">
+                <legend>Computation</legend>
+                <label className="layer-head">
+                  <span>Compute heatmaps on</span>
+                  <select value={draftDisplay.compute} onChange={(e) => setDraftDisplay((d) => ({ ...d, compute: e.target.value as DisplaySettings['compute'] }))}>
+                    <option value="auto">Graphics card and processor (fastest)</option>
+                    <option value="cpu">Processor only</option>
+                  </select>
+                </label>
+                <p className="muted">
+                  {gpu === undefined ? 'Checking the graphics card…'
+                    : gpu === null ? 'No usable graphics card (WebGPU unavailable in this browser): everything is computed on the processor.'
+                      : `Graphics card: ${gpuLabel(gpu)}. Terrain horizons, sunlight, Earth and DSN visibility and the regolith temperature model run on it; each tile goes to whichever of the card and the processor is faster at the moment.`}
+                </p>
+                {gpu?.integrated && (
+                  <p className="muted">This is an integrated graphics chip. If the computer also has a dedicated graphics card, set the browser to "High performance" in Windows Settings &gt; System &gt; Display &gt; Graphics (or enable chrome://flags/#force-high-performance-gpu) and reload.</p>
+                )}
               </fieldset>
 
               <fieldset className="advanced-section">

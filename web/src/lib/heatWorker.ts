@@ -35,6 +35,10 @@ import { fromPolar, heatGrid, polarBlockSize } from './heatGrid'
 import { HorizonSampler, MAX_TILES_PER_JOB } from './horizonTiles'
 import { discEdgeAz, sunDiscHorizonMargin, sunVisible } from './sunDisc'
 import type { EquipotTable } from './equipot'
+import { GpuThermal } from './gpuThermal'
+import { GpuHorizon } from './gpuHorizon'
+import { getGpu } from './gpu'
+import { GpuTime, OUT, OUT_STRIDE, SAMPLE_STRIDE, TIME } from './gpuTime'
 
 const R = 1737400
 const R2D = 180 / Math.PI
@@ -142,9 +146,14 @@ async function ensureForSamples(smp: Samples, ray: Ray | null, extra: number, ho
       const x0 = all ? 0 : Math.floor((lon - dLon + Math.PI) / step), x1 = all ? cols - 1 : Math.floor((lon + dLon + Math.PI) / step)
       for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) keys.add(y * cols + (((x % cols) + cols) % cols))
     }
+    // each global tile's whole box (shrunk by a hair, so the neighbours aren't taken too): inside the
+    // polar caps ensureBox then also loads every polar-DEM tile under it. (With only the tile centre,
+    // polar tiles a sample reads could be missing on a cold cache, and the heights fell back to the
+    // global DEM there, which is up to ~300 m off near the poles: results depended on the cache.)
+    const eps = step * 1e-6
     for (const k of keys) {
-      const lon = -Math.PI + ((k % cols) + 0.5) * step, lat = Math.PI / 2 - (Math.floor(k / cols) + 0.5) * step
-      jobs.push(dem.ensureBox(z, lon, lat, lon, lat, hold))
+      const west = -Math.PI + (k % cols) * step, north = Math.PI / 2 - Math.floor(k / cols) * step
+      jobs.push(dem.ensureBox(z, west + eps, north - step + eps, west + step - eps, north - eps, hold))
     }
   }
   await Promise.all(jobs)
@@ -569,6 +578,117 @@ function solveThermal(qMean: number, series?: Float32Array, seriesOff = 0): [num
   return [sum / n, min, max]
 }
 
+// ---- the regolith solver on the GPU (lib/gpuThermal.ts), shared with the CPU per tile ----
+// Each worker opens its own WebGPU device. Per tile the faster backend runs the column solver: measured
+// cost per sample (exponential average, GPU waits included, so a busy or weak integrated GPU hands work
+// back to the CPU and the CPU cores and the GPU share the load). While the CPU is ahead the GPU is
+// re-tried every GPU_RETRY tiles, since its load changes. Any GPU error falls back to the CPU.
+let gpu: GpuThermal | null = null
+let gpuTime: GpuTime | null = null // the time integration on the GPU (lib/gpuTime.ts)
+// ms per sample of a tile's per-sample work, by tile kind (CPU starting values: measured)
+const perf = { thermal: { gpu: NaN, cpu: 4 }, plain: { gpu: NaN, cpu: 1 } }
+const GPU_RETRY = 8
+let tilesOnCpu = 0
+let gpuQ = new Float32Array(0) // flux series of a tile, step-major (reused)
+/** backend forced for every tile (HeatEngine.setBackend); undefined = the faster one per tile */
+let forcedBackend: 'gpu' | 'cpu' | undefined
+
+let gpuHz: GpuHorizon | null = null // terrain horizons on the GPU (lib/gpuHorizon.ts)
+
+function initGpu() {
+  getGpu().then(async (g) => {
+    if (g) {
+      ;[gpu, gpuHz] = await Promise.all([
+        GpuThermal.create({
+          nz: NZ, rhoVol: RHO_VOL, kc: KC, halfInvDz: HALF_INV_DZ, cp: [CP0, CP1, CP2, CP3, CP4],
+          chi: CHI, epsSigma: EPS * SIGMA, qGeo: Q_GEO,
+        }, g),
+        GpuHorizon.create(g, dem.gpuLayout()),
+      ])
+      gpuTime = await GpuTime.create(g, {
+        sunRadius1AuDeg: SUN_RADIUS_1AU_DEG, chargeSunRadiusDeg: SUN_RADIUS_DEG, adaptMarginDeg: ADAPT_MARGIN_DEG, fineNaz: FINE_NAZ,
+        s0: S0, a0: A0, aA: A_A, aB: A_B, epsSigma: EPS * SIGMA, moonRadiusM: R,
+      })
+      if (gpu && thermalCount.length) gpu.setWindow(thermalCount)
+      if (gpuTime && sun.length) gpuTime.setWindow(timeWindow())
+    }
+    ;(self as unknown as Worker).postMessage({ type: 'gpu', info: g?.info ?? null, thermal: !!gpu, horizons: !!gpuHz, time: !!gpuTime })
+  })
+}
+
+/** The current time window as lib/gpuTime.ts takes it. */
+function timeWindow() {
+  return {
+    sun, earth, dsn, thermalSun, thermalEarth, nightSun, nightEarth, nightTimes, windowStart, windowEnd,
+    sunRMax, thermalRMax, equipot: eq, chargeThreshold,
+  }
+}
+
+/** One point's rays for horizonsGpu: azimuths as sin / cos (clockwise from north). */
+interface RayJob { lon: number; lat: number; sin: ArrayLike<number>; cos: ArrayLike<number>; count: number }
+
+/**
+ * horizon() for many points at once on the GPU: per job the horizon elevation (deg) toward each of its
+ * azimuths, null where the point itself has no elevation (as horizon() then gives NaN). The DEM tiles
+ * the rays read must be loaded and listed in `keys` (the job's `hold` list). Returns null when the GPU
+ * can't do it (none, lost, error); the caller then traces on the CPU.
+ */
+async function horizonsGpu(jobs: RayJob[], ray: Ray, demMax: number, keys: number[]): Promise<(Float32Array | null)[] | null> {
+  if (!gpuHz || gpuHz.lost || !jobs.length) return jobs.length ? null : []
+  const frames = new Float32Array(jobs.length * 10)
+  const valid: boolean[] = []
+  let nRays = 0
+  jobs.forEach((j, i) => {
+    const h0 = dem.sample(j.lon, j.lat, demMax)
+    valid.push(h0 === h0)
+    if (h0 !== h0) return
+    const cl = Math.cos(j.lat), sl = Math.sin(j.lat), co = Math.cos(j.lon), so = Math.sin(j.lon)
+    frames.set([cl * co, cl * so, sl, -sl * co, -sl * so, cl, -so, co, 0, h0 + OBSERVER_H], i * 10)
+    nRays += j.count
+  })
+  const pairSample = new Uint32Array(nRays), pairAz = new Float32Array(nRays * 2)
+  let r = 0
+  jobs.forEach((j, i) => {
+    if (!valid[i]) return
+    for (let a = 0; a < j.count; a++, r++) { pairSample[r] = i; pairAz[2 * r] = j.sin[a]; pairAz[2 * r + 1] = j.cos[a] }
+  })
+  try {
+    const out = await gpuHz.trace({ frames, pairSample, pairAz, sinD: ray.sinD, cosD: ray.cosD, d: ray.d, curv: ray.curv, level: ray.level, keys, tile: (k) => dem.tileByKey(k) })
+    let o = 0
+    return jobs.map((j, i) => {
+      if (!valid[i]) return null
+      const v = out.subarray(o, o + j.count)
+      o += j.count
+      return v
+    })
+  } catch (err) {
+    console.warn('GPU horizons failed, tracing on the CPU:', err)
+    return null
+  }
+}
+
+let gpuReinit = 0 // time of the last attempt to replace a lost GPU device
+
+function chooseBackend(force: 'gpu' | 'cpu' | undefined, kind: 'thermal' | 'plain'): 'gpu' | 'cpu' {
+  const lost = !!(gpuTime ?? gpu)?.lost
+  // a lost device (GPU reset, driver update): try a new one, at most every 10 s; the CPU meanwhile
+  if (lost && performance.now() - gpuReinit > 10_000) {
+    gpuReinit = performance.now()
+    gpu = gpuTime = gpuHz = null
+    initGpu()
+  }
+  if (force === 'cpu' || !(gpuTime || gpu) || lost) return 'cpu'
+  const p = perf[kind]
+  if (force === 'gpu' || p.gpu !== p.gpu || p.gpu <= p.cpu) return 'gpu'
+  return ++tilesOnCpu % GPU_RETRY === 0 ? 'gpu' : 'cpu'
+}
+
+function recordPerf(backend: 'gpu' | 'cpu', kind: 'thermal' | 'plain', ms: number, samples: number) {
+  if (!samples) return
+  const v = ms / samples, p = perf[kind]
+  p[backend] = Number.isFinite(p[backend]) ? 0.7 * p[backend] + 0.3 * v : v
+}
+
 // ---- per-tile terrain cache (horizons, slope, elevation, gradient) ----
 interface Terrain { hz: Float32Array; slope: Float32Array; elev: Float32Array; gE: Float32Array; gN: Float32Array; slopeLevel: number }
 const hzCache = new Map<string, Terrain>()
@@ -627,7 +747,7 @@ function polarSamples(z: number, bx: number, by: number, n: number, p: number): 
   return { key: `P${p}/${z}/${bx}/${by}/${n}`, polar: true, nx: n, ny: n, lon, lat, box, spacing: d }
 }
 
-async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Promise<Terrain> {
+async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0, backend?: 'gpu' | 'cpu'): Promise<Terrain> {
   const [west, south, east, north] = smp.box
   // slope/elevation at the sample spacing (coarse tiles -> coarse, honest slopes)
   const zs = demLevelFor(smp.spacing, demMax)
@@ -653,7 +773,8 @@ async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Prom
       }
     }
   }
-  const key = `${smp.key}/${demMax}/${footprintRadiusM}`
+  // (a forced backend, for HeatEngine.compareThermalBackends, gets its own cache entry)
+  const key = `${smp.key}/${demMax}/${footprintRadiusM}${backend ? `/${backend}` : ''}`
   const hit = hzCache.get(key)
   if (hit) return hit
   const ray = makeRay(demMax)
@@ -661,14 +782,24 @@ async function terrain(smp: Samples, demMax: number, footprintRadiusM = 0): Prom
   try {
     if (smp.polar) await ensureForSamples(smp, ray, zs, hold, footprintRadiusM)
     else await ensureFor(west, south, east, north, ray, zs, hold, footprintRadiusM)
-    return computeTerrain(key, smp, demMax, ray, zs)
+    let hzGpu: Float32Array | undefined
+    if (backend !== 'cpu') {
+      const jobs: RayJob[] = []
+      for (let c = 0; c < smp.lon.length; c++) jobs.push({ lon: smp.lon[c], lat: smp.lat[c], sin: sinAz, cos: cosAz, count: NAZ })
+      const r = await horizonsGpu(jobs, ray, demMax, hold)
+      if (r) {
+        hzGpu = new Float32Array(jobs.length * NAZ).fill(NaN)
+        r.forEach((v, c) => { if (v) hzGpu!.set(v, c * NAZ) })
+      }
+    }
+    return computeTerrain(key, smp, demMax, ray, zs, -1, hzGpu)
   } finally {
     dem.unpin(hold)
   }
 }
 
 /** Horizons (live from `ray`, or precomputed level `pre` >= 0), slope, elevation and gradient per sample. */
-function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray | null, zs: number, pre = -1): Terrain {
+function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray | null, zs: number, pre = -1, hzIn?: Float32Array): Terrain {
   const { nx, ny } = smp, N = nx * ny
   const hz = new Float32Array(N * NAZ)
   const slope = new Float32Array(N), elev = new Float32Array(N)
@@ -679,9 +810,12 @@ function computeTerrain(key: string, smp: Samples, demMax: number, ray: Ray | nu
     for (let i = 0; i < nx; i++) {
       const c = j * nx + i
       const lon = smp.lon[c], lat = smp.lat[c]
-      if (pre >= 0) hzs!.sample(lon, lat, pre, tmp)
-      else horizon(lon, lat, ray!, demMax, tmp)
-      hz.set(tmp, c * NAZ)
+      if (hzIn) hz.set(hzIn.subarray(c * NAZ, c * NAZ + NAZ), c * NAZ) // traced on the GPU
+      else {
+        if (pre >= 0) hzs!.sample(lon, lat, pre, tmp)
+        else horizon(lon, lat, ray!, demMax, tmp)
+        hz.set(tmp, c * NAZ)
+      }
       // gradient from central differences over one DEM pixel of level zs (east, north)
       const dLat = ds / R, dLon = dLat / Math.max(Math.cos(lat), 1e-6)
       const hE = dem.sample(lon + dLon, lat, zs), hW = dem.sample(lon - dLon, lat, zs)
@@ -832,12 +966,18 @@ async function tile(m: {
   id: number; z: number; x: number; y: number; n: number; demMax: number; thermal?: boolean
   thermalSeriesIndices?: number[]; g?: number; polar?: number; longestNight?: boolean
   landing?: LandingRequest
+  /** force the regolith solver's backend (HeatEngine.compareThermalBackends); default: the faster one */
+  backend?: 'gpu' | 'cpu'
 }) {
   const demMax = Math.min(m.demMax, dem.maxLevel)
   const smp = m.polar ? polarSamples(m.z, m.x, m.y, m.n, m.polar) : geoSamples(m.z, m.x, m.y, m.n, m.g ?? 1)
   const fp = m.landing?.footprint
   const footprintRadiusM = fp ? Math.max(fp[0], fp[1]) : 0
-  const t = await terrain(smp, demMax, footprintRadiusM)
+  const force = m.backend ?? forcedBackend
+  const stages: Record<string, number> = {} // ms per stage, for the console (HeatEngine.stats / tile results)
+  let tStage = performance.now()
+  const t = await terrain(smp, demMax, footprintRadiusM, force)
+  stages.terrain = performance.now() - tStage
   const { nx, ny } = smp, N = nx * ny
   const s = new Float32Array(N), e = new Float32Array(N)
   const cMean = new Float32Array(N), cMin = new Float32Array(N), cBelow = new Float32Array(N)
@@ -859,7 +999,18 @@ async function tile(m: {
   // flux, T = k (q + q_geo)^(1/4), with k interpolated from the exact neighbours, where those agree
   // (k within ADAPT_K_TOL, lit-time share within ADAPT_LIT_TOL of the sample's own); elsewhere (shadow
   // edges, PSRs, data gaps) they are solved exactly too.
-  const adaptive = !!m.landing && !!m.thermal && !seriesIndices.length && nx >= 3 && ny >= 3
+  // GPU: every sample's flux series is collected (step-major, stride N) and all columns are solved in one
+  // batch after the loop; exact everywhere, so no adaptive prediction there
+  // GPU time integration (sun, charging, Earth, DSN, night, flux + regolith solver) for the whole tile,
+  // or, on the CPU path, at least the regolith solver batched on the GPU (when the GPU is the faster one)
+  const kind = m.thermal ? 'thermal' : 'plain'
+  const backend = !seriesIndices.length ? chooseBackend(force, kind) : 'cpu'
+  const onGpu = backend === 'gpu' && !!m.thermal && !!steps && !!gpu && !gpu.lost
+  if (onGpu && gpuQ.length < steps * N) gpuQ = new Float32Array(steps * N)
+  const gpuInit = new Float32Array(onGpu ? N : 0).fill(30) // (skipped samples: a harmless column, result unused)
+  const gpuCells: number[] = []
+  let cpuSolveMs = 0, cpuSolveSamples = 0, solveMs = 0
+  const adaptive = !onGpu && !!m.landing && !!m.thermal && !seriesIndices.length && nx >= 3 && ny >= 3
   const coarse = (i: number, n: number) => (i & 1) === 0 || i === n - 1
   const qm = new Float64Array(adaptive ? N : 0), litF = new Float32Array(adaptive ? N : 0)
   const pending: number[] = []
@@ -871,22 +1022,176 @@ async function tile(m: {
   const fineRay = makeRay(demMax, FINE_STEPS)
   const fineHold: number[] = []
   const zs = demLevelFor(smp.spacing, demMax)
+  tStage = performance.now()
   if (smp.polar) await ensureForSamples(smp, fineRay, zs, fineHold)
   else await ensureFor(smp.box[0], smp.box[1], smp.box[2], smp.box[3], fineRay, zs, fineHold)
-  const fine = new Map<number, Float32Array>() // refined horizon per sample (for the second pass below)
+  stages.fineTiles = performance.now() - tStage
+  // refined horizon per sample (null: nothing to refine), filled by the GPU pre-pass below or lazily
+  const fine = new Map<number, Float32Array | null>()
   /** horizon array, offset and range to use for sample c (refined where it matters); sets hzN */
   const hzFor = (c: number, F: Frame): [Float32Array, number, number, number] => {
     hzN = NAZ
     const off = c * NAZ
     const [hMin, hMax] = hzRange(t.hz, off)
-    const f = fine.get(c) ?? refineHorizon(smp.lon[c], smp.lat[c], F, t.hz, off, hMin, hMax, fineRay, demMax)
-    if (!f) return [t.hz, off, hMin, hMax]
+    const f = fine.has(c) ? fine.get(c)! : refineHorizon(smp.lon[c], smp.lat[c], F, t.hz, off, hMin, hMax, fineRay, demMax)
     fine.set(c, f)
+    if (!f) return [t.hz, off, hMin, hMax]
     hzN = FINE_NAZ
     const [fMin, fMax] = hzRange(f, 0)
     return [f, 0, fMin, fMax]
   }
   try {
+  // valid samples: inside the clip circle, with elevation (the rest stay NaN, as on the CPU path)
+  const cells: number[] = []
+  for (let c = 0; c < N; c++) {
+    const lon = smp.lon[c], lat = smp.lat[c]
+    const outside = clip !== undefined && clipSin0 * Math.sin(lat) + clipCos0 * Math.cos(lat) * Math.cos(lon - clip[0]) < clipCos
+    if (outside || t.hz[c * NAZ] !== t.hz[c * NAZ]) {
+      s[c] = e[c] = cMean[c] = cMin[c] = cBelow[c] = fSky[c] = dark[c] = NaN
+      if (m.thermal) tMean[c] = tMin[c] = tMax[c] = NaN
+      if (m.landing) link[c] = linkGap[c] = sunlit[c] = slope[c] = NaN
+    } else cells.push(c)
+  }
+  const validSamples = cells.length
+  let gpuDone = false
+  if (backend === 'gpu' && gpuTime && !gpuTime.lost && cells.length) {
+    const tGpu = performance.now()
+    try {
+      const n = cells.length
+      // 1. which directions need the adaptive refinement (markNearHorizon), from the coarse horizons
+      const frames = new Float32Array(n * SAMPLE_STRIDE), bits = new Uint32Array(frames.buffer)
+      const coarseHz = new Float32Array(n * NAZ)
+      const putFrame = (k: number, c: number, hMin: number, hMax: number, off: number, count: number) => {
+        const F = frame(smp.lon[c], smp.lat[c], t.gE[c], t.gN[c]), b = k * SAMPLE_STRIDE
+        frames.set([F.ux, F.uy, F.uz, F.ex, F.ey, F.nx, F.ny, F.nz, F.mx, F.my, F.mz, hMin, hMax, t.elev[c]], b)
+        bits[b + 14] = off
+        bits[b + 15] = count
+      }
+      cells.forEach((c, k) => {
+        const [hMin, hMax] = hzRange(t.hz, c * NAZ)
+        putFrame(k, c, hMin, hMax, k * NAZ, NAZ)
+        coarseHz.set(t.hz.subarray(c * NAZ, c * NAZ + NAZ), k * NAZ)
+      })
+      const words = Math.ceil(FINE_NAZ / 32)
+      tStage = performance.now()
+      const marks = await gpuTime.marks(frames, coarseHz, n)
+      stages.marks = performance.now() - tStage
+      // 2. the dense rays toward those directions, all in one GPU batch (CPU tracing if that fails)
+      const jobs: RayJob[] = [], jobK: number[] = [], jobBins: number[][] = []
+      for (let k = 0; k < n; k++) {
+        const bins: number[] = []
+        for (let w = 0; w < words; w++) {
+          let v = marks[k * words + w]
+          while (v) { const bit = 31 - Math.clz32(v & -v); bins.push(w * 32 + bit); v &= v - 1 }
+        }
+        if (!bins.length) continue
+        const sn = new Float64Array(bins.length), cs = new Float64Array(bins.length)
+        bins.forEach((b, i) => { sn[i] = Math.sin(b / R2D); cs[i] = Math.cos(b / R2D) })
+        jobs.push({ lon: smp.lon[cells[k]], lat: smp.lat[cells[k]], sin: sn, cos: cs, count: bins.length })
+        jobK.push(k)
+        jobBins.push(bins)
+      }
+      tStage = performance.now()
+      let traced = await horizonsGpu(jobs, fineRay, demMax, fineHold)
+      stages.refine = performance.now() - tStage
+      stages.refineRays = jobs.reduce((a, j) => a + j.count, 0)
+      stages.refineTiles = new Set(fineHold).size
+      if (!traced) traced = jobs.map((j) => {
+        const o = new Float32Array(j.count)
+        horizon(j.lon, j.lat, fineRay, demMax, o, j.count, j.sin as Float64Array<ArrayBuffer>, j.cos as Float64Array<ArrayBuffer>)
+        return o[0] === o[0] ? o : null
+      })
+      // 3. each sample's effective horizon (1-deg where refined, as refineHorizon), packed
+      const refined = new Map<number, Float32Array>()
+      hzN = NAZ
+      traced.forEach((v, i) => {
+        if (!v) return
+        const k = jobK[i], off = cells[k] * NAZ
+        const out = new Float32Array(FINE_NAZ)
+        for (let b = 0; b < FINE_NAZ; b++) out[b] = horizonAtAz(t.hz, off, b)
+        jobBins[i].forEach((b, j) => { out[b] = v[j] })
+        refined.set(k, out)
+      })
+      const hzPacked = new Float32Array(n * NAZ + refined.size * FINE_NAZ)
+      let ho = 0
+      cells.forEach((c, k) => {
+        const f = refined.get(k)
+        const arr = f ?? t.hz.subarray(c * NAZ, c * NAZ + NAZ)
+        hzPacked.set(arr, ho)
+        hzN = arr.length // (hzRange reads hzN azimuths)
+        const [hMin, hMax] = hzRange(arr, 0)
+        putFrame(k, c, hMin, hMax, ho, arr.length)
+        ho += arr.length
+      })
+      hzN = NAZ
+      // 4. the time integration (+ the regolith solver, on the GPU too)
+      const flags = (m.landing ? TIME.LINK : TIME.CHARGING | TIME.EARTH) | (m.thermal && steps ? TIME.FLUX : 0) | (m.longestNight ? TIME.NIGHT : 0)
+      const solver = m.thermal && steps && gpu && !gpu.lost ? { solver: gpu, spin: Math.ceil(SPIN_UP_S / thermalDt), dtS: thermalDt } : undefined
+      const t0 = performance.now()
+      const r = await gpuTime.integrate(frames, hzPacked.subarray(0, ho), n, flags, solver)
+      solveMs = performance.now() - t0
+      stages.integrate = solveMs
+      if (m.thermal && steps && !r.temps) throw new Error('regolith solver unavailable')
+      cells.forEach((c, k) => {
+        const o = k * OUT_STRIDE
+        s[c] = r.out[o + OUT.FRAC]
+        cMean[c] = r.out[o + OUT.CMEAN]
+        cMin[c] = r.out[o + OUT.CMIN]
+        cBelow[c] = r.out[o + OUT.CBELOW]
+        e[c] = m.landing ? NaN : r.out[o + OUT.EARTH]
+        if (m.longestNight) dark[c] = r.out[o + OUT.DARK]
+        let sky = 0
+        for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
+        fSky[c] = sky / NAZ / 2
+        if (r.temps) { tMean[c] = r.temps[3 * k]; tMin[c] = r.temps[3 * k + 1]; tMax[c] = r.temps[3 * k + 2] }
+        if (m.landing) {
+          sunlit[c] = r.out[o + OUT.SUNLIT]
+          link[c] = r.out[o + OUT.LINK]
+          linkGap[c] = r.out[o + OUT.LINKGAP]
+          slope[c] = fp ? maxFootprintSlope(smp.lon[c], smp.lat[c], t.slope[c], t.slopeLevel, fp) : NaN
+        }
+      })
+      gpuDone = true
+      recordPerf('gpu', kind, performance.now() - tGpu, n)
+    } catch (err) {
+      console.warn('GPU time integration failed, computing on the CPU:', err)
+      perf[kind].gpu = Infinity // until the next retry
+    }
+  }
+  const tLoop = performance.now()
+  if (!gpuDone) {
+  // GPU pre-pass of the adaptive horizons: which 1-deg directions of each sample need refining (CPU,
+  // as refineHorizon), then all of the tile's dense rays in one GPU batch
+  if (force !== 'cpu' && gpuHz && !gpuHz.lost) {
+    const jobs: RayJob[] = [], jobCells: number[] = [], jobBins: Uint16Array[] = []
+    hzN = NAZ
+    for (let c = 0; c < N; c++) {
+      const lon = smp.lon[c], lat = smp.lat[c]
+      if (clip !== undefined && clipSin0 * Math.sin(lat) + clipCos0 * Math.cos(lat) * Math.cos(lon - clip[0]) < clipCos) continue
+      if (t.hz[c * NAZ] !== t.hz[c * NAZ]) continue
+      const F = frame(lon, lat, t.gE[c], t.gN[c])
+      const off = c * NAZ
+      const [hMin, hMax] = hzRange(t.hz, off)
+      fineMark.fill(0)
+      let marked = markNearHorizon(sun, F, t.hz, off, hMin, hMax)
+      if (earth.length) marked += markNearHorizon(earth, F, t.hz, off, hMin, hMax)
+      if (!marked) { fine.set(c, null); continue }
+      const bins = new Uint16Array(marked), sn = new Float64Array(marked), cs = new Float64Array(marked)
+      for (let b = 0, k = 0; b < FINE_NAZ; b++) if (fineMark[b]) { bins[k] = b; sn[k] = Math.sin(b / R2D); cs[k] = Math.cos(b / R2D); k++ }
+      jobs.push({ lon, lat, sin: sn, cos: cs, count: marked })
+      jobCells.push(c)
+      jobBins.push(bins)
+    }
+    const r = await horizonsGpu(jobs, fineRay, demMax, fineHold)
+    if (r) r.forEach((v, i) => {
+      const c = jobCells[i]
+      if (!v) { fine.set(c, null); return }
+      const out = new Float32Array(FINE_NAZ)
+      for (let b = 0; b < FINE_NAZ; b++) out[b] = horizonAtAz(t.hz, c * NAZ, b)
+      jobBins[i].forEach((b, k) => { out[b] = v[k] })
+      fine.set(c, out)
+    })
+  }
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const c = j * nx + i
@@ -911,18 +1216,46 @@ async function tile(m: {
       for (let a = 0; a < NAZ; a++) sky += 1 - Math.sin(t.hz[c * NAZ + a] / R2D)
       fSky[c] = sky / NAZ / 2
       const seriesIndex = seriesIndexByCell.get(c)
-      if (adaptive && steps) {
+      if (onGpu) {
+        const qMean = absorbedFlux(F, hzc, off, hMin, hMax)
+        for (let st = 0; st < steps; st++) gpuQ[st * N + c] = qBuf[st]
+        gpuInit[c] = Math.max(30, 0.74 * Math.pow(qMean / (EPS * SIGMA), 0.25)) // as solveThermal
+        gpuCells.push(c)
+      } else if (adaptive && steps) {
         qm[c] = absorbedFlux(F, hzc, off, hMin, hMax)
         litF[c] = fluxLitFraction
-        if (coarse(i, nx) && coarse(j, ny)) [tMean[c], tMin[c], tMax[c]] = solveThermal(qm[c])
-        else pending.push(c)
+        cpuSolveSamples++
+        if (coarse(i, nx) && coarse(j, ny)) {
+          const t0 = performance.now()
+          ;[tMean[c], tMin[c], tMax[c]] = solveThermal(qm[c])
+          cpuSolveMs += performance.now() - t0
+        } else pending.push(c)
       } else if (m.thermal && (!seriesIndices.length || seriesIndex !== undefined)) {
-        [tMean[c], tMin[c], tMax[c]] = thermal(F, hzc, off, hMin, hMax, seriesIndex === undefined ? undefined : tSeries, (seriesIndex ?? 0) * steps)
+        const t0 = performance.now()
+        ;[tMean[c], tMin[c], tMax[c]] = thermal(F, hzc, off, hMin, hMax, seriesIndex === undefined ? undefined : tSeries, (seriesIndex ?? 0) * steps)
+        cpuSolveMs += performance.now() - t0
+        cpuSolveSamples++
       }
       if (m.landing) {
         sunlit[c] = sunOut.sunlitPct
         ;[link[c], linkGap[c]] = stationLinkStats(F, hzc, off, t.elev[c], hMin, hMax)
         slope[c] = fp ? maxFootprintSlope(lon, lat, t.slope[c], t.slopeLevel, fp) : NaN
+      }
+    }
+  }
+  if (onGpu && gpuCells.length) {
+    const t0 = performance.now()
+    try {
+      const r = await gpu!.solve(gpuQ, gpuInit, N, Math.ceil(SPIN_UP_S / thermalDt), thermalDt)
+      for (const c of gpuCells) { tMean[c] = r[3 * c]; tMin[c] = r[3 * c + 1]; tMax[c] = r[3 * c + 2] }
+      solveMs = performance.now() - t0
+    } catch (err) {
+      console.warn('GPU regolith solver failed, using the CPU:', err)
+      perf[kind].gpu = Infinity // until the next retry
+      for (const c of gpuCells) {
+        const F = frame(smp.lon[c], smp.lat[c], t.gE[c], t.gN[c])
+        const [hzc, off, hMin, hMax] = hzFor(c, F)
+        ;[tMean[c], tMin[c], tMax[c]] = thermal(F, hzc, off, hMin, hMax)
       }
     }
   }
@@ -949,7 +1282,13 @@ async function tile(m: {
     const lon = smp.lon[c], lat = smp.lat[c]
     const F = frame(lon, lat, t.gE[c], t.gN[c])
     const [hzc, off, hMin, hMax] = hzFor(c, F)
-    ;[tMean[c], tMin[c], tMax[c]] = solveThermal(absorbedFlux(F, hzc, off, hMin, hMax))
+    const qMean = absorbedFlux(F, hzc, off, hMin, hMax)
+    const t0 = performance.now()
+    ;[tMean[c], tMin[c], tMax[c]] = solveThermal(qMean)
+    cpuSolveMs += performance.now() - t0
+  }
+  if (backend === 'cpu' && cpuSolveSamples) solveMs = cpuSolveMs
+  if (backend === 'cpu') recordPerf('cpu', kind, performance.now() - tLoop, validSamples)
   }
   } finally {
     hzN = NAZ
@@ -963,6 +1302,9 @@ async function tile(m: {
       id: m.id, version, nx, ny, sun: s, earth: e, slope, elev, cMean, cMin, cBelow, tMean, tMin, tMax, fSky,
       link, linkGap, sunlit, dark,
       thermal: !!m.thermal,
+      backend: m.thermal ? backend : undefined,
+      solveMs: m.thermal ? Math.round(solveMs) : undefined, // regolith solver time (ms), for the console
+      stages: Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, Math.round(v)])),
       ...(seriesIndices.length ? { tSeries, tTimes, tSeriesIndices: seriesIndices } : {}),
     },
     [...arrays.map((a) => a.buffer), ...(tTimes ? [tSeries.buffer, tTimes.buffer] : [])],
@@ -999,10 +1341,12 @@ self.onmessage = (ev: MessageEvent) => {
   if (m.type === 'init') {
     dem = new DemSampler(m.cfg)
     hzs = m.hz ? new HorizonSampler(m.hz) : null
+    if (m.gpu !== false) initGpu()
   }
   else if (m.type === 'equipot') {
     eq = m.table
     chargeThreshold = m.threshold
+    if (gpuTime && sun.length) gpuTime.setWindow(timeWindow())
   } else if (m.type === 'window') {
     sun = m.sun
     nightSun = m.nightSun
@@ -1023,6 +1367,10 @@ self.onmessage = (ev: MessageEvent) => {
     let auMin = Infinity
     for (let j = 3; j < thermalSun.length; j += 4) auMin = Math.min(auMin, thermalSun[j])
     thermalRMax = auMin < Infinity ? SUN_RADIUS_1AU_DEG / auMin : 0.3
+    gpu?.setWindow(thermalCount)
+    gpuTime?.setWindow(timeWindow())
+  } else if (m.type === 'backend') {
+    forcedBackend = m.mode === 'cpu' || m.mode === 'gpu' ? m.mode : undefined
   } else if (m.type === 'tile') {
     tile(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))
   } else if (m.type === 'horizon') {

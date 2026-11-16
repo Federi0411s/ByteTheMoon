@@ -14,6 +14,7 @@
 import { EARTH_RADIUS_KM, SUN_RADIUS_KM, earthPosition, sunPosition, type Ephemeris } from './ephemeris'
 import type { DemConfig, PolarDemConfig } from './dem'
 import type { HorizonConfig } from './horizonTiles'
+import type { GpuInfo } from './gpu'
 import { fineUrlFor } from './pyramid'
 import type { HorizonMask } from './analysis'
 import { DATA_URL } from './data'
@@ -143,6 +144,20 @@ export class HeatEngine {
   gcr = 1
   /** restarts so far (stuck or crashed workers), for the console */
   restarts = 0
+  /** GPU the workers' regolith solver got (lib/gpuThermal.ts); null = none (CPU only), undefined = not known yet */
+  gpu: GpuInfo | null | undefined = undefined
+  /** which GPU kernels the workers could build (regolith solver, horizons) */
+  gpuKernels = { thermal: false, horizons: false }
+  /** called when the workers report their GPU */
+  onGpu?: (info: GpuInfo | null) => void
+  /** where the workers compute (console: moonHeat.setBackend('cpu')): 'auto' = GPU or CPU, the faster per tile */
+  backend: 'auto' | 'cpu' | 'gpu' = 'auto'
+  setBackend(mode: 'auto' | 'cpu' | 'gpu') {
+    this.backend = mode
+    for (const s of this.slots) s.worker.postMessage({ type: 'backend', mode })
+  }
+  /** tiles whose regolith model ran on each backend, for the console */
+  readonly backends = { gpu: 0, cpu: 0 }
   readonly dem: DemConfig
   /** precomputed horizon pyramid (pipeline/horizon_tiles.py), null if not generated */
   readonly hz: HorizonConfig | null
@@ -161,6 +176,8 @@ export class HeatEngine {
     const worker = new Worker(new URL('./heatWorker.ts', import.meta.url), { type: 'module' })
     const slot: Slot = { worker, inflight: new Map() }
     worker.onmessage = (e) => {
+      if (e.data?.type === 'gpu') { const g: GpuInfo | null = e.data.info ?? this.gpu ?? null; this.gpu = g; this.gpuKernels = { thermal: !!e.data.thermal, horizons: !!e.data.horizons }; this.onGpu?.(g); return }
+      if (e.data?.backend) this.backends[e.data.backend as 'gpu' | 'cpu']++
       const entry = slot.inflight.get(e.data.id)
       if (!entry) return
       clearTimeout(entry.timer)
@@ -175,6 +192,7 @@ export class HeatEngine {
     }
     worker.postMessage({ type: 'init', cfg: this.dem, hz: this.hz })
     worker.postMessage({ type: 'equipot', table: this.equipot, threshold: CHARGE_THRESHOLD_V })
+    if (this.backend !== 'auto') worker.postMessage({ type: 'backend', mode: this.backend })
     if (this.lastWindow) worker.postMessage(this.lastWindow)
     return slot
   }
@@ -409,7 +427,40 @@ export class HeatEngine {
 
   /** Requests queued or running, for the console: moonHeat.stats() */
   stats() {
-    return { queued: this.queue.length, inflight: this.slots.map((s) => s.inflight.size), cached: this.cache.size, restarts: this.restarts }
+    return { queued: this.queue.length, inflight: this.slots.map((s) => s.inflight.size), cached: this.cache.size, restarts: this.restarts, gpu: this.gpu, thermalTiles: { ...this.backends } }
+  }
+
+  /**
+   * Check of the GPU computations against the CPU (console: moonHeat.compareThermalBackends(z, x, y)):
+   * the same tile computed with everything forced on the CPU and on the GPU (not cached): horizons,
+   * time integration (sunlight, charging, Earth, or DSN link / sunlit % with `landing`, longest night
+   * with `night`) and the regolith model. Returns the largest differences per output and the timings.
+   */
+  async compareThermalBackends(z: number, x: number, y: number, opts: { n?: number; demMax?: number; landing?: boolean; night?: boolean; polar?: -1 | 1 } = {}) {
+    const n = opts.n ?? 33, demMax = opts.demMax ?? this.dem.fineMaxLevel
+    const run = async (backend: 'cpu' | 'gpu') => {
+      const t0 = performance.now()
+      const msg = { type: 'tile', z, x, y, n, demMax, thermal: true, g: 1, backend, landing: opts.landing ? {} : undefined, longestNight: !!opts.night, polar: opts.polar }
+      const r = await this.request(`cmp/${backend}/${JSON.stringify(opts)}/${z}/${x}/${y}`, msg, `${z}/${x}/${y}/1`, true, undefined, false)
+      return { r: r as (HeatTile & { backend?: string; solveMs?: number }) | null, ms: performance.now() - t0 }
+    }
+    const cpu = await run('cpu'), gpu = await run('gpu')
+    if (!cpu.r || !gpu.r) return { error: 'tile failed' }
+    const fields = ['sun', 'fSky', 'tMean', 'tMin', 'tMax', 'cMean', 'cMin', 'cBelow', 'earth', 'link', 'linkGap', 'sunlit', 'dark'] as const
+    const diff: Record<string, { max: number; mean: number; samples: number }> = {}
+    for (const f of fields) {
+      const a = cpu.r[f], b = gpu.r[f]
+      if (!a?.length) continue
+      let mx = 0, sum = 0, cnt = 0, mismatchNaN = 0
+      for (let i = 0; i < a.length; i++) {
+        if ((a[i] === a[i]) !== (b[i] === b[i])) { mismatchNaN++; continue }
+        if (a[i] !== a[i]) continue
+        const d = Math.abs(a[i] - b[i])
+        mx = Math.max(mx, d); sum += d; cnt++
+      }
+      if (cnt || mismatchNaN) diff[f] = { max: +mx.toPrecision(3), mean: +(sum / Math.max(cnt, 1)).toPrecision(3), samples: cnt, ...(mismatchNaN ? { nanMismatch: mismatchNaN } : {}) }
+    }
+    return { gpu: this.gpu, backendUsed: [cpu.r.backend, gpu.r.backend], diff, cpuMs: Math.round(cpu.ms), gpuMs: Math.round(gpu.ms) }
   }
 
   /**
