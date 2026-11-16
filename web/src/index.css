@@ -444,6 +444,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .sun-countdown { display: grid; gap: 5px; margin: 10px 0; padding: 11px 12px; border: 1px solid transparent; border-radius: 8px; }
 .sun-countdown.day { border-color: #e7bd53; background: #ffe8a3; color: #29220d; }
 .sun-countdown.night { border-color: #39496f; background: #131d37; color: #f0f4ff; }
+.sun-countdown.eclipse { border-color: #c4589a; background: #2a1430; color: #ffe1f1; }
 .sun-countdown-state { font-size: 11px; font-weight: 800; letter-spacing: 0.09em; }
 .sun-countdown-action { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; opacity: 0.78; }
 .sun-countdown-time { font-size: 24px; line-height: 1.1; font-variant-numeric: tabular-nums; }
@@ -727,3 +728,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .region-range { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 4px 0 2px 24px; }
 .region-range .source { grid-column: 1 / -1; margin: 0; }
 .region-clear { width: 100%; margin-top: 8px; }
+
+/* solar eclipses (lib/eclipse.ts) in the site panel */
+.eclipse-badge { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; background: #3a2f63; color: #d9cfff; border: 1px solid #7a68c9; }
+.eclipse-badge.total { background: #4a1f3a; color: #ffc9e6; border-color: #c4589a; }
+.eclipse-tag { margin: 8px 0 0; font-size: 13px; }
+.eclipse-list ul { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; display: grid; gap: 4px; font-variant-numeric: tabular-nums; }

@@ -1,6 +1,8 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import type { SiteSummary, TimelineSample } from '../lib/analysis'
 import type { Site } from '../lib/data'
+import type { SiteEclipse } from '../lib/eclipse'
+import { fmtDateTime } from '../lib/time'
 import type { DsnSample } from '../lib/dsn'
 import { DsnPanel } from './DsnPanel'
 import { PowerPanel } from './PowerPanel'
@@ -100,6 +102,7 @@ export function SitePanel({
   now,
   nowMs,
   sunlightCountdown,
+  eclipses,
   periodLabel,
   inspect,
   expanded,
@@ -137,7 +140,9 @@ export function SitePanel({
   summary?: SiteSummary
   now?: TimelineSample
   nowMs: number
-  sunlightCountdown?: { daylight: boolean; remainingMs?: number }
+  sunlightCountdown?: { daylight: boolean; remainingMs?: number; eclipse?: { cover: number; total: boolean } }
+  /** solar eclipses seen from the site in the analysis period (lib/eclipse.ts) */
+  eclipses?: SiteEclipse[]
   periodLabel: string
   inspect?: { lat: number; lon: number; values: { title: string; value: string }[] }
   expanded: boolean
@@ -228,15 +233,19 @@ export function SitePanel({
             {selected.lat.toFixed(3)}°, {selected.lon.toFixed(3)}° · horizon: {selected.horizon ? selected.horizon.source : 'flat (no terrain data here)'}
           </p>
           {sunlightCountdown && (
-            <div className={`sun-countdown ${sunlightCountdown.daylight ? 'day' : 'night'}`} role="status">
-              <span className="sun-countdown-state">{sunlightCountdown.daylight ? 'DAYLIGHT' : 'NIGHT'}</span>
-              <span className="sun-countdown-action">{sunlightCountdown.daylight ? 'NIGHTFALL IN' : 'DAYLIGHT IN'}</span>
+            <div className={`sun-countdown ${sunlightCountdown.eclipse ? 'eclipse' : sunlightCountdown.daylight ? 'day' : 'night'}`} role="status">
+              <span className="sun-countdown-state">
+                {sunlightCountdown.eclipse
+                  ? `${sunlightCountdown.eclipse.cover >= 0.999 ? 'TOTAL ECLIPSE' : 'ECLIPSE'} · ${Math.round(sunlightCountdown.eclipse.cover * 100)}% OF THE SUN COVERED`
+                  : sunlightCountdown.daylight ? 'DAYLIGHT' : 'NIGHT'}
+              </span>
+              <span className="sun-countdown-action">{sunlightCountdown.eclipse ? 'ECLIPSE ENDS IN' : sunlightCountdown.daylight ? 'NIGHTFALL IN' : 'DAYLIGHT IN'}</span>
               <strong className="sun-countdown-time">
                 {sunlightCountdown.remainingMs === undefined
                   ? 'Not in loaded forecast'
                   : fmtCountdown(sunlightCountdown.remainingMs)}
               </strong>
-              <span className="sun-countdown-note">Based on the Sun clearing the local terrain horizon</span>
+              <span className="sun-countdown-note">{sunlightCountdown.eclipse ? 'The Earth is passing in front of the Sun (a lunar eclipse seen from Earth)' : 'Based on the Sun clearing the local terrain horizon'}</span>
             </div>
           )}
           <TerrainPreview
@@ -246,6 +255,12 @@ export function SitePanel({
             onClick={onToggleTerrainView}
           />
           {terrainViewError && <p className="terrain-view-error" role="alert">{terrainViewError}</p>}
+          {now && now.eclipseFrac > 0 && now.sunEl > -1 && (
+            <p className="eclipse-tag" role="status">
+              <span className="eclipse-badge">Eclipse</span>
+              The Earth covers {(now.eclipseFrac * 100).toFixed(0)}% of the Sun{now.eclipseFrac >= 0.999 ? ': total, no direct sunlight' : ''}
+            </p>
+          )}
           {now && (
             <div className="kv-grid">
               <div className="kv"><span>Altitude</span><b>{selected.heightM === undefined ? '—' : `${selected.heightM.toFixed(0)} m`}</b></div>
@@ -264,6 +279,24 @@ export function SitePanel({
               <div className="kv"><span>Earth in view</span><b>{summary.earthPct.toFixed(0)}%</b></div>
               <div className="kv"><span>Both</span><b>{summary.bothPct.toFixed(0)}%</b></div>
               <div className="kv"><span>Longest night</span><b>{fmtDur(summary.longestDarkH * 3600_000)}</b></div>
+            </div>
+          )}
+          {eclipses && (
+            <div className="eclipse-list">
+              <div className="row"><span className="muted">Solar eclipses seen from here ({periodLabel.toLowerCase()})</span></div>
+              {eclipses.length === 0
+                ? <p className="muted">None: the Earth never covers the Sun while it is above this site's horizon.</p>
+                : (
+                  <ul>
+                    {eclipses.slice(0, 8).map((ev) => (
+                      <li key={ev.start}>
+                        <span className={`eclipse-badge${ev.total ? ' total' : ''}`}>{ev.total ? 'Total' : 'Partial'}</span>
+                        {fmtDateTime(ev.peak)} UTC · max {(ev.maxCover * 100).toFixed(0)}% · {fmtDur(ev.end - ev.start + 120_000)}
+                      </li>
+                    ))}
+                    {eclipses.length > 8 && <li className="muted">+ {eclipses.length - 8} more</li>}
+                  </ul>
+                )}
             </div>
           )}
           {env && <EnvPanel {...env} />}

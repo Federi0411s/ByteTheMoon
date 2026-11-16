@@ -277,9 +277,16 @@ export class HeatEngine {
     const nightCount = Math.max(2, Math.ceil((end - start) / nightStepMs) + 1)
     const nightTimes = new Float64Array(nightCount)
     const nightSun = new Float32Array(nightCount * 4)
+    const nightEarth = new Float32Array(nightCount * 4) // eclipses (lib/eclipse.ts): Earth dir + radius
+    const earthAt = (out: Float32Array, j: number, t: number) => {
+      const e = earthPosition(eph, t)
+      const de = Math.hypot(e[0], e[1], e[2])
+      out.set([e[0] / de, e[1] / de, e[2] / de, (Math.asin((EARTH_RADIUS_KM * 1000) / de) * 180) / Math.PI], j * 4)
+    }
     for (let j = 0; j < nightCount; j++) {
       const t = start + ((end - start) * j) / (nightCount - 1)
       nightTimes[j] = t
+      earthAt(nightEarth, j, t)
       const p = sunPosition(eph, t)
       const d = Math.hypot(p[0], p[1], p[2])
       nightSun.set([
@@ -314,7 +321,9 @@ export class HeatEngine {
     }
     const thermalSun = new Float32Array(steps.length * 4), thermalCount = new Uint8Array(steps.length)
     const thermalTimes = new Float64Array(steps.length)
+    const thermalEarth = new Float32Array(steps.length * 4)
     steps.forEach(({ t, count }, j) => {
+      earthAt(thermalEarth, j, t + (dtS * 1000) / 2)
       const p = sunPosition(eph, t + (dtS * 1000) / 2)
       const d = Math.hypot(p[0], p[1], p[2])
       thermalSun.set([p[0] / d, p[1] / d, p[2] / d, d / 1000 / AU_KM], j * 4)
@@ -325,7 +334,7 @@ export class HeatEngine {
     this.window = [start, end]
     this.gcr = gcrFactor(start, end)
     this.version++
-    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, nightSun, nightTimes, earth, dsn, thermalSun, thermalCount, thermalTimes, thermalDt: dtS }
+    this.lastWindow = { type: 'window', version: this.version, window: [start, end], sun, nightSun, nightEarth, nightTimes, earth, dsn, thermalSun, thermalEarth, thermalCount, thermalTimes, thermalDt: dtS }
     for (const s of this.slots) s.worker.postMessage(this.lastWindow)
     this.cache.clear()
     this.order.length = 0

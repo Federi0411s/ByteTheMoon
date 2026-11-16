@@ -18,6 +18,7 @@ import {
   SUN_RADIUS_KM,
 } from './ephemeris'
 import { discEdgeAz, sunVisible } from './sunDisc'
+import { eclipseCoverFrom } from './eclipse'
 
 export interface HorizonMask {
   azStepDeg: number
@@ -86,7 +87,9 @@ export interface TimelineSample {
   sunEl: number
   earthAz: number
   earthEl: number
-  sunVisibleFrac: number // 0..1 share of the Sun's (limb-darkened) light above the terrain horizon, lib/sunDisc.ts
+  sunVisibleFrac: number // 0..1 share of the Sun's (limb-darkened) light above the terrain horizon, lib/sunDisc.ts, less any eclipse
+  /** 0..1 share of the Sun's disc hidden by the Earth (solar eclipse seen from the site, lib/eclipse.ts) */
+  eclipseFrac: number
   earthVisibleFrac: number
 }
 
@@ -115,17 +118,21 @@ export function computeTimeline(
   const topo = topoFrame(site.lat, site.lon, site.heightM ?? 0)
   const out: TimelineSample[] = []
   for (let t = startMs; t <= endMs; t += stepMs) {
-    const s = azEl(topo, sunPosition(eph, t))
-    const e = azEl(topo, earthPosition(eph, t))
+    const sunP = sunPosition(eph, t), earthP = earthPosition(eph, t)
+    const s = azEl(topo, sunP)
+    const e = azEl(topo, earthP)
     const rs = Math.asin((SUN_RADIUS_KM * 1000) / s.distM) / D2R
     const re = Math.asin((EARTH_RADIUS_KM * 1000) / e.distM) / D2R
+    // the Earth in front of the Sun takes its share off the light over the terrain (independent occultations)
+    const eclipseFrac = eclipseCoverFrom(sunP, earthP, topo.pos)
     out.push({
       t,
       sunAz: s.az,
       sunEl: s.el,
       earthAz: e.az,
       earthEl: e.el,
-      sunVisibleFrac: sunVisibleOver(mask, s.az, s.el, rs),
+      sunVisibleFrac: sunVisibleOver(mask, s.az, s.el, rs) * (1 - eclipseFrac),
+      eclipseFrac,
       earthVisibleFrac: discFraction(e.el - horizonAt(mask, e.az), re),
     })
   }
@@ -148,9 +155,11 @@ export function findSunTransitions(
   if (!(end > start)) return []
   const topo = topoFrame(site.lat, site.lon, site.heightM ?? 0)
   const visibleAt = (t: number) => {
-    const sun = azEl(topo, sunPosition(eph, t))
+    const sunP = sunPosition(eph, t)
+    const sun = azEl(topo, sunP)
     const radius = Math.asin((SUN_RADIUS_KM * 1000) / sun.distM) / D2R
-    return discFraction(sun.el - horizonAt(mask, sun.az), radius)
+    // a deep eclipse is night too (the Earth hides the Sun for up to ~4 h)
+    return discFraction(sun.el - horizonAt(mask, sun.az), radius) * (1 - eclipseCoverFrom(sunP, earthPosition(eph, t), topo.pos))
   }
   const stepMs = 3600_000
   const transitions: SunTransition[] = []

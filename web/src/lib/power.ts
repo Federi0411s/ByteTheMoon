@@ -15,6 +15,7 @@
  * same ridge during an eclipse (rare). No temperature derating, dust or degradation.
  */
 import { sunVisibleOver, type HorizonMask } from './analysis'
+import { overlapFraction } from './eclipse'
 import { azEl, EARTH_RADIUS_KM, earthPosition, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
 
 const D2R = Math.PI / 180
@@ -48,15 +49,7 @@ export interface PowerSample {
   irradiance: number
 }
 
-/** Area fraction of a disc (radius r1) covered by another disc (radius r2), centres d apart (same units). */
-export function overlapFraction(r1: number, r2: number, d: number): number {
-  if (d >= r1 + r2) return 0
-  if (d <= Math.abs(r2 - r1)) return r2 >= r1 ? 1 : (r2 * r2) / (r1 * r1)
-  const a1 = r1 * r1 * Math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1))
-  const a2 = r2 * r2 * Math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2))
-  const k = 0.5 * Math.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
-  return (a1 + a2 - k) / (Math.PI * r1 * r1)
-}
+export { overlapFraction } from './eclipse'
 
 export function powerAt(eph: Ephemeris, site: { lat: number; lon: number; heightM?: number }, mask: HorizonMask | undefined, tMs: number, panel: PanelConfig): PowerSample {
   const topo = topoFrame(site.lat, site.lon, site.heightM ?? 0)

@@ -5,7 +5,9 @@
  *
  * Messages (main -> worker):
  *   { type: 'init', cfg: DemConfig, hz?: HorizonConfig }   hz: precomputed horizons (lib/horizonTiles.ts), if generated
- *   { type: 'window', version, window, sun, nightSun, nightTimes, earth, dsn, thermalTimes }
+ *   { type: 'window', version, window, sun, nightSun, nightEarth, nightTimes, earth, dsn, thermalSun, thermalEarth, thermalTimes }
+ *        (earth / nightEarth / thermalEarth: Earth direction + angular radius at the same instants as the
+ *        Sun samples, for solar eclipses: the Earth covering the Sun, see eclipseCover)
  *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
  *        nightSun/nightTimes: dedicated samples for longest night (hourly up to 90 days, then every 3 h)
@@ -49,6 +51,7 @@ let dem: DemSampler
 let hzs: HorizonSampler | null = null
 let sun = new Float32Array(0)
 let nightSun = new Float32Array(0)
+let nightEarth = new Float32Array(0) // Earth dir + radius at nightTimes (eclipses)
 let nightTimes = new Float64Array(0)
 let earth = new Float32Array(0)
 let dsn = new Float64Array(0)
@@ -252,9 +255,39 @@ function horizonAtAz(hz: Float32Array, off: number, azDeg: number) {
   return hz[off + i0] * (1 - w) + hz[off + (i0 + 1) % hzN] * w
 }
 
+// ---- solar eclipses seen from the Moon (the Earth in front of the Sun; same geometry as lib/eclipse.ts) ----
+const SUN_R_KM = 695700, EARTH_R_KM = 6371, MOON_R_KM = R / 1000
+/** largest shift of the Earth on the sky between sites (the Moon's radius seen from the Earth), deg */
+const ECLIPSE_PARALLAX_DEG = 0.27
+/**
+ * Share of the Sun's disc hidden by the Earth, seen from the point of frame F (topocentric: the
+ * site's offset moves the Earth by up to ~0.26 deg). s = Sun unit direction + angular radius rS (deg,
+ * from the Moon's centre), e = Earth unit direction + angular radius rE (deg). Almost always 0 after
+ * one dot product (Sun and Earth far apart on the sky).
+ */
+function eclipseCover(F: Frame, sx: number, sy: number, sz: number, rS: number, ex: number, ey: number, ez: number, rE: number): number {
+  const lim = (rS + rE + ECLIPSE_PARALLAX_DEG) / R2D
+  if (sx * ex + sy * ey + sz * ez < Math.cos(lim)) return 0
+  const dS = SUN_R_KM / Math.sin(rS / R2D), dE = EARTH_R_KM / Math.sin(rE / R2D)
+  const px = F.ux * MOON_R_KM, py = F.uy * MOON_R_KM, pz = F.uz * MOON_R_KM
+  const vsx = dS * sx - px, vsy = dS * sy - py, vsz = dS * sz - pz
+  const vex = dE * ex - px, vey = dE * ey - py, vez = dE * ez - pz
+  const ls = Math.hypot(vsx, vsy, vsz), le = Math.hypot(vex, vey, vez)
+  const d = Math.acos(Math.min(1, Math.max(-1, (vsx * vex + vsy * vey + vsz * vez) / (ls * le))))
+  const r1 = Math.asin(SUN_R_KM / ls), r2 = Math.asin(EARTH_R_KM / le)
+  if (d >= r1 + r2) return 0
+  if (d <= r2 - r1) return 1
+  const a1 = r1 * r1 * Math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1))
+  const a2 = r2 * r2 * Math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2))
+  const k = 0.5 * Math.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
+  return Math.min(1, (a1 + a2 - k) / (Math.PI * r1 * r1))
+}
+
 function nightMargin(F: Frame, hz: Float32Array, off: number, j: number) {
   const o = j * 4
   const sx = nightSun[o], sy = nightSun[o + 1], sz = nightSun[o + 2], r = nightSun[o + 3]
+  // a total eclipse is darkness: count it as night (slightly negative margin)
+  if (nightEarth.length > o && eclipseCover(F, sx, sy, sz, r, nightEarth[o], nightEarth[o + 1], nightEarth[o + 2], nightEarth[o + 3]) >= 0.999) return -0.01
   const el = Math.asin(sx * F.ux + sy * F.uy + sz * F.uz) * R2D
   const east = sx * F.ex + sy * F.ey
   const north = sx * F.nx + sy * F.ny + sz * F.nz
@@ -368,6 +401,9 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
       if (el - hMax >= 2 * r) visible = 1
       else if (!(el - hMin <= -2 * r)) visible = sunLight(hz, off, el, r, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
     }
+    // solar eclipse: the Earth hides part of the Sun (independent of the terrain occultation)
+    const ecl = eclipseCover(F, sx, sy, sz, r, earth[o], earth[o + 1], earth[o + 2], earth[o + 3])
+    if (ecl) visible *= 1 - ecl
     acc += visible
     if (!eq || !charging) continue
     // surface charging
@@ -380,7 +416,7 @@ function sunAndCharging(F: Frame, hz: Float32Array, off: number, hMin: number, h
       above = el > h - SUN_RADIUS_DEG
     }
     const cosInc = sx * F.mx + sy * F.my + sz * F.mz
-    const illuminated = above && cosInc > 0
+    const illuminated = above && cosInc > 0 && ecl < 0.5 // mostly eclipsed: charges as in shadow
     let V: number
     if (illuminated) {
       const inc = Math.acos(Math.min(1, cosInc)) * R2D
@@ -422,6 +458,7 @@ const albedo = (incDeg: number) => {
 }
 
 let thermalSun = new Float32Array(0) // per regular step: unit dir xyz + Sun distance (AU)
+let thermalEarth = new Float32Array(0) // per regular step: Earth unit dir xyz + angular radius (deg), for eclipses
 let thermalCount = new Uint8Array(0) // per step: 1 = counted in the statistics, 0 = warm-up
 let thermalTimes = new Float64Array(0)
 let thermalDt = 21600
@@ -462,6 +499,10 @@ function absorbedFlux(F: Frame, hz: Float32Array, off: number, hMin: number, hMa
       if (el - hMax >= 2 * r) vis = 1
       else if (el - hMin <= -2 * r) vis = 0
       else vis = sunLight(hz, off, el, r, sx * F.ex + sy * F.ey, sx * F.nx + sy * F.ny + sz * F.nz)
+    }
+    if (vis && thermalEarth.length > o + 3) { // solar eclipse
+      const ecl = eclipseCover(F, sx, sy, sz, SUN_RADIUS_1AU_DEG / au, thermalEarth[o], thermalEarth[o + 1], thermalEarth[o + 2], thermalEarth[o + 3])
+      if (ecl) vis *= 1 - ecl
     }
     if (!vis) continue
     const inc = Math.acos(Math.min(1, cosInc)) * R2D
@@ -965,12 +1006,14 @@ self.onmessage = (ev: MessageEvent) => {
   } else if (m.type === 'window') {
     sun = m.sun
     nightSun = m.nightSun
+    nightEarth = m.nightEarth ?? new Float32Array(0)
     nightTimes = m.nightTimes
     earth = m.earth
     dsn = m.dsn
     windowStart = m.window[0]
     windowEnd = m.window[1]
     thermalSun = m.thermalSun
+    thermalEarth = m.thermalEarth ?? new Float32Array(0)
     thermalDt = m.thermalDt
     thermalCount = m.thermalCount
     thermalTimes = m.thermalTimes

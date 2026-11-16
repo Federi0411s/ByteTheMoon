@@ -43,7 +43,9 @@ import {
   longestFullNightHFromIntervals,
   nextSunTransition,
   summarizeIndexed,
+  sunVisibleOver,
 } from './lib/analysis'
+import { eclipseCoverFrom, eclipsePossible, siteEclipses } from './lib/eclipse'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
 import { footprintMax, hillshade } from './lib/raster'
 import { DEFAULT_FOOTPRINT, SLOPE_MAX_DEG, footprintAxes, footprintLabel } from './lib/requirements'
@@ -1257,6 +1259,7 @@ export default function App() {
     if (!ready || !scene || !eph) return
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
+    // (during a solar eclipse the shadow overlay below darkens each point by its own coverage)
     setSunDirection(scene.viewer, sun)
     const m = markers.current
     // Sun is drawn at Earth-like distance in its true direction (beyond the far plane otherwise)
@@ -1273,6 +1276,30 @@ export default function App() {
   useEffect(() => {
     if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting)
   }, [ready, lighting])
+
+  // ---- solar-eclipse shadow on the globe (with Sun lighting on): darkness = share of the Sun the Earth
+  //      hides at each point (topocentric, lib/eclipse.ts), so umbra and penumbra show where they fall.
+  //      Rebuilt every 5 simulated minutes while an eclipse is under way. ----
+  const eclipseKey = ephemeris && lighting && eclipsePossible(ephemeris, t) ? Math.round(t / 300_000) : null
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!ready || !scene || !ephemeris || eclipseKey === null) return
+    const tk = eclipseKey * 300_000
+    const sun = sunPosition(ephemeris, tk), earth = earthPosition(ephemeris, tk)
+    const R = MOON_RADIUS_M
+    const coverAt = (lon: number, lat: number) => {
+      const c = Math.cos(lat)
+      return eclipseCoverFrom(sun, earth, [R * c * Math.cos(lon), R * c * Math.sin(lon), R * Math.sin(lat)])
+    }
+    const layer = new ImageryLayer(asProvider(new FieldImageryProvider({
+      value: () => 0, min: 0, max: 1, colormap: 'grey',
+      alpha: (lon, lat) => 0.95 * coverAt(lon, lat),
+      boundsRad: [-Math.PI, -Math.PI / 2, Math.PI, Math.PI / 2], maximumLevel: 4,
+      credit: 'Solar eclipse: Earth shadow (SPICE ephemeris)',
+    })))
+    scene.overlays.add(layer)
+    return () => { scene.overlays.remove(layer, true) }
+  }, [ready, ephemeris, eclipseKey])
 
   useEffect(() => {
     if (!playing || !ephemeris) return
@@ -1495,11 +1522,22 @@ export default function App() {
     }
   }, [timeline, timelineSummaryIndex, summaryStart, selected, ephemeris, scorePeriod, sunCycle])
   const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
+  // solar eclipses seen from the selected site during the analysis period (Earth in front of the Sun, Sun above the horizon)
+  const eclipses = useMemo(() => (selected && ephemeris && analysisPeriodInWindow
+    ? siteEclipses(ephemeris, selected, scorePeriod[0], scorePeriod[1], (az, el, r) => sunVisibleOver(selected.horizon, az, el, r))
+    : []), [selected, ephemeris, analysisPeriodInWindow, scorePeriod])
   const sunlightCountdown = useMemo(() => {
     if (!now) return undefined
+    // during a solar eclipse (Earth in front of the Sun, Sun above the terrain horizon) the status says so,
+    // with the time until the Earth uncovers the Sun at this site
+    if (selected && ephemeris && now.eclipseFrac > 0) {
+      const ev = siteEclipses(ephemeris, selected, t - 8 * 3600_000, t + 8 * 3600_000, (az, el, r) => sunVisibleOver(selected.horizon, az, el, r))
+        .find((e) => e.start <= t && t <= e.end + 120_000)
+      if (ev) return { daylight: false, eclipse: { cover: now.eclipseFrac, total: ev.total }, remainingMs: Math.max(0, ev.end + 120_000 - t) }
+    }
     const next = nextSunTransition(sunCycle?.transitions ?? [], t)
     return { daylight: now.sunVisibleFrac > 0.5, remainingMs: next ? next.t - t : undefined }
-  }, [now, sunCycle, t])
+  }, [now, sunCycle, t, selected, ephemeris])
   // ---- DSN link: Goldstone / Madrid / Canberra, lunar terrain horizon included (lib/dsn.ts) ----
   // ---- solar power: terrain shadows, Sun elevation, distance and Earth eclipses (lib/power.ts) ----
   const powerTl = useMemo(() => {
@@ -1765,7 +1803,7 @@ export default function App() {
               onGenerateCsv={() => { setPlaying(false); setReportFormat('csv'); setReportOpen(true) }}
               reportDisabled={!ephemeris || !analysisPeriodInWindow || !heatWindowMatchesPeriod || (!!heat && !siteEnvForPeriod)}
               timeline={timeline} summary={summary}
-              now={now} nowMs={t} sunlightCountdown={sunlightCountdown}
+              now={now} nowMs={t} sunlightCountdown={sunlightCountdown} eclipses={eclipses}
               periodLabel={landingDay !== undefined ? 'Landing day' : missionValid ? 'Mission interval' : 'Loaded ephemeris interval'} inspect={inspect}
               expanded={sitePanelExpanded} onToggleExpanded={() => setSitePanelExpanded((expanded) => !expanded)} onClose={clearSelection}
               showSiteMarkers={showSiteMarkers} onShowSiteMarkersChange={setShowSiteMarkers}
