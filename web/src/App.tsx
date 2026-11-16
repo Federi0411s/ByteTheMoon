@@ -1796,21 +1796,20 @@ export default function App() {
               onCancel={() => setSettingsOpen(false)}
             />
           )}
+          {/* outside the scrolling column, so it stays visible at the top */}
+          <button type="button" className="settings-button floating" onClick={() => setSettingsOpen(true)}
+            aria-label="Open settings" title="Settings" data-tour="advanced-settings-button">
+            <span aria-hidden="true">⚙</span>
+          </button>
           <aside className="side right">
-            <div className={`mission-settings-row${bundle.ephemeris ? ' with-mission' : ''}`}>
-              <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}
-                aria-label="Open settings" title="Settings" data-tour="advanced-settings-button">
-                <span aria-hidden="true">⚙</span>
-              </button>
-              {bundle.ephemeris && (
-                <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
-                  status={{
-                    state: ephemerisBusy ? 'loading'
-                      : !missionValid && landingDay === undefined ? 'idle'
-                        : analysisPeriodInWindow ? 'ready' : 'outside',
-                  }} />
-              )}
-            </div>
+            {bundle.ephemeris && (
+              <MissionPanel mission={mission} onChange={changeMission} range={timeRange} calendarRange={CALENDAR_RANGE}
+                status={{
+                  state: ephemerisBusy ? 'loading'
+                    : !missionValid && landingDay === undefined ? 'idle'
+                      : analysisPeriodInWindow ? 'ready' : 'outside',
+                }} />
+            )}
             <LayerPanel layers={displayLayers} state={layerState} onChange={(id, s) => setLayerState((x) => ({ ...x, [id]: s }))}
               score={score} onScore={setScore} scoreAvailable={!!(heat && heatVersion)}
               radiationMetadata={radiationDisplayMeta}
