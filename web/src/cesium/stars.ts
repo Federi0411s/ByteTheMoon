@@ -40,10 +40,11 @@
  *  the eye is taken as adapted to the current scene. From orbit the sky is shown as to a dark-adapted
  *  eye.
  *
- * On screen a star's flux is (E / E_threshold - 1)^0.75: zero at the threshold (so stars fade out
- * continuously, faint ones first), between the perceived brightness of a point source (Stevens' law,
- * exponent 0.5) and the screen's own lightness response; Sirius comes out ~250x a star 1 magnitude
- * above the limit. Beyond a full-white core the image grows instead (up to 4x wider).
+ * On screen: a star the eye can just see shows as a faint but clearly visible dot (it fades in over
+ * the first 0.5 magnitude above the threshold, so stars still appear and vanish continuously, faint
+ * ones first); brighter ones grow as (E / E_threshold)^0.75, between the perceived brightness of a
+ * point source (Stevens' law, exponent 0.5) and the screen's own lightness response. Beyond a
+ * full-white core the image grows instead (up to 4x wider).
  */
 import { BlendingState, Cartesian3, Cartesian4, ComponentDatatype, Matrix3, PrimitiveType, type Viewer } from 'cesium'
 import * as Cesium from 'cesium'
@@ -91,10 +92,10 @@ const ALBEDO = 0.12
 const SKY_L = 7e-5
 const EPOCH_MS = Date.UTC(2000, 0, 1, 11, 58, 56) - 3195.9375 * 86400_000 // J1991.25 (Hipparcos)
 const YEAR_MS = 365.25 * 86400_000
-/** display flux (linear display units x CSS px²) of a star 1 magnitude above the threshold, / 1.5^0.75 */
-const FLUX_K = 0.028
+/** display flux (linear display units x CSS px²) of a star just visible to the eye (0.5 mag above the threshold) */
+const FLUX_MIN = 0.14
 /** Gaussian width (sigma) of a faint star's image, CSS px */
-const SIGMA_PX = 0.55
+const SIGMA_PX = 0.65
 
 /** CIE 146 disability glare: veiling luminance (cd/m²) per lux at the eye at angle th (deg); age 30, p = 0.5 */
 function cieGlare(th: number) {
@@ -221,8 +222,9 @@ void main() {
   float dm = -16.57 - 2.5 * min(tNight, tDay) + dmPupil - mag;     // magnitudes above the threshold
   float dmCone = -16.57 - 2.5 * tDay + dmPupil - mag;
   if (dm <= 0.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); gl_PointSize = 1.0; v_peak = 0.0; v_sigma = 1.0; v_half = 0.5; v_col = vec3(0.0); return; }
-  // brightness on screen: (E / E_threshold - 1)^0.75, zero at the threshold (see the header)
-  float flux = ${FLUX_K.toFixed(4)} * pow(pow(10.0, 0.4 * dm) - 1.0, 0.75);
+  // brightness on screen (see the header): fades in over the first 0.5 mag above the threshold to a
+  // faint but clearly visible dot, then grows as (E / E_threshold)^0.75
+  float flux = ${FLUX_MIN.toFixed(4)} * smoothstep(0.0, 0.5, dm) * pow(10.0, 0.3 * max(dm - 0.5, 0.0));
   float s0 = ${SIGMA_PX.toFixed(3)};
   float peak = flux / (6.2831853 * s0 * s0);
   float sigma = s0;

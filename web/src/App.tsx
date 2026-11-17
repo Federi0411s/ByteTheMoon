@@ -240,7 +240,14 @@ export default function App() {
   const terrainViewRef = useRef(false)
   // from orbit: never depth-tested (on the reference sphere, the terrain cut them in half) and hidden on the
   // Moon's far side instead; first person: depth-tested against the terrain mesh, so hills hide them
+  const globeScratch = useMemo(() => new Cartographic(), [])
   const markerDepthTest = useMemo(() => new CallbackProperty(() => (terrainViewRef.current ? 0 : Number.POSITIVE_INFINITY), false), [])
+  /** terrain height (m) at a point from the globe's loaded tiles (0 until they load) */
+  const globeHeight = useCallback((latDeg: number, lonDeg: number) => {
+    const globe = sceneRef.current?.viewer.scene.globe
+    const h = globe ? globe.getHeight(Cartographic.fromDegrees(lonDeg, latDeg, 0, globeScratch)) : undefined
+    return h ?? 0
+  }, [])
   /** the point faces the camera (in front of the Moon's limb) */
   const onNearSide = useCallback((latDeg: number, lonDeg: number) => {
     const c = sceneRef.current?.viewer.camera.positionWC
@@ -688,14 +695,13 @@ export default function App() {
     markers.current.sites = allSites.map((s) => {
       let self: Entity | undefined
       const entity = scene.viewer.entities.add({
-        // at the site's terrain height (from 0 m they sat under the ground, so from the ground view they
-        // either hid or, with depth testing off, showed through hills)
-        // from orbit: on the reference sphere and drawn on top (within 500 km); first person: 3 m above
-        // the first-person mesh (its own heights, so hills hide it correctly), hidden beyond the mesh
+        // from orbit: on the terrain (globeHeight; on the reference sphere the dot floated km off its spot
+        // and slid over the ground as the view turned), drawn on top; first person: 3 m above the
+        // first-person mesh (its own heights, so hills hide it correctly), hidden beyond the mesh
         position: new CallbackPositionProperty(() => {
           const fpv = terrainViewRef.current ? fpvTerrainRef.current : null
-          const h = fpv ? fpv.heightAt(s.lat, s.lon) : 0
-          return Cartesian3.fromDegrees(s.lon, s.lat, Number.isFinite(h) ? h + 3 : 0, Ellipsoid.MOON)
+          const h = fpv ? fpv.heightAt(s.lat, s.lon) + 3 : globeHeight(s.lat, s.lon)
+          return Cartesian3.fromDegrees(s.lon, s.lat, Number.isFinite(h) ? h : 0, Ellipsoid.MOON)
         }, false),
         point: {
           show: new CallbackProperty(() => markerInView(s), false),
@@ -721,7 +727,7 @@ export default function App() {
       siteByMarker.current.set(entity, s)
       return entity
     })
-  }, [ready, bundle, allSites, markerInView, markerDepthTest])
+  }, [ready, bundle, allSites, markerInView, markerDepthTest, globeHeight])
 
   useEffect(() => {
     markers.current.sites.forEach((marker) => {
@@ -1400,8 +1406,14 @@ export default function App() {
     if (!celestialRef.current) celestialRef.current = createCelestial(scene.viewer, (window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL ?? '/cesiumStatic')
     celestialRef.current.update(t, sun, earth)
     // the camera's exposure: raised for earthshine at night, and the Earth / Sun with it
-    celestialRef.current.setExposure(exposure)
+    // the Earth's exposure follows the eclipse only (not the local sunset): the Earth looks the same
+    // whether or not the Sun has just set behind the terrain here
+    const skyExposure = fpv ? fpvExposure(eclipse.level, eclipse.refracted) : 1
+    celestialRef.current.setExposure(exposure, sunVis, skyExposure) // (+ the Sun's visible share, for its metering when zoomed in)
     if (terrainViewActive) celestialRef.current.loadDetail()
+    // the drawn skyline, so the Sun's glare comes only from the part of the disc the terrain leaves
+    const mesh = terrainViewActive ? fpvTerrainRef.current : null
+    celestialRef.current.setHorizon(mesh ? (az) => mesh.horizonDeg(az) : null)
   }, [ready, ephemeris, t, lighting, terrainViewActive, terrainCamTick])
   useEffect(() => () => { celestialRef.current?.dispose(); celestialRef.current = undefined }, [])
 
@@ -1474,7 +1486,8 @@ export default function App() {
     const values = bundle.layers.map((m) => ({ title: GLOBAL_LAYERS[m.id]?.title ?? m.title, value: '—' }))
     if (markers.current.custom) viewer.entities.remove(markers.current.custom)
     markers.current.custom = viewer.entities.add({
-      position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+      // on the terrain (globeHeight), not the reference sphere
+      position: new CallbackPositionProperty(() => Cartesian3.fromDegrees(lon, lat, globeHeight(lat, lon), Ellipsoid.MOON), false),
       // the point you inspect: hidden in the first-person view (you stand on it) and behind the Moon's limb
       point: {
         show: new CallbackProperty(() => !terrainViewRef.current && onNearSide(lat, lon), false),
@@ -1545,7 +1558,7 @@ export default function App() {
       heightM,
       horizon,
     })
-  }, [bundle, onNearSide])
+  }, [bundle, onNearSide, globeHeight])
 
   const searchCoordinates = useCallback((lat: number, lon: number) => {
     stopTerrainView(false)

@@ -67,11 +67,14 @@ const RING_GROWTH = 1.035
 /** the viewer's eye above the ground (m) */
 export const EYE_HEIGHT_M = 1.75
 /** the shadow tracer stops at the mesh's outer ring */
-const MESH_EDGE_M = 150_000
-/** ring distances (m): 4 m .. 150 km, x1.035 */
+const MESH_EDGE_M = 200_000
+/**
+ * ring distances (m): 4 m .. 200 km, x1.035 - out to the horizon analysis's own reach (heatWorker
+ * MAX_DIST), so terrain 150-200 km away hides the Sun in the view exactly when it does in the analysis
+ */
 export function fpvRings(): number[] {
   const d: number[] = []
-  for (let r = RING0; r < 150_000; r *= RING_GROWTH) d.push(r)
+  for (let r = RING0; r < MESH_EDGE_M * RING_GROWTH; r *= RING_GROWTH) d.push(r)
   return d
 }
 
@@ -237,6 +240,8 @@ export interface FpvTerrain {
   centerHeight: number
   /** mesh height (m) at lat / lon (deg); NaN outside the mesh */
   heightAt(latDeg: number, lonDeg: number): number
+  /** elevation (deg) of this mesh's skyline at azimuth azDeg (from north, clockwise), seen from the eye (curvature included) */
+  horizonDeg(azDeg: number): number
   setAmbient(a: number): void
   /** drape the Moon Trek photo near the viewer (loaded on first use) or show the procedural regolith only */
   setPhoto(on: boolean): void
@@ -295,6 +300,8 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
     idx[o++] = p; idx[o++] = p2; idx[o++] = q
     idx[o++] = q; idx[o++] = p2; idx[o++] = q2
   }
+  // the eye's height, for the drawn skyline (horizonDeg: what the view shows hiding the Sun, for its glare)
+  const hEye = h0 + EYE_HEIGHT_M
   let geometry = new Geometry({
     attributes: {
       position: new GeometryAttribute({ componentDatatype: ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
@@ -313,6 +320,9 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
   const east = new Cartesian3(-Math.sin(lon0), Math.cos(lon0), 0)
   const north = new Cartesian3(-sinP * Math.cos(lon0), -sinP * Math.sin(lon0), cosP)
   const material = new Material({
+    // opaque: Cesium counts a material with its own shader source as translucent unless told otherwise,
+    // and in the blended pass the Sun / Earth behind the hills showed through them
+    translucent: false,
     fabric: {
       type: 'FpvRegolith',
       uniforms: {
@@ -380,6 +390,19 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
   return {
     primitive,
     centerHeight: h0,
+    horizonDeg(azDeg) {
+      // as the mesh draws it: heights interpolated between the two spokes ring by ring, then the
+      // highest (interpolating the spokes' own skylines overstated it between them, hiding a sliver
+      // of Sun the view showed)
+      const fa = ((((azDeg / 360) * nAz) % nAz) + nAz) % nAz
+      const a0 = Math.floor(fa), w = fa - a0, a1 = (a0 + 1) % nAz
+      let best = -Math.PI / 2
+      for (let k = 0; k < K; k++) {
+        const hk = H[v(a0, k)] * (1 - w) + H[v(a1, k)] * w
+        best = Math.max(best, Math.atan2(hk - hEye - (rings[k] * rings[k]) / (2 * R), rings[k]))
+      }
+      return (best * 180) / Math.PI
+    },
     heightAt(latDeg2, lonDeg2) {
       const lat = (latDeg2 * Math.PI) / 180, lon = (lonDeg2 * Math.PI) / 180
       const c = Math.sin(lat0) * Math.sin(lat) + Math.cos(lat0) * Math.cos(lat) * Math.cos(lon - lon0)
