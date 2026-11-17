@@ -47,6 +47,8 @@ import {
   Matrix4,
   NearFarScalar,
   PostProcessStage,
+  PostProcessStageComposite,
+  PostProcessStageSampleMode,
   Primitive,
   SceneTransforms,
   TextureMagnificationFilter,
@@ -59,7 +61,6 @@ import {
   type Viewer,
 } from 'cesium'
 import * as Cesium from 'cesium'
-import { EARTH_RADIUS_KM } from '../lib/ephemeris'
 
 /** Cesium's renderer Sampler (exported at runtime, missing from the type definitions) */
 const Sampler = (Cesium as unknown as { Sampler: new (o: { minificationFilter: TextureMinificationFilter; magnificationFilter: TextureMagnificationFilter }) => object }).Sampler
@@ -371,73 +372,158 @@ void main() {
 }
 `
 
-/** Sun disc: ~4e5 times the exposure of the sunlit ground, so saturated white edge to edge (see the header) */
+/**
+ * Sun disc: ~4e5 times the exposure of the sunlit ground, so saturated white edge to edge (see the header).
+ * The Earth in front (a solar eclipse) is ray-traced, not left to the depth buffer, which 360,000 km and
+ * 1.5e6 km out cannot order (the covered part of the disc showed through the Earth). The material
+ * (SUN_DISC_MATERIAL) gives the view ray's closest approach to the same WGS84 ellipsoid as EARTH_FS,
+ * in ellipsoid-scaled units (shininess: < 1 = hits the Earth), so the disc and the Earth cover exactly
+ * complementary pixels. A ray grazing just above the surface crosses the air's full grazing path
+ * (Rayleigh, as ATMOSPHERE_FS): the disc there is attenuated and reddened, still saturated except in
+ * the lowest few km, where it turns orange and dark. Such pixels are no longer pure white, so the glare
+ * leaves them out.
+ */
+const SUN_BRIGHTNESS = 4e5
 const SUN_DISC_FS = `
 in vec3 v_positionEC;
 in vec3 v_normalEC;
 in vec2 v_st;
+const vec3 TAU0 = vec3(0.050, 0.099, 0.224);
 void main() {
-  // the Earth in front (a solar eclipse): no disc where the view ray meets the Earth's sphere. Not
-  // left to the depth buffer, which 360,000 km and 1.5e6 km out cannot order reliably (the covered
-  // part of the disc showed through the Earth as a grey disc). The material hands over the
-  // camera -> Earth direction (normal, eye coordinates) and the cosine of the Earth's angular radius
-  // (shininess), with EARTH_RADIUS_KM as in the eclipse coverage (lib/eclipse.ts)
   czm_materialInput mi;
   mi.normalEC = vec3(0.0, 0.0, 1.0);
   mi.positionToEyeEC = -v_positionEC;
   mi.st = v_st;
   czm_material m = czm_getMaterial(mi);
-  if (dot(normalize(v_positionEC), m.normal) > m.shininess) discard;
-  out_FragColor = vec4(1.0);
+  float h = (m.shininess - 1.0) * ${EARTH_A.toFixed(1)}; // height of the ray's closest approach (m)
+  if (h <= 0.0) discard;
+  vec3 T = exp(-TAU0 * sqrt(2.0 * czm_pi * 6371000.0 / 8000.0) * exp(-h / 8000.0));
+  out_FragColor = vec4(min(T * ${SUN_BRIGHTNESS.toFixed(1)}, vec3(1.0)), 1.0);
+}
+`
+/** SUN_DISC_FS's material: closest approach of the view ray to the Earth's ellipsoid (shininess, scaled units) */
+const SUN_DISC_MATERIAL = `
+czm_material czm_getMaterial(czm_materialInput mi) {
+  czm_material m = czm_getDefaultMaterial(mi);
+  vec3 inv = vec3(${(1 / EARTH_A).toExponential(9)}, ${(1 / EARTH_A).toExponential(9)}, ${(1 / EARTH_B).toExponential(9)});
+  vec3 d = earthRotT * (czm_inverseViewRotation * normalize(-mi.positionToEyeEC)) * inv;
+  vec3 o = earthRotT * (-earthCam) * inv;                 // camera in Earth-fixed, scaled coordinates
+  float t = -dot(o, d) / dot(d, d);
+  m.shininess = t > 0.0 ? length(o + d * t) : 1e9;       // behind the camera: never in front
+  return m;
 }
 `
 /**
- * Glare post-process. The disc as 32 patches; each one still visible (its rendered pixel is the pure
- * white disc) radiates its share of the glare from where it is, so partial covers (terrain, the Moon,
- * the Earth in an eclipse) glare from the part left, and the covered part stays dark. Glare at angle
- * theta (deg, from each patch, on a reference 60 deg vertical field so it keeps its size on screen at
- * any zoom): display-linear = EXPOSURE_K pi / 0.12 x 0.001 x mean over the patches of (visible x
- * P(theta)), P = the Spencer et al. (1995) wide-angle
- * point-spread terms (per sr, halved for its normalisation): saturated to ~0.6 deg from the disc edge,
- * half-bright at ~1.2 deg, a faint haze to ~15 deg.
+ * Sun disc patches for the glare: N points on a sunflower spiral over the disc (drawing-buffer pixels),
+ * laid out COLS per row in the visibility texture. A patch is visible where the rendered pixel is still
+ * the pure white disc (not the Earth, the Moon or terrain in front of it). Fine enough (spacing ~R/13)
+ * that a thin crescent holds dozens of them and the glare's saturated edge stays smooth.
  */
-const SUN_GLARE_FS = `
+const GLARE_N = 512
+const GLARE_COLS = 32
+const SUN_PATCHES = `
+const int N = ${GLARE_N};
+const int COLS = ${GLARE_COLS};
+vec2 sunPatch(int i, vec2 c, float r) {
+  float a = float(i) * 2.39996;
+  return c + vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / float(N)) * r * 0.95;
+}
+`
+/**
+ * Glare stage 1, at 1/8 of the resolution: texel (i % COLS, i / COLS) = visibility of patch i (R = 0 / 1);
+ * texel (COLS, 0) = how many are visible (R, G = n / 16, n % 16, over 255) and their centroid relative
+ * to the disc centre (B, A = 0.5 + 0.5 offset / radius). Done once here instead of per pixel.
+ */
+const SUN_VIS_FS = SUN_PATCHES + `
 uniform sampler2D colorTexture;
+uniform vec2 sunUv;
+uniform float sunRadiusPx;
+in vec2 v_textureCoordinates;
+float visible(vec2 p, vec2 res) {
+  vec2 uv = p / res;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
+  vec3 c = texture(colorTexture, uv).rgb;
+  return step(2.97, c.r + c.g + c.b);
+}
+void main() {
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  vec2 res = vec2(textureSize(colorTexture, 0)), c = sunUv * res;
+  if (ij.x < COLS && ij.y < N / COLS) {
+    out_FragColor = vec4(visible(sunPatch(ij.y * COLS + ij.x, c, sunRadiusPx), res), 0.0, 0.0, 1.0);
+  } else if (ij.x == COLS && ij.y == 0) {
+    float n = 0.0;
+    vec2 off = vec2(0.0);
+    for (int i = 0; i < N; i++) {
+      vec2 p = sunPatch(i, c, sunRadiusPx);
+      float v = visible(p, res);
+      n += v;
+      off += v * (p - c);
+    }
+    off /= max(n, 1.0) * sunRadiusPx;
+    float hi = floor(n / 16.0);
+    out_FragColor = vec4(hi / 255.0, (n - 16.0 * hi) / 255.0, 0.5 + 0.5 * off);
+  } else {
+    out_FragColor = vec4(0.0);
+  }
+}
+`
+/**
+ * Glare stage 2, at 1/2 of the resolution (the glare is smooth; stage 3 upsamples it): each visible patch
+ * radiates its 1/N share from where it is, so a crescent (the Earth in an eclipse, the Sun rising over a
+ * ridge) glares like a crescent and the covered part of the disc stays dark. Near the disc (< 3-5 radii)
+ * the patches are summed one by one; farther out, where they all look alike, one term from their count
+ * and centroid (blended, no seam). Glare at angle theta (deg, from each patch, on a reference 60 deg
+ * vertical field so it keeps its size on screen at any zoom): display-linear = EXPOSURE_K pi / 0.12 x
+ * 0.001 x mean over the patches of (visible x P(theta)), P = the Spencer et al. (1995) wide-angle
+ * point-spread terms (per sr, halved for its normalisation): saturated to ~0.6 deg from the disc edge,
+ * half-bright at ~1.2 deg, a faint haze to ~15 deg. Stored gamma-encoded (8 bits without banding in the haze).
+ */
+const SUN_GLARE_FS = SUN_PATCHES + `
+uniform sampler2D colorTexture;
+uniform sampler2D visTexture;
 uniform vec2 sunUv;
 uniform float sunRadiusPx;
 uniform float gain;
 in vec2 v_textureCoordinates;
-const int N = 32;
+float psfAt(float dPx, float patchR, float resY) {
+  float th = max(dPx - patchR, 0.0) * 60.0 / resY + 0.02;
+  return 0.5 * (72.37 / (th * th) + 20.91 / (th * th * th));
+}
+void main() {
+  out_FragColor = vec4(0.0);
+  if (gain <= 0.0) return;
+  vec4 agg = texelFetch(visTexture, ivec2(COLS, 0), 0);
+  float n = floor(agg.r * 255.0 + 0.5) * 16.0 + floor(agg.g * 255.0 + 0.5);
+  if (n < 0.5) return;
+  vec2 res = vec2(textureSize(colorTexture, 0)), c = sunUv * res;
+  vec2 px = v_textureCoordinates * res;
+  float R = sunRadiusPx, patchR = R / sqrt(float(N));
+  float far = smoothstep(3.0 * R, 5.0 * R, length(px - c));
+  float psf = 0.0;
+  if (far > 0.0) psf = far * n * psfAt(length(px - c - (agg.ba * 2.0 - 1.0) * R), patchR, res.y);
+  if (far < 1.0) {
+    float near = 0.0;
+    for (int i = 0; i < N; i++) {
+      if (texelFetch(visTexture, ivec2(i % COLS, i / COLS), 0).r < 0.5) continue;
+      near += psfAt(length(px - sunPatch(i, c, R)), patchR, res.y);
+    }
+    psf += (1.0 - far) * near;
+  }
+  float glare = ${((EXPOSURE_K * Math.PI) / 0.12).toFixed(3)} * 0.001 * psf / float(N) * gain;
+  out_FragColor = vec4(pow(min(glare, 1.0), 1.0 / 2.2));
+}
+`
+/** Glare stage 3: the scene plus the (bilinearly upsampled) glare, in linear light */
+const SUN_GLARE_ADD_FS = `
+uniform sampler2D colorTexture;
+uniform sampler2D glareTexture;
+uniform float gain;
+in vec2 v_textureCoordinates;
 void main() {
   vec4 col = texture(colorTexture, v_textureCoordinates);
   if (gain <= 0.0) { out_FragColor = col; return; }
-  vec2 res = czm_viewport.zw;
-  // the disc as N patches (sunflower spiral); each one still showing (the pixel there is the white
-  // disc, not the Earth, the Moon or terrain in front of it) radiates its 1/N share of the glare from
-  // where it is - so a crescent glares like a crescent, and the covered part of the disc stays dark
-  vec2 pos[N];
-  bool on[N];
-  bool any = false;
-  for (int i = 0; i < N; i++) {
-    float a = float(i) * 2.39996, r = sqrt((float(i) + 0.5) / float(N)) * sunRadiusPx * 0.95;
-    pos[i] = sunUv * res + vec2(cos(a), sin(a)) * r;
-    vec2 uv = pos[i] / res;
-    on[i] = false;
-    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) continue;
-    vec3 c = texture(colorTexture, uv).rgb;
-    on[i] = c.r + c.g + c.b > 2.97;
-    any = any || on[i];
-  }
-  if (!any) { out_FragColor = col; return; }
-  vec2 px = v_textureCoordinates * res;
-  float patchR = sunRadiusPx / sqrt(float(N));
-  float psf = 0.0;
-  for (int i = 0; i < N; i++) {
-    if (!on[i]) continue;
-    float th = max(length(px - pos[i]) - patchR, 0.0) * 60.0 / res.y + 0.02;
-    psf += 0.5 * (72.37 / (th * th) + 20.91 / (th * th * th));
-  }
-  float glare = ${((EXPOSURE_K * Math.PI) / 0.12).toFixed(3)} * 0.001 * psf / float(N) * gain;
+  float glare = pow(texture(glareTexture, v_textureCoordinates).r, 2.2);
+  if (glare <= 0.0) { out_FragColor = col; return; }
   vec3 lin = pow(col.rgb, vec3(2.2)) + glare * vec3(1.0, 0.97, 0.92);
   out_FragColor = vec4(pow(min(lin, vec3(1.0)), vec3(1.0 / 2.2)), col.a);
 }
@@ -573,12 +659,14 @@ export function createCelestial(viewer: Viewer, cesiumBaseUrl: string): Celestia
   // Sun: a camera-relative unit sphere (scaled by the model matrix) 1.5e6 km out along the true Sun
   // direction, so it stays "at infinity" (no parallax) but is real geometry: the Moon and the Earth hide
   // exactly the part of the disc behind them
-  // the Earth's direction from the camera (world) and the cosine of its angular radius, for SUN_DISC_FS
+  // the Earth's centre from the camera (world, m) and its world -> Earth-fixed rotation, for SUN_DISC_FS
+  const earthRotT = new Matrix3()
+  const earthRotTArr = Matrix3.toArray(Matrix3.IDENTITY) // material mat3 uniforms are column-major arrays
   const sunMaterial = new Material({
     fabric: {
       type: 'SunDisc',
-      uniforms: { earthDirWC: new Cartesian3(1, 0, 0), earthCos: 2.0 },
-      source: 'czm_material czm_getMaterial(czm_materialInput mi) { czm_material m = czm_getDefaultMaterial(mi); m.normal = normalize(czm_viewRotation * earthDirWC); m.shininess = earthCos; return m; }',
+      uniforms: { earthCam: new Cartesian3(1e12, 0, 0), earthRotT: earthRotTArr },
+      source: SUN_DISC_MATERIAL,
     },
   })
   const sunDisc = scene.primitives.add(new Primitive({
@@ -591,10 +679,32 @@ export function createCelestial(viewer: Viewer, cesiumBaseUrl: string): Celestia
   })) as Primitive
   const sunPos = new Cartesian3()
   const glareState = { uv: new Cartesian2(-10, -10), radiusPx: 1, gain: 0 }
-  const glare = scene.postProcessStages.add(new PostProcessStage({
+  // three stages on the scene's colour: patch visibility (tiny texture), the glare field (1/2 resolution),
+  // then the scene plus the glare
+  const glare = scene.postProcessStages.add(new PostProcessStageComposite({
     name: 'sunGlare',
-    fragmentShader: SUN_GLARE_FS,
-    uniforms: { sunUv: () => glareState.uv, sunRadiusPx: () => glareState.radiusPx, gain: () => glareState.gain },
+    inputPreviousStageTexture: false,
+    stages: [
+      new PostProcessStage({
+        name: 'sunGlareVis',
+        fragmentShader: SUN_VIS_FS,
+        textureScale: 1 / 8, // >= 33 x 16 texels from a 264 x 128 px canvas up
+        sampleMode: PostProcessStageSampleMode.NEAREST,
+        uniforms: { sunUv: () => glareState.uv, sunRadiusPx: () => glareState.radiusPx },
+      }),
+      new PostProcessStage({
+        name: 'sunGlareField',
+        fragmentShader: SUN_GLARE_FS,
+        textureScale: 1 / 2,
+        sampleMode: PostProcessStageSampleMode.LINEAR,
+        uniforms: { visTexture: 'sunGlareVis', sunUv: () => glareState.uv, sunRadiusPx: () => glareState.radiusPx, gain: () => glareState.gain },
+      }),
+      new PostProcessStage({
+        name: 'sunGlareApply',
+        fragmentShader: SUN_GLARE_ADD_FS,
+        uniforms: { glareTexture: 'sunGlareField', gain: () => glareState.gain },
+      }),
+    ],
   }))
   const win = new Cartesian2()
   let exposure = 1
@@ -603,12 +713,7 @@ export function createCelestial(viewer: Viewer, cesiumBaseUrl: string): Celestia
     Cartesian3.add(scene.camera.positionWC, Cartesian3.multiplyByScalar(sunDir, SUN_DRAW_M, sunPos), sunPos)
     const r = SUN_DRAW_M * Math.tan(sunAngR)
     sunDisc.modelMatrix = Matrix4.setTranslation(Matrix4.fromUniformScale(r, sunDisc.modelMatrix), sunPos, sunDisc.modelMatrix)
-    const toEarth = Cartesian3.subtract(earthPos, scene.camera.positionWC, earthDir)
-    const de = Cartesian3.magnitude(toEarth)
-    if (de > EARTH_RADIUS_KM * 1000) {
-      sunMaterial.uniforms.earthDirWC = Cartesian3.divideByScalar(toEarth, de, earthDir)
-      sunMaterial.uniforms.earthCos = Math.cos(Math.asin((EARTH_RADIUS_KM * 1000) / de))
-    }
+    sunMaterial.uniforms.earthCam = Cartesian3.subtract(earthPos, scene.camera.positionWC, earthDir)
     // glare: the disc's drawing-buffer position and radius (pixels); off while the Sun is behind the camera
     glareState.gain = 0
     const fovy = (scene.camera.frustum as { fovy?: number }).fovy
@@ -651,6 +756,7 @@ export function createCelestial(viewer: Viewer, cesiumBaseUrl: string): Celestia
     update(tMs, sunM, earthM) {
       Cartesian3.fromArray(earthM, 0, earthPos)
       earthPrim.modelMatrix = Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(earthOrientation(tMs), rot), earthPos, earthPrim.modelMatrix)
+      Matrix3.toArray(Matrix3.transpose(rot, earthRotT), earthRotTArr)
       atmPrim.modelMatrix = Matrix4.clone(earthPrim.modelMatrix, atmPrim.modelMatrix)
       const d = Math.hypot(sunM[0], sunM[1], sunM[2])
       Cartesian3.normalize(Cartesian3.fromArray(sunM, 0, sunDir), sunDir)
