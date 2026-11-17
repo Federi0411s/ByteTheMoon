@@ -19,6 +19,7 @@ import {
   VerticalOrigin,
 } from 'cesium'
 import { createCelestial, type Celestial } from './cesium/celestial'
+import { createStars, type Stars } from './cesium/stars'
 import { FpvHud } from './components/FpvHud'
 import { EYE_HEIGHT_M, FPV_AZIMUTHS, buildFpvTerrain, fpvRings, type FpvTerrain } from './cesium/fpvTerrain'
 import { NIGHT_EXPOSURE, eclipseSunlight, earthshineAtCamera, earthshineRatio, fpvExposure, setEarthLight } from './cesium/createViewer'
@@ -1403,6 +1404,26 @@ export default function App() {
     if (terrainViewActive) celestialRef.current.loadDetail()
   }, [ready, ephemeris, t, lighting, terrainViewActive, terrainCamTick])
   useEffect(() => () => { celestialRef.current?.dispose(); celestialRef.current = undefined }, [])
+
+  // ---- stars: the sky at the simulation instant; in first person only what an eye could see (cesium/stars.ts) ----
+  const starsRef = useRef<Stars | undefined>(undefined)
+  useEffect(() => {
+    const scene = sceneRef.current
+    const eph = ephemeris
+    if (!ready || !scene || !eph) return
+    starsRef.current ??= createStars(scene.viewer)
+    const sun = sunPosition(eph, t)
+    const earth = earthPosition(eph, t)
+    // first person: the Sun's light reaching the eye (terrain horizon x eclipse) and the Earth's
+    const fpv = terrainViewActive ? fpvTerrainRef.current : null
+    const cam = scene.viewer.camera.positionWC
+    const vision = fpv ? {
+      sunVisible: fpv.sunVisible(sun) * eclipseSunlight(eclipseCoverFrom(sun, earth, [cam.x, cam.y, cam.z])).level,
+      earthshine: earthshineRatio(sun, earth),
+    } : null
+    starsRef.current.update(t, (tt) => sunPosition(eph, tt), earth, vision)
+  }, [ready, ephemeris, t, terrainViewActive, terrainCamTick])
+  useEffect(() => () => { starsRef.current?.dispose(); starsRef.current = undefined }, [])
 
   useEffect(() => {
     // shadows from the Sun only: at night (earthshine) there is no shadow map
