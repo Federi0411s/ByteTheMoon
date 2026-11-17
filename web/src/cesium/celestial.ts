@@ -288,11 +288,16 @@ czm_material czm_getMaterial(czm_materialInput mi) {
   float fres = 0.02 + 0.98 * pow(1.0 - max(dot(h, v), 0.0), 5.0);
   float glint = 3.14159 * fres * slopes / (4.0 * mu) * step(0.0, dot(n, l)) * ocean * (1.0 - dens);
   // haze over the disc (single Rayleigh scattering, as the limb shell ATMOSPHERE_FS): the slant path
-  // to this point dims the surface and adds blue sky light where that air is sunlit
+  // to this point dims the surface and adds sky light. Plane-parallel single scattering:
+  // L = F P / (4 pi) mu0 / (mu0 + mu) (1 - exp(-tau (1/mu + 1/mu0))), so the haze fades (and reddens)
+  // with the sunlight reaching the air and goes dark at the terminator together with the ground, instead
+  // of a bright blue band there. mu0 is eased to exactly 0 within ~1 deg past the terminator (air above
+  // the ground still lit: twilight; C1 quadratic ramp, no long tail lifted by the gamma into a grey band).
   vec3 T = exp(-TAU0 * min(1.0 / mu, 35.4));
-  float cosTh = dot(l, v);
-  float litAir = smoothstep(-0.18, 0.05, dot(n, l));
-  vec3 path = 0.75 * (1.0 + cosTh * cosTh) / (4.0 * 3.14159) * (1.0 - T) * litAir;
+  float cosTh = dot(l, v), nl = dot(n, l);
+  float mu0a = nl >= 0.02 ? nl : pow(max(nl + 0.02, 0.0), 2.0) / 0.08;
+  vec3 path = 0.75 * (1.0 + cosTh * cosTh) / (4.0 * 3.14159) * mu0a / (mu0a + mu)
+    * (1.0 - exp(-TAU0 * (min(1.0 / mu, 35.4) + min(1.0 / max(mu0a, 1e-4), 35.4))));
   vec3 lin = ${EXPOSURE_K.toFixed(2)} * exposure * ((alb * mu0 + glint * vec3(1.0, 0.97, 0.92)) * sunIn * T + 3.14159 * path);
   m.diffuse = pow(min(lin, vec3(1.0)), vec3(1.0 / 2.2));
   m.alpha = 1.0;
@@ -343,9 +348,13 @@ void main() {
   if (b <= R) discard;
   float factor = grazing * exp(-(b - R) / w) * (H / w);
   vec3 tau = TAU0 * factor;
-  // sunlit air: around the ray's tangent point, with the twilight band beyond the terminator
+  // sunlit air around the ray's tangent point: sunlight attenuated (and reddened) along its own path
+  // to it, which grows to the grazing path at the terminator; a narrow twilight band beyond it
+  // (air a few scale heights up still sees the Sun, ~3 deg) instead of a 10 deg blue band
   vec3 up = normalize(v * t - center);
-  float lit = smoothstep(-0.18, 0.05, dot(up, czm_lightDirectionEC));
+  float ul = dot(up, czm_lightDirectionEC);
+  float mu0a = ul >= 0.05 ? ul : pow(max(ul + 0.05, 0.0), 2.0) / 0.2;
+  vec3 lit = mu0a > 0.0 ? exp(-TAU0 * min(1.0 / mu0a, 35.4)) : vec3(0.0);
   float cosTheta = dot(czm_lightDirectionEC, v);
   float phase = 0.75 * (1.0 + cosTheta * cosTheta);
   vec3 L = phase / (4.0 * czm_pi) * (1.0 - exp(-tau)) * lit;   // in units of F_sun
