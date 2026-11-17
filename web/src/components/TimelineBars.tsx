@@ -36,12 +36,18 @@ export function TimelineBars({ timeline, nowMs }: { timeline: TimelineSample[]; 
   const x = (t: number) => ((t - t0) / (t1 - t0 || 1)) * W
   const w = W / timeline.length + 0.5
   const days = Math.round((t1 - t0) / 86400_000)
+  // the bars stretch to the panel width (preserveAspectRatio none); the dates are HTML under them so the
+  // text is never squashed with the bars
   return (
-    <svg className="timeline" viewBox={`0 0 ${W} ${ROW * 2 + 16}`} preserveAspectRatio="none" role="img" aria-label="Sunlight and Earth visibility timeline">
-      <TimelineSamples timeline={timeline} t0={t0} t1={t1} width={w} />
-      {nowMs >= t0 && nowMs <= t1 && <line x1={x(nowMs)} x2={x(nowMs)} y1={0} y2={ROW * 2} className="now" />}
-      <text x={2} y={ROW * 2 + 12} className="tick">{fmtDate(t0)}</text>
-      <text x={W - 2} y={ROW * 2 + 12} className="tick" textAnchor="end">+{days} d</text>
-    </svg>
+    <div className="timeline-wrap">
+      <svg className="timeline" viewBox={`0 0 ${W} ${ROW * 2}`} preserveAspectRatio="none" role="img" aria-label="Sunlight and Earth visibility timeline">
+        <TimelineSamples timeline={timeline} t0={t0} t1={t1} width={w} />
+        {nowMs >= t0 && nowMs <= t1 && <line x1={x(nowMs)} x2={x(nowMs)} y1={0} y2={ROW * 2} className="now" />}
+      </svg>
+      <div className="timeline-ticks">
+        <span>{fmtDate(t0)}</span>
+        <span>{fmtDate(t1)} · {days} d</span>
+      </div>
+    </div>
   )
 }

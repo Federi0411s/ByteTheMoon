@@ -232,6 +232,8 @@ export function SitePanel({
           <p className="muted">
             {selected.lat.toFixed(3)}°, {selected.lon.toFixed(3)}° · horizon: {selected.horizon ? selected.horizon.source : 'flat (no terrain data here)'}
           </p>
+          {/* daylight / night countdown and the terrain view card: side by side when expanded */}
+          <div className="panel-split">
           {sunlightCountdown && (
             <div className={`sun-countdown ${sunlightCountdown.eclipse ? 'eclipse' : sunlightCountdown.daylight ? 'day' : 'night'}`} role="status">
               <span className="sun-countdown-state">
@@ -254,6 +256,7 @@ export function SitePanel({
             loading={terrainViewLoading}
             onClick={onToggleTerrainView}
           />
+          </div>
           {terrainViewError && <p className="terrain-view-error" role="alert">{terrainViewError}</p>}
           {now && now.eclipseFrac > 0 && now.sunEl > -1 && (
             <p className="eclipse-tag" role="status">

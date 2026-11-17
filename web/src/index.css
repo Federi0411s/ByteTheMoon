@@ -61,10 +61,28 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .side { position: absolute; top: 12px; bottom: 82px; width: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .side.left { left: 12px; }
 .side.left.expanded { width: 50vw; }
+/* pairs of sub-panels: stacked normally, side by side in the expanded left panel */
+.side.left.expanded .panel-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.side.left.expanded .panel-split > * { margin-top: 0; min-width: 0; }
 .side.right { right: 12px; bottom: 118px; width: 320px; }
 /* every panel of the right column spans its full width */
 .side.right > * { width: 100%; box-sizing: border-box; flex-shrink: 0; }
 
+.map-altitude { display: block; margin-top: 4px; font-variant-numeric: tabular-nums; }
+/* first-person HUD: compass tape under the title, elevation scale on the right of the free area */
+.fpv-hud { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.fpv-compass-wrap { position: absolute; top: 106px; left: calc(384px + (100% - 384px - 344px) / 2); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.fpv-compass { background: rgba(8, 12, 22, 0.45); border-radius: 6px; }
+.fpv-readout { font-size: 11px; color: #d5dbe7; font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px #000; }
+.fpv-elev { position: absolute; top: calc(50% - 160px); background: rgba(8, 12, 22, 0.35); border-radius: 6px; }
+.fpv-elev.right { right: 344px; }
+.fpv-tick { stroke: rgba(230, 236, 245, 0.85); stroke-width: 1.2; }
+.fpv-label { fill: #e6ecf5; font-size: 10px; font-variant-numeric: tabular-nums; }
+.fpv-label.card { font-weight: 700; font-size: 11px; fill: #fff; }
+.fpv-pointer { fill: #ffb347; }
+.fpv-icon { font-size: 13px; }
+.look-at-buttons { position: absolute; right: 344px; bottom: 82px; z-index: 2; display: flex; gap: 6px; }
+.look-at-buttons button { padding: 6px 10px; font-size: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
 .map-scale {
   position: absolute;
   right: 12px;
@@ -481,26 +499,25 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .terrain-preview-arrow { position: relative; padding: 0 10px 10px; color: #fff; font-size: 18px; text-shadow: 0 1px 5px #000; }
 .terrain-view-error { color: #ffc27a; font-size: 12px; }
 .terrain-view-controls {
-  position: absolute;
-  top: 54px;
-  left: 50%;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  transform: translateX(-50%);
-  padding: 8px 10px;
+  /* first person: a single Back button in the title row's left column, level with the settings button */
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  pointer-events: auto;
+  padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  backdrop-filter: blur(6px);
+  font-weight: 600;
   white-space: nowrap;
 }
-.terrain-view-controls span { color: var(--muted); font-size: 11px; }
+.terrain-view-controls .fpv-night { color: var(--muted); font-size: 11px; font-weight: 400; }
 
 .panorama, .timeline { width: 100%; display: block; background: #0a0e1a; border-radius: 6px; margin-top: 8px; }
 .panorama { height: 160px; }
-.timeline { height: 52px; }
+.timeline-wrap { background: #0a0e1a; border-radius: 6px; margin-top: 8px; padding-bottom: 4px; }
+.timeline { height: 36px; margin-top: 0; border-radius: 6px 6px 0 0; }
+.timeline-ticks { display: flex; justify-content: space-between; padding: 3px 4px 0; color: #b4bccc; font-size: 11px; font-variant-numeric: tabular-nums; }
 .panorama .terrain { fill: #3a3f4d; stroke: #9aa3b5; stroke-width: 1; }
 .panorama .grid { stroke: rgba(255, 255, 255, 0.08); }
 .panorama .grid.zero { stroke: rgba(255, 255, 255, 0.22); }
@@ -520,6 +537,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .timebar { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
 .timebar input[type='range'] { flex: 1; }
 .timebar select { width: auto; }
+/* the loaded interval / mission range: bright and tabular like the horizon viewer's labels */
+.timebar .time-range-label { color: #d5dbe7; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; white-space: nowrap; }
 .toggle { display: flex; gap: 6px; align-items: center; font-size: 13px; white-space: nowrap; }
 
 .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0; color: var(--muted); pointer-events: none; }
@@ -584,7 +603,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .time-col input[type='range'] { width: 100%; margin: 0; }
 .mission-track { position: relative; height: 14px; margin: 0 8px; border-radius: 7px; background: rgba(63, 167, 255, 0.10); cursor: crosshair; touch-action: none; }
 .mission-track:hover { background: rgba(63, 167, 255, 0.18); }
-.mission-hint { position: absolute; inset: 0; display: grid; place-items: center; font-size: 10px; color: var(--muted); pointer-events: none; letter-spacing: 0.03em; }
+.mission-hint { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: #b4bccc; pointer-events: none; letter-spacing: 0.03em; }
 .mission-bar { position: absolute; top: 3px; bottom: 3px; min-width: 2px; border-radius: 4px; background: var(--earth); box-shadow: 0 0 8px rgba(63, 167, 255, 0.6); cursor: grab; }
 .mission-pin { position: absolute; top: 50%; width: 18px; height: 24px; cursor: ew-resize; touch-action: none; z-index: 1; }
 /* bracket handles sit OUTSIDE the period (start to the left, end to the right) so they never overlap */

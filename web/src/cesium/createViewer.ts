@@ -131,6 +131,9 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
   controls.inertiaTranslate = 0.82
   controls.inertiaZoom = 0.75
   controls.maximumTiltAngle = Math.PI / 2
+  // farthest zoom: the Moon and the Earth (up to ~406,000 km away) both still fit in the view, the
+  // Earth within ~22 deg of the centre (clear of the side panels; the default view is 60 deg tall)
+  controls.maximumZoomDistance = (406_000e3 + 6378e3) / Math.tan((22 * Math.PI) / 180)
   if (scene.sun) scene.sun.show = false
   if (scene.moon) scene.moon.show = false
   scene.backgroundColor = Color.BLACK
@@ -154,6 +157,9 @@ export async function createMoonScene(container: HTMLElement): Promise<MoonScene
     globe.baseColor = Color.fromCssColorString('#222')
     globe.enableLighting = false // see setSunLighting
     globe.showGroundAtmosphere = false
+    // objects are hidden by the Moon's surface in front of them (the Sun / Earth behind the limb or
+    // behind hills in the first-person view); Cesium's default draws them on top of the globe
+    globe.depthTestAgainstTerrain = true
     // keep zooming until the deepest photo level is actually on screen
     globe.maximumScreenSpaceError = 1.5
     globe.tileCacheSize = 400
@@ -220,10 +226,64 @@ export function flyToSite(viewer: Viewer, latDeg: number, lonDeg: number, rangeM
  * Realistic Sun lighting on/off. At the poles the Sun grazes the horizon, so realistic lighting
  * leaves most terrain black: great for the shadow demo, bad for reading heatmaps.
  */
-export function setSunLighting(m: MoonScene, on: boolean) {
+export function setSunLighting(m: MoonScene, on: boolean, firstPerson = false) {
   if (m.tileset) m.tileset.customShader = on ? undefined : new CustomShader({ lightingModel: LightingModel.UNLIT })
-  if (m.viewer.scene.globe) m.viewer.scene.globe.enableLighting = on
-  m.viewer.shadows = on && !!m.tileset
+  const globe = m.viewer.scene.globe
+  if (globe) globe.enableLighting = on
+  // cast shadows: always with the 3D tileset; on the Moon Trek globe only in the first-person view
+  // (a shadow map is costly and invisible from orbit)
+  const shadows = on && (!!m.tileset || firstPerson)
+  m.viewer.shadows = shadows
+  if (globe) globe.shadows = shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED
+  if (shadows) {
+    const sm = m.viewer.shadowMap
+    // no atmosphere: shadows are almost black (Cesium's default leaves 30 % light), and with the Sun a
+    // degree above the polar horizon they run for tens of km (default range: 5 km)
+    sm.darkness = 0.04
+    sm.maximumDistance = firstPerson ? 60_000 : 5_000
+    sm.size = 4096
+    sm.softShadows = false
+  }
+  m.viewer.scene.requestRender()
+}
+
+/** Night exposure (like a dark-adapted eye or a long photo exposure): earthshine is ~1e-5..1e-4 of sunlight. */
+export const NIGHT_EXPOSURE = 4000
+
+/**
+ * Earthshine on the Moon as a share of direct sunlight: (2/3) A (R_E / d)^2 Phi(alpha), the Earth as a
+ * Lambert sphere of Bond albedo A = 0.30 at distance d, Phi = (sin a + (pi - a) cos a) / pi with a the
+ * Sun-Earth-Moon phase angle (full Earth: ~5.5e-5, i.e. ~6 lux under 110,000 lux of sunlight).
+ */
+export function earthshineRatio(sunPosM: [number, number, number], earthPosM: [number, number, number]) {
+  const [ex, ey, ez] = earthPosM
+  const sx = sunPosM[0] - ex, sy = sunPosM[1] - ey, sz = sunPosM[2] - ez // Earth -> Sun
+  const d = Math.hypot(ex, ey, ez), ds = Math.hypot(sx, sy, sz)
+  const a = Math.acos(Math.max(-1, Math.min(1, -(sx * ex + sy * ey + sz * ez) / (ds * d)))) // Earth -> Moon is -earthPos
+  const phi = (Math.sin(a) + (Math.PI - a) * Math.cos(a)) / Math.PI
+  return (2 / 3) * 0.3 * (6371e3 / d) ** 2 * phi
+}
+
+/** Light the scene by earthshine only (night side), at its physical share of sunlight x NIGHT_EXPOSURE. */
+export function setEarthLight(viewer: Viewer, sunPosM: [number, number, number], earthPosM: [number, number, number]) {
+  const dir = Cartesian3.normalize(new Cartesian3(-earthPosM[0], -earthPosM[1], -earthPosM[2]), new Cartesian3())
+  // only the part of the Earth's disc (radius ~0.95 deg) above the camera's horizon lights the ground:
+  // with the Earth set too, the lunar night is dark (starlight only)
+  const c = viewer.camera.positionWC
+  const up = Cartesian3.normalize(c, new Cartesian3())
+  const toEarth = Cartesian3.normalize(Cartesian3.subtract(new Cartesian3(...earthPosM), c, new Cartesian3()), new Cartesian3())
+  const el = Math.asin(Cartesian3.dot(up, toEarth)) * (180 / Math.PI)
+  const above = Math.min(1, Math.max(0, (el + 0.95) / 1.9))
+  const intensity = 2.0 * earthshineRatio(sunPosM, earthPosM) * NIGHT_EXPOSURE * Math.max(above, 0.002)
+  viewer.scene.light = new DirectionalLight({ direction: dir, color: new Color(0.86, 0.92, 1.0, 1), intensity })
+}
+
+/** Is the Sun's disc entirely below the camera's (geometric) horizon? */
+export function sunBelowCameraHorizon(viewer: Viewer, sunPosM: [number, number, number]) {
+  const c = viewer.camera.positionWC
+  const up = Cartesian3.normalize(c, new Cartesian3())
+  const s = Cartesian3.normalize(Cartesian3.subtract(new Cartesian3(...sunPosM), c, new Cartesian3()), new Cartesian3())
+  return Math.asin(Cartesian3.dot(up, s)) < -0.27 * (Math.PI / 180)
 }
 
 /**

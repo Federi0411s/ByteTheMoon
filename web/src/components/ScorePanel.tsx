@@ -102,17 +102,22 @@ export function ScorePanel({
         Recommended 100 · Feasible 70 · Difficult 40 · Not feasible 0 points; the score is the mean.
         Sunlight is the percentage of this period with the Sun above the local terrain horizon.
       </p>
-      {criteria.map((c) => {
-        const info = CLASS_INFO[c.cls]
-        return (
-          <div key={c.id} className="score-row">
-            <div className="score-head"><span>{c.name} <CriterionInfo id={c.id} settings={settings} /></span><span style={{ color: info.color }}>{info.label}</span></div>
-            <div className="score-track"><div className="score-fill" style={{ width: `${Math.max(info.points, 3)}%`, background: info.color }} /></div>
-          </div>
-        )
-      })}
-      {missing.length > 0 && <p className="muted">Computing: {missing.join(', ')}…</p>}
-      {human && <HumanSection human={human} settings={settings} />}
+      {/* score bars and the walks-outside section: side by side when the left panel is expanded */}
+      <div className="panel-split">
+        <div>
+          {criteria.map((c) => {
+            const info = CLASS_INFO[c.cls]
+            return (
+              <div key={c.id} className="score-row">
+                <div className="score-head"><span>{c.name} <CriterionInfo id={c.id} settings={settings} /></span><span style={{ color: info.color }}>{info.label}</span></div>
+                <div className="score-track"><div className="score-fill" style={{ width: `${Math.max(info.points, 3)}%`, background: info.color }} /></div>
+              </div>
+            )
+          })}
+          {missing.length > 0 && <p className="muted">Computing: {missing.join(', ')}…</p>}
+        </div>
+        {human && <HumanSection human={human} settings={settings} />}
+      </div>
       {criteria.length > 0 && (
         <>
           <div className="power-now" style={{ marginTop: 10 }}>

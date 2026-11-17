@@ -1311,6 +1311,44 @@ async function tile(m: {
   )
 }
 
+/**
+ * Terrain heights on rings x spokes around a point, for the first-person view's terrain mesh: nAz
+ * azimuths (clockwise from north) x the ring distances (m), each read at the elevation level matched to
+ * its ring spacing, along the same great circles as the horizon rays (so the drawn horizon is the
+ * computed one). out[0] = the centre height, then azimuth-major.
+ */
+async function heightField(m: { id: number; lat: number; lon: number; nAz: number; dists: number[] }) {
+  const demMax = dem.maxLevel
+  const K = m.dists.length
+  const d = Float64Array.from(m.dists)
+  const level = new Int32Array(K)
+  for (let k = 0; k < K; k++) {
+    const gap = Math.max(k + 1 < K ? d[k + 1] - d[k] : d[k] - d[k - 1], (2 * Math.PI * d[k]) / m.nAz)
+    level[k] = demLevelFor(0.5 * gap, demMax)
+  }
+  const ray: Ray = { d, sinD: d.map((x) => Math.sin(x / R)), cosD: d.map((x) => Math.cos(x / R)), curv: d.map((x) => x / (2 * R)), level }
+  const lat0 = Math.max(-SITE_MAX_LAT, Math.min(SITE_MAX_LAT, m.lat))
+  const hold: number[] = []
+  try {
+    await ensureFor(m.lon, lat0, m.lon, lat0, ray, demMax, hold)
+    const out = new Float32Array(1 + m.nAz * K)
+    out[0] = dem.sample(m.lon, lat0, demMax)
+    const sinP = Math.sin(lat0), cosP = Math.cos(lat0)
+    for (let a = 0; a < m.nAz; a++) {
+      const az = (2 * Math.PI * a) / m.nAz, sa = Math.sin(az), ca = Math.cos(az)
+      for (let k = 0; k < K; k++) {
+        const sinLat = sinP * ray.cosD[k] + cosP * ray.sinD[k] * ca
+        const lat = Math.asin(sinLat)
+        const lon = m.lon + Math.atan2(sa * ray.sinD[k] * cosP, ray.cosD[k] - sinP * sinLat)
+        out[1 + a * K + k] = dem.sample(lon, lat, level[k])
+      }
+    }
+    ;(self as unknown as Worker).postMessage({ id: m.id, heights: out, lat: lat0 }, [out.buffer])
+  } finally {
+    dem.unpin(hold)
+  }
+}
+
 async function siteHorizon(m: { id: number; lat: number; lon: number; azStepDeg: number }) {
   const demMax = dem.maxLevel
   const ray = makeRay(demMax, 220, 0.5) // much denser than tiles: this is the site's own panorama
@@ -1373,6 +1411,8 @@ self.onmessage = (ev: MessageEvent) => {
     forcedBackend = m.mode === 'cpu' || m.mode === 'gpu' ? m.mode : undefined
   } else if (m.type === 'tile') {
     tile(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))
+  } else if (m.type === 'heightfield') {
+    heightField(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))
   } else if (m.type === 'horizon') {
     siteHorizon(m).catch((err) => (self as unknown as Worker).postMessage({ id: m.id, error: String(err) }))
   }

@@ -4,8 +4,8 @@ import {
   Cartesian3,
   Cartographic,
   Color,
-  ConstantPositionProperty,
   Ellipsoid,
+  CallbackPositionProperty,
   CallbackProperty,
   type Entity,
   ImageryLayer,
@@ -13,9 +13,15 @@ import {
   Math as CMath,
   Rectangle,
   ScreenSpaceEventHandler,
+  PerspectiveFrustum,
+  NearFarScalar,
   ScreenSpaceEventType,
   VerticalOrigin,
 } from 'cesium'
+import { createCelestial, type Celestial } from './cesium/celestial'
+import { FpvHud } from './components/FpvHud'
+import { FPV_AZIMUTHS, buildFpvTerrain, fpvRings, type FpvTerrain } from './cesium/fpvTerrain'
+import { NIGHT_EXPOSURE, earthshineRatio, setEarthLight, sunBelowCameraHorizon } from './cesium/createViewer'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { PyramidImageryProvider } from './cesium/PyramidImageryProvider'
@@ -40,6 +46,7 @@ import {
   computeTimeline,
   darkIntervalsFromTransitions,
   findSunTransitions,
+  horizonAt,
   indexTimeline,
   longestFullNightHFromIntervals,
   nextSunTransition,
@@ -162,6 +169,11 @@ function removeLayer(scene: MoonScene, layer: ImageryLayer) {
   scene.overlays.remove(layer, true)
 }
 
+/** landmark tags: fully shown up to ~32,000 km from the camera, gone by ~50,000 km */
+const LANDMARK_FADE = new NearFarScalar(3.2e7, 1, 5.0e7, 0)
+/** eye height of the first-person view above the terrain (m) */
+const EYE_HEIGHT_M = 1.75
+
 const FUTURE_SITE_GROUPS = new Set([
   'Artemis III candidate regions',
   'South pole (best-lit spot near feature)',
@@ -223,7 +235,28 @@ export default function App() {
   const iceEntitiesRef = useRef<Entity[]>([])
   const iceLoadedRef = useRef(false)
   const pitsRef = useRef<PitsLayer | null>(null)
-  const markers = useRef<{ sun?: Entity; earth?: Entity; custom?: Entity; sites: Entity[] }>({ sites: [] })
+  const markers = useRef<{ custom?: Entity; sites: Entity[] }>({ sites: [] })
+  const celestialRef = useRef<Celestial | undefined>(undefined)
+  // first-person view: markers are depth-tested against the terrain (hidden behind it); from orbit they stay on top
+  const terrainViewRef = useRef(false)
+  // from orbit: never depth-tested (on the reference sphere, the terrain cut them in half) and hidden on the
+  // Moon's far side instead; first person: depth-tested against the terrain mesh, so hills hide them
+  const markerDepthTest = useMemo(() => new CallbackProperty(() => (terrainViewRef.current ? 0 : Number.POSITIVE_INFINITY), false), [])
+  /** the point faces the camera (in front of the Moon's limb) */
+  const onNearSide = useCallback((latDeg: number, lonDeg: number) => {
+    const c = sceneRef.current?.viewer.camera.positionWC
+    if (!c) return true
+    const la = latDeg * D2R, lo = lonDeg * D2R, cl = Math.cos(la)
+    return cl * Math.cos(lo) * c.x + cl * Math.sin(lo) * c.y + Math.sin(la) * c.z > MOON_RADIUS_M
+  }, [])
+  // first person: not the site you stand on, and only the landmarks on the local terrain mesh (150 km);
+  // the rest are beyond the horizon and, with the globe hidden, nothing else would hide them
+  const markerInView = useCallback((s: { id?: string; lat: number; lon: number }) => {
+    if (!terrainViewRef.current) return onNearSide(s.lat, s.lon)
+    if (s.id !== undefined && s.id === terrainSiteId.current) return false
+    const fpv = fpvTerrainRef.current
+    return !fpv || Number.isFinite(fpv.heightAt(s.lat, s.lon))
+  }, [onNearSide])
   // site marker -> site (click to select) and the marker under the mouse (grows a little, animated)
   const siteByMarker = useRef(new Map<Entity, Site>())
   // latest selection actions for the map click handler (registered once per scene)
@@ -285,6 +318,18 @@ export default function App() {
   const [radiationOpacity, setRadiationOpacity] = useState(0.7)
   const [radiationMode, setRadiationMode] = useState<'classes' | 'continuous'>('classes')
   const [terrainViewActive, setTerrainViewActive] = useState(false)
+  /** first person at night: earthshine share of sunlight (null by day / from orbit) */
+  const [nightView, setNightView] = useState<number | null>(null)
+  /** first-person HUD: camera heading / elevation and field of view (deg) */
+  const [hud, setHud] = useState<{ heading: number; pitch: number; fovx: number; fovy: number } | null>(null)
+  // bumped when the camera stops in the terrain view: the day / night test depends on where it is
+  const [terrainCamTick, setTerrainCamTick] = useState(0)
+  useEffect(() => {
+    const viewer = sceneRef.current?.viewer
+    if (!terrainViewActive || !viewer) return
+    return viewer.camera.moveEnd.addEventListener(() => setTerrainCamTick((n) => n + 1))
+  }, [terrainViewActive])
+  useEffect(() => { terrainViewRef.current = terrainViewActive; sceneRef.current?.viewer.scene.requestRender() }, [terrainViewActive])
   const [terrainViewLoading, setTerrainViewLoading] = useState(false)
   const [terrainViewError, setTerrainViewError] = useState<string>()
   const [reportOpen, setReportOpen] = useState(false)
@@ -295,6 +340,8 @@ export default function App() {
   const terrainCamera = useRef<{ position: Cartesian3; direction: Cartesian3; up: Cartesian3 } | null>(null)
   const terrainSiteId = useRef<string | undefined>(undefined)
   const terrainRequest = useRef(0)
+  const fpvTerrainRef = useRef<FpvTerrain | null>(null)
+  const lightingRef = useRef(false)
   const restoreElevationOnExit = useRef(false)
   const [iceVisible, setIceVisible] = useState(false)
   const [iceError, setIceError] = useState<string>()
@@ -312,6 +359,8 @@ export default function App() {
   radiationOpacityRef.current = radiationOpacity
   const [basemapState, setBasemapState] = useState<BasemapState>({ kaguya: true, nacPolar: true, nacSites: true, elevation: false, relief: true })
   const [viewResM, setViewResM] = useState<number>()
+  /** camera height above the terrain below it (m), shown next to the scale */
+  const [cameraAltM, setCameraAltM] = useState<number>()
   const allSites = useMemo(() => [...(bundle?.sites ?? []), ...savedSites], [bundle, savedSites])
   const [mission, setMission] = useState<Mission>({})
   // whole-Moon heatmaps computed on the fly from the global elevation tiles (null: tiles not generated)
@@ -336,6 +385,10 @@ export default function App() {
     }
     terrainCamera.current = null
     terrainSiteId.current = undefined
+    fpvTerrainRef.current?.destroy()
+    fpvTerrainRef.current = null
+    const globe = sceneRef.current?.viewer.scene.globe
+    if (globe) globe.show = true
     setTerrainViewActive(false)
     setTerrainViewLoading(false)
     setTerrainViewError(undefined)
@@ -512,29 +565,22 @@ export default function App() {
     setTerrainViewError(undefined)
 
     try {
-      let height = site.heightM
-      if (scene.basemap === 'trek' || height === undefined) {
-        const activeTerrain = viewer.scene.globe.terrainProvider
-        if (activeTerrain instanceof DemTerrainProvider) {
-          height = await activeTerrain.sampleHeight(site.lon * D2R, site.lat * D2R)
-        } else {
-          const terrain = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
-          try {
-            height = await terrain.sampleHeight(site.lon * D2R, site.lat * D2R)
-          } finally {
-            terrain.dispose()
-          }
-        }
-      }
+      // one terrain mesh around the site from the same samples as the computed horizon (cesium/fpvTerrain.ts)
+      const engine = heatRef.current
+      if (!engine) throw new Error('Elevation data is unavailable (no elevation tiles).')
+      const rings = fpvRings()
+      const field = await engine.heightField(site.lat, site.lon, FPV_AZIMUTHS, rings)
       if (requestId !== terrainRequest.current || selectedRef.current?.id !== site.id || sceneRef.current !== scene) return
-      if (height === undefined || !Number.isFinite(height)) throw new Error('Elevation data is unavailable for this point.')
-
-      restoreElevationOnExit.current = scene.basemap === 'trek' && !basemapState.elevation
-      if (restoreElevationOnExit.current) setBasemapState((state) => ({ ...state, elevation: true }))
-      viewer.camera.flyTo({
-        destination: Cartesian3.fromDegrees(site.lon, site.lat, height + 150, Ellipsoid.MOON),
-        orientation: { heading: 0, pitch: CMath.toRadians(-4), roll: 0 },
-        duration: 1.5,
+      if (!field || !Number.isFinite(field.heights[0])) throw new Error('Elevation data is unavailable for this point.')
+      const lat = (field.lat * 180) / Math.PI
+      fpvTerrainRef.current?.destroy()
+      const terrain = buildFpvTerrain(viewer.scene, lat, site.lon, field.heights, rings)
+      fpvTerrainRef.current = terrain
+      terrain.setAmbient(lightingRef.current ? 0 : 0.9)
+      viewer.scene.globe.show = false // the mesh is the ground now
+      viewer.camera.setView({
+        destination: Cartesian3.fromDegrees(site.lon, lat, terrain.centerHeight + EYE_HEIGHT_M, Ellipsoid.MOON),
+        orientation: { heading: 0, pitch: 0, roll: 0 },
       })
       setTerrainViewActive(true)
     } catch (error) {
@@ -549,7 +595,7 @@ export default function App() {
     } finally {
       if (requestId === terrainRequest.current) setTerrainViewLoading(false)
     }
-  }, [basemapState.elevation, stopTerrainView])
+  }, [stopTerrainView])
 
   useEffect(() => {
     if (terrainSiteId.current && terrainSiteId.current !== selected?.id) stopTerrainView(true)
@@ -628,27 +674,40 @@ export default function App() {
     markers.current.sites = allSites.map((s) => {
       let self: Entity | undefined
       const entity = scene.viewer.entities.add({
-        position: Cartesian3.fromDegrees(s.lon, s.lat, 0, Ellipsoid.MOON),
+        // at the site's terrain height (from 0 m they sat under the ground, so from the ground view they
+        // either hid or, with depth testing off, showed through hills)
+        // from orbit: on the reference sphere and drawn on top (within 500 km); first person: 3 m above
+        // the first-person mesh (its own heights, so hills hide it correctly), hidden beyond the mesh
+        position: new CallbackPositionProperty(() => {
+          const fpv = terrainViewRef.current ? fpvTerrainRef.current : null
+          const h = fpv ? fpv.heightAt(s.lat, s.lon) : 0
+          return Cartesian3.fromDegrees(s.lon, s.lat, Number.isFinite(h) ? h + 3 : 0, Ellipsoid.MOON)
+        }, false),
         point: {
+          show: new CallbackProperty(() => markerInView(s), false),
           pixelSize: sizeOf(() => self),
           color: s.group === 'Saved'
             ? Color.fromCssColorString('#32cd32')
             : FUTURE_SITE_GROUPS.has(s.group) ? Color.DODGERBLUE : Color.RED,
           outlineColor: Color.BLACK,
           outlineWidth: 2,
-          disableDepthTestDistance: 500_000,
+          disableDepthTestDistance: markerDepthTest,
+          // zooming out past the Moon's scale, the landmarks fade out (a "Moon" tag fades in, cesium/celestial.ts)
+          translucencyByDistance: LANDMARK_FADE,
         },
         label: {
           text: s.name, font: '13px system-ui', style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3,
           verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -12),
-          disableDepthTestDistance: 500_000, // always on top nearby, hidden behind the Moon from afar
+          show: new CallbackProperty(() => markerInView(s), false),
+          disableDepthTestDistance: markerDepthTest, // on top nearby from orbit, hidden behind the Moon from afar / terrain on the ground
+          translucencyByDistance: LANDMARK_FADE,
         },
       })
       self = entity
       siteByMarker.current.set(entity, s)
       return entity
     })
-  }, [ready, bundle, allSites])
+  }, [ready, bundle, allSites, markerInView, markerDepthTest])
 
   useEffect(() => {
     markers.current.sites.forEach((marker) => {
@@ -715,15 +774,33 @@ export default function App() {
     if (!ready || !scene) return
     const { camera, canvas } = scene.viewer.scene
     camera.percentageChanged = 0.05
+    // terrain height under the camera from the elevation tiles (the globe's own terrain is flat unless
+    // 3D terrain is on), refreshed at most ~3 times a second
+    const sampler = new DemTerrainProvider(`${DATA_URL}/dem`, fineDemBaseUrl())
+    let ground = 0, pending = false, last = 0, disposed = false
     const update = () => {
       const position = camera.positionCartographic
-      const groundHeight = scene.viewer.scene.globe.getHeight(position) ?? 0
-      const h = Math.max(0, position.height - groundHeight)
+      // first person: the ground is the local mesh (globe hidden)
+      const fpv = fpvTerrainRef.current
+      const globeH = fpv ? fpv.centerHeight : scene.viewer.scene.globe?.getHeight(position)
+      const h = Math.max(0, position.height - (globeH ?? ground))
       const fovy = (camera.frustum as { fovy?: number }).fovy ?? Math.PI / 3
       setViewResM((2 * h * Math.tan(fovy / 2)) / Math.max(canvas.clientHeight, 1))
+      setCameraAltM(h)
+      const now = performance.now()
+      if (pending || now - last < 300 || position.height > 2_000_000) return // far away: ground is negligible
+      pending = true
+      last = now
+      sampler.sampleHeight(position.longitude, position.latitude)
+        .then((g) => { if (!disposed && g !== undefined && Number.isFinite(g)) { ground = g; update() } })
+        .catch(() => undefined)
+        .finally(() => { pending = false })
     }
     update()
-    return camera.changed.addEventListener(update)
+    const off = camera.changed.addEventListener(update)
+    // 'changed' only fires after a 5 % move: refresh when a flight / drag ends too
+    const offEnd = camera.moveEnd.addEventListener(() => { last = 0; update() })
+    return () => { disposed = true; off(); offEnd(); sampler.dispose() }
   }, [ready])
 
   // ---- mission period: recompute sunlight / Earth averages over [start, end] (debounced) ----
@@ -1283,22 +1360,27 @@ export default function App() {
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
     // (during a solar eclipse the shadow overlay below darkens each point by its own coverage)
-    setSunDirection(scene.viewer, sun)
-    const m = markers.current
-    // Sun is drawn at Earth-like distance in its true direction (beyond the far plane otherwise)
-    const sunDir = Cartesian3.normalize(new Cartesian3(...sun), new Cartesian3())
-    const sunShown = Cartesian3.multiplyByScalar(sunDir, 4.0e8, new Cartesian3())
-    if (!m.sun) {
-      m.sun = scene.viewer.entities.add({ point: { pixelSize: 18, color: Color.YELLOW }, label: { text: 'Sun', font: '13px system-ui', pixelOffset: new Cartesian2(0, -18) } })
-      m.earth = scene.viewer.entities.add({ point: { pixelSize: 14, color: Color.DODGERBLUE }, label: { text: 'Earth', font: '13px system-ui', pixelOffset: new Cartesian2(0, -16) } })
-    }
-    m.sun.position = new ConstantPositionProperty(sunShown)
-    m.earth!.position = new ConstantPositionProperty(new Cartesian3(...earth))
-  }, [ready, ephemeris, t])
+    // first person at night (Sun below the horizon): earthshine only, no shadow map (cheap and real);
+    // otherwise the Sun
+    const night = lighting && terrainViewActive && sunBelowCameraHorizon(scene.viewer, sun)
+    if (night) setEarthLight(scene.viewer, sun, earth)
+    else setSunDirection(scene.viewer, sun)
+    setNightView(night ? earthshineRatio(sun, earth) : null)
+    // the real Earth (size, texture, rotation, phase) and Sun (at infinity, true angular size): cesium/celestial.ts
+    if (!celestialRef.current) celestialRef.current = createCelestial(scene.viewer, (window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL ?? '/cesiumStatic')
+    celestialRef.current.update(t, sun, earth)
+    // the camera's exposure: raised for earthshine at night, and the Earth / Sun with it
+    celestialRef.current.setExposure(night ? NIGHT_EXPOSURE : 1)
+    if (terrainViewActive) celestialRef.current.loadDetail()
+  }, [ready, ephemeris, t, lighting, terrainViewActive, terrainCamTick])
+  useEffect(() => () => { celestialRef.current?.dispose(); celestialRef.current = undefined }, [])
 
   useEffect(() => {
-    if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting)
-  }, [ready, lighting])
+    // shadows from the Sun only: at night (earthshine) there is no shadow map
+    lightingRef.current = lighting
+    fpvTerrainRef.current?.setAmbient(lighting ? 0 : 0.9)
+    if (ready && sceneRef.current) setSunLighting(sceneRef.current, lighting, terrainViewActive && nightView === null)
+  }, [ready, lighting, terrainViewActive, nightView])
 
   // ---- solar-eclipse shadow on the globe (with Sun lighting on): darkness = share of the Sun the Earth
   //      hides at each point (topocentric, lib/eclipse.ts), so umbra and penumbra show where they fall.
@@ -1343,21 +1425,24 @@ export default function App() {
     if (markers.current.custom) viewer.entities.remove(markers.current.custom)
     markers.current.custom = viewer.entities.add({
       position: Cartesian3.fromDegrees(lon, lat, 0, Ellipsoid.MOON),
+      // the point you inspect: hidden in the first-person view (you stand on it) and behind the Moon's limb
       point: {
+        show: new CallbackProperty(() => !terrainViewRef.current && onNearSide(lat, lon), false),
         pixelSize: 13,
         color: Color.YELLOW,
         outlineColor: Color.BLACK,
         outlineWidth: 3,
-        disableDepthTestDistance: 500_000,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       label: {
+        show: new CallbackProperty(() => !terrainViewRef.current && onNearSide(lat, lon), false),
         text: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
         font: '13px system-ui',
         style: LabelStyle.FILL_AND_OUTLINE,
         outlineWidth: 3,
         verticalOrigin: VerticalOrigin.BOTTOM,
         pixelOffset: new Cartesian2(0, -16),
-        disableDepthTestDistance: 500_000,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     })
     setInspect({ ...p, values })
@@ -1410,7 +1495,7 @@ export default function App() {
       heightM,
       horizon,
     })
-  }, [bundle])
+  }, [bundle, onNearSide])
 
   const searchCoordinates = useCallback((lat: number, lon: number) => {
     stopTerrainView(false)
@@ -1477,6 +1562,8 @@ export default function App() {
       return picked && picked.id ? siteByMarker.current.get(picked.id as Entity) : undefined
     }
     handler.setInputAction((e: { position: Cartesian2 }) => {
+      // first person: clicks are part of looking around (dragging), not new selections
+      if (terrainViewRef.current) return
       // a site marker: select it (one click)
       const site = siteAt(e.position)
       if (site) { clickActions.current.selectSite(site); return }
@@ -1545,6 +1632,85 @@ export default function App() {
     }
   }, [timeline, timelineSummaryIndex, summaryStart, selected, ephemeris, scorePeriod, sunCycle])
   const now = useMemo(() => (selected && ephemeris && analysisPeriodInWindow ? computeTimeline(ephemeris, selected, selected.horizon, t, t)[0] : undefined), [selected, ephemeris, t, analysisPeriodInWindow])
+  // first person: "look at" buttons for the Sun / Earth, offered when the body is above the local
+  // terrain horizon or within 2 deg of clearing it
+  const lookTargets = useMemo(() => {
+    if (!terrainViewActive || !now || !selected) return { sun: false, earth: false }
+    const margin = (el: number, az: number) => el - horizonAt(selected.horizon, az)
+    return { sun: margin(now.sunEl, now.sunAz) > -2, earth: margin(now.earthEl, now.earthAz) > -2 }
+  }, [terrainViewActive, now, selected])
+  const lookAt = useCallback((body: 'sun' | 'earth') => {
+    const viewer = sceneRef.current?.viewer
+    if (!viewer || !ephemeris) return
+    const camera = viewer.camera
+    const p = body === 'sun' ? sunPosition(ephemeris, t) : earthPosition(ephemeris, t)
+    const cam = camera.positionWC
+    const dir = Cartesian3.normalize(Cartesian3.subtract(new Cartesian3(...p), cam, new Cartesian3()), new Cartesian3())
+    // heading / elevation of the body in the camera's local east-north-up frame
+    const up = Cartesian3.normalize(cam, new Cartesian3())
+    const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3())
+    const north = Cartesian3.cross(up, east, new Cartesian3())
+    const h1 = Math.atan2(Cartesian3.dot(dir, east), Cartesian3.dot(dir, north))
+    const p1 = Math.asin(Math.max(-1, Math.min(1, Cartesian3.dot(dir, up))))
+    const h0 = camera.heading, p0 = camera.pitch
+    const dh = ((h1 - h0 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI // shortest way round
+    const start = performance.now()
+    const step = () => {
+      const k = Math.min(1, (performance.now() - start) / 600), e = k * k * (3 - 2 * k)
+      camera.setView({ orientation: { heading: h0 + dh * e, pitch: p0 + (p1 - p0) * e, roll: 0 } })
+      viewer.scene.requestRender()
+      if (k < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }, [ephemeris, t])
+
+  // ---- first-person controls: the eye stays EYE_HEIGHT_M above the rendered terrain; dragging turns
+  //      the view (heading) and tilts it up / down (elevation), never rolls; the wheel zooms (field of view).
+  //      Cesium's own camera controls and collision push-up are off meanwhile. ----
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!terrainViewActive || !scene) return
+    const viewer = scene.viewer, camera = viewer.camera, ctrl = viewer.scene.screenSpaceCameraController
+    const saved = { inputs: ctrl.enableInputs, collision: ctrl.enableCollisionDetection }
+    ctrl.enableInputs = false
+    ctrl.enableCollisionDetection = false
+    const frustum = camera.frustum as PerspectiveFrustum
+    const fov0 = frustum.fov
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas)
+    let last: Cartesian2 | null = null
+    handler.setInputAction((e: { position: Cartesian2 }) => { last = Cartesian2.clone(e.position) }, ScreenSpaceEventType.LEFT_DOWN)
+    handler.setInputAction(() => { last = null }, ScreenSpaceEventType.LEFT_UP)
+    handler.setInputAction((e: { endPosition: Cartesian2 }) => {
+      if (!last) return
+      const k = (frustum.fovy ?? Math.PI / 3) / Math.max(viewer.scene.canvas.clientHeight, 1) // the scene follows the pointer
+      const dx = e.endPosition.x - last.x, dy = e.endPosition.y - last.y
+      last = Cartesian2.clone(e.endPosition)
+      const pitch = Math.max(-1.55, Math.min(1.55, camera.pitch + dy * k))
+      camera.setView({ orientation: { heading: camera.heading - dx * k, pitch, roll: 0 } })
+      viewer.scene.requestRender()
+    }, ScreenSpaceEventType.MOUSE_MOVE)
+    let lastHud = ''
+    const offHud = viewer.scene.postRender.addEventListener(() => {
+      const fovy = frustum.fovy ?? Math.PI / 3
+      const fovx = 2 * Math.atan(Math.tan(fovy / 2) * (frustum.aspectRatio ?? 1.6))
+      const next = { heading: CMath.toDegrees(camera.heading), pitch: CMath.toDegrees(camera.pitch), fovx: CMath.toDegrees(fovx), fovy: CMath.toDegrees(fovy) }
+      const key = `${next.heading.toFixed(1)}|${next.pitch.toFixed(1)}|${next.fovy.toFixed(1)}`
+      if (key !== lastHud) { lastHud = key; setHud(next) }
+    })
+    handler.setInputAction((delta: number) => {
+      // down to 0.5 deg: the Earth (1.9 deg across) can fill the view, the Sun's disc shows its size
+      frustum.fov = Math.max(CMath.toRadians(0.5), Math.min(CMath.toRadians(100), (frustum.fov ?? Math.PI / 3) * (delta > 0 ? 0.9 : 1.1)))
+      viewer.scene.requestRender()
+    }, ScreenSpaceEventType.WHEEL)
+    return () => {
+      handler.destroy()
+      offHud()
+      setHud(null)
+      ctrl.enableInputs = saved.inputs
+      ctrl.enableCollisionDetection = saved.collision
+      frustum.fov = fov0
+    }
+  }, [terrainViewActive])
   // solar eclipses seen from the selected site during the analysis period (Earth in front of the Sun, Sun above the horizon)
   const eclipses = useMemo(() => (selected && ephemeris && analysisPeriodInWindow
     ? siteEclipses(ephemeris, selected, scorePeriod[0], scorePeriod[1], (az, el, r) => sunVisibleOver(selected.horizon, az, el, r))
@@ -1800,18 +1966,23 @@ export default function App() {
       <div ref={containerRef} className="globe" />
       <header className="brand">
         <div className="brand-title">
+          {/* first person: Back, in the title row's left column (mirrors the settings button; never overlaps the title) */}
+          {terrainViewActive && (
+            <button type="button" className="terrain-view-controls fpv-back" onClick={() => stopTerrainView(true)}
+            title={nightView !== null ? `Back to the map · night: lit by earthshine only (${(nightView * 110_000).toFixed(1)} lux, ${(nightView * 1e5).toFixed(2)}e-5 of sunlight), shown brightened ×${NIGHT_EXPOSURE} like a dark-adapted eye` : 'Back to the map'}>
+            ← Back{nightView !== null && <span className="fpv-night"> · night (earthshine)</span>}
+          </button>
+          )}
           <h1>ByteTheMoon</h1>
-          <button type="button" className="insights-button" title={INSIGHTS_BUTTON.title}
-            onClick={() => setInsights('welcome')}>{INSIGHTS_BUTTON.label}</button>
+          {!terrainViewActive && (
+            <button type="button" className="insights-button" title={INSIGHTS_BUTTON.title}
+              onClick={() => setInsights('welcome')}>{INSIGHTS_BUTTON.label}</button>
+          )}
         </div>
         <span className="muted">Lunar Landing Site Navigator{sceneRef.current && ` · basemap: ${sceneRef.current.basemap === 'ion' ? 'Cesium Moon 3D' : 'NASA Moon Trek'}`}</span>
       </header>
-      {terrainViewActive && (
-        <div className="terrain-view-controls" role="status">
-          <span>First-person terrain view</span>
-          <button type="button" onClick={() => stopTerrainView(true)}>Return to map</button>
-        </div>
-      )}
+        {/* first person: next to the left panel, top left of the free area */}
+        
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
@@ -1901,6 +2072,19 @@ export default function App() {
               busy={ephemerisBusy} error={ephemerisError} mission={mission} onMission={setMission} />
 
           )}
+          {terrainViewActive && hud && (
+            <FpvHud heading={hud.heading} pitch={hud.pitch} fovxDeg={hud.fovx} fovyDeg={hud.fovy}
+              bodies={now ? [
+                { name: 'Sun', icon: '☀', az: now.sunAz, el: now.sunEl, color: '#ffd76a' },
+                { name: 'Earth', icon: '◐', az: now.earthAz, el: now.earthEl, color: '#8fc4ff' },
+              ] : []} />
+          )}
+          {terrainViewActive && (lookTargets.sun || lookTargets.earth) && (
+            <div className="look-at-buttons" role="group" aria-label="Turn the camera toward">
+              {lookTargets.sun && <button type="button" onClick={() => lookAt('sun')} title="Turn the camera toward the Sun">☀ Sun</button>}
+              {lookTargets.earth && <button type="button" onClick={() => lookAt('earth')} title="Turn the camera toward the Earth">◐ Earth</button>}
+            </div>
+          )}
           {viewResM !== undefined && Number.isFinite(viewResM) && viewResM > 0 && (
             <div className="map-scale" role="img"
               aria-label={`1 cm on screen corresponds to about ${formatScaleDistance(viewResM * CSS_PIXELS_PER_CM)} on the Moon`}
@@ -1911,6 +2095,7 @@ export default function App() {
                 <i />
                 <i />
               </div>
+              {cameraAltM !== undefined && <span className="map-altitude">Altitude {formatScaleDistance(cameraAltM)} above terrain</span>}
             </div>
           )}
           {reportOpen && selected && ephemeris && (

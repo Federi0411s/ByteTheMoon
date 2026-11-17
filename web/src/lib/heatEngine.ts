@@ -538,6 +538,15 @@ export class HeatEngine {
     return p
   }
 
+  /** Heights on rings x spokes around a point (first-person terrain mesh, see heatWorker.heightField). */
+  async heightField(latDeg: number, lonDeg: number, nAz: number, dists: number[]): Promise<{ heights: Float32Array; lat: number } | null> {
+    const d = await this.enqueue<{ heights?: Float32Array; lat: number; error?: string }>(
+      { type: 'heightfield', lat: (latDeg * Math.PI) / 180, lon: (lonDeg * Math.PI) / 180, nAz, dists },
+      `hf${latDeg.toFixed(3)},${lonDeg.toFixed(3)}`,
+    )
+    return d?.heights ? { heights: d.heights, lat: d.lat } : null
+  }
+
   /** Terrain horizon of one point from the finest elevation available (downloads what it needs). */
   async horizon(latDeg: number, lonDeg: number, azStepDeg = 1): Promise<HorizonMask | null> {
     const d = await this.enqueue<{ elevDeg?: Float32Array; demLevel: number; error?: string }>(
