@@ -48,7 +48,7 @@ import {
 } from './lib/analysis'
 import { eclipseCoverFrom, eclipsePossible, siteEclipses } from './lib/eclipse'
 import { DATA_URL, loadBundle, type DataBundle, type Site } from './lib/data'
-import { footprintMax, hillshade } from './lib/raster'
+import { hillshade } from './lib/raster'
 import { DEFAULT_FOOTPRINT, SLOPE_MAX_DEG, footprintAxes, footprintLabel } from './lib/requirements'
 import { SlopeMaxTiles } from './lib/slopeMax'
 import {
@@ -792,18 +792,19 @@ export default function App() {
   }, [heat, selected])
 
   // ---- temperature range + radiation at the selected site (same global model as the heatmaps) ----
-  const siteEnvKey = selected && heat && heatVersion ? `${heatVersion}|${selected.lat}|${selected.lon}` : ''
+  const envLat = selected?.lat, envLon = selected?.lon
+  const siteEnvKey = envLat !== undefined && heat && heatVersion ? `${heatVersion}|${envLat}|${envLon}` : ''
   useEffect(() => {
-    if (!heat || !heatVersion || !selected) return
+    if (!heat || !heatVersion || envLat === undefined || envLon === undefined) return
     let cancelled = false
-    const key = `${heatVersion}|${selected.lat}|${selected.lon}`
-    sampleSiteEnv(heat, selected.lat, selected.lon).then((v) => {
+    const key = `${heatVersion}|${envLat}|${envLon}`
+    sampleSiteEnv(heat, envLat, envLon).then((v) => {
       if (cancelled) return
       const ok = v && Number.isFinite(v.tMin) && Number.isFinite(v.tMax) && Number.isFinite(v.tMean) && Number.isFinite(v.fSky)
       setSiteEnv({ key, env: ok ? { tMinK: v.tMin, tMaxK: v.tMax, tMeanK: v.tMean, doseUGyH: radiationDose(v.fSky, heat.gcr), slopeDeg: v.slope } : null })
     }).catch(() => { if (!cancelled) setSiteEnv({ key, env: null }) })
     return () => { cancelled = true }
-  }, [heat, heatVersion, selected])
+  }, [heat, heatVersion, envLat, envLon])
   const siteEnvReady = siteEnv && siteEnv.key === siteEnvKey ? siteEnv : undefined
   const heatWindowMatchesPeriod = !heat || (heat.window[0] === scorePeriod[0] && heat.window[1] === scorePeriod[1])
   const siteEnvForPeriod = heatWindowMatchesPeriod ? siteEnvReady : undefined
@@ -936,20 +937,26 @@ export default function App() {
 
   // ---- derived landing-suitability score across all five Landing Score criteria ----
   const slopeMax = useMemo(() => (pyramids.slope?.encoding === 'u8x2' ? new SlopeMaxTiles(pyramids.slope) : null), [pyramids.slope])
-  // Numeric footprint slope for the selected site's Landing Score.
+  // Numeric footprint slope for the selected site's Landing Score: steepest slope inside the landing
+  // footprint from the slope pyramid (the same source as the score map).
   const [fpA, fpB, fpAz] = footprintAxes(score.footprint)
   const [fpKey, setFpKey] = useState(`${fpA},${fpB},${fpAz}`)
   useEffect(() => {
     const id = setTimeout(() => setFpKey(`${fpA},${fpB},${fpAz}`), 400) // wait for typing to stop
     return () => clearTimeout(id)
   }, [fpA, fpB, fpAz])
-  const hasSelection = !!selected
-  const footprintSlope = useMemo(() => {
-    const base = bundle?.fields.slope
-    if (!base || !hasSelection) return null
-    const [a, b, az] = fpKey.split(',').map(Number)
-    return footprintMax(base, a, b, az)
-  }, [bundle, fpKey, hasSelection])
+  const fpSiteKey = slopeMax && selLat !== undefined && selLon !== undefined ? `${selLat},${selLon},${fpKey}` : ''
+  const [siteFpSlope, setSiteFpSlope] = useState<{ key: string; deg: number }>()
+  useEffect(() => {
+    if (!fpSiteKey || !slopeMax) return
+    let cancelled = false
+    const [lat, lon, a, b, az] = fpSiteKey.split(',').map(Number)
+    slopeMax.maxAt(lon * D2R, lat * D2R, a, b, az)
+      .then((deg) => { if (!cancelled) setSiteFpSlope({ key: fpSiteKey, deg }) })
+      .catch(() => { if (!cancelled) setSiteFpSlope({ key: fpSiteKey, deg: NaN }) })
+    return () => { cancelled = true }
+  }, [fpSiteKey, slopeMax])
+  const footprintSlopeDeg = siteFpSlope?.key === fpSiteKey ? siteFpSlope.deg : undefined
   // what is on screen, for the score map's compute order (tiles in view first); updated on camera moves
   const viewRectRef = useRef<Rectangle | undefined>(undefined)
   useEffect(() => {
@@ -1596,8 +1603,8 @@ export default function App() {
   const landing = useMemo(() => {
     if (!selected || !analysisPeriodInWindow) return undefined
     const env = siteEnvForPeriod?.env ?? undefined
-    // slope: max inside the landing footprint (polar maps); elsewhere the global terrain slope at the point
-    const fp = footprintSlope?.sampleNearest(selected.lon * D2R, selected.lat * D2R)
+    // slope: max inside the landing footprint (slope pyramid); without it the terrain slope at the point
+    const fp = footprintSlopeDeg
     const slope = fp !== undefined && Number.isFinite(fp)
       ? scoreSlope(fp, footprintLabel(score.footprint).replace(/^(circle|ellipse)/, 'landing $1'), advancedSettings)
       : env && Number.isFinite(env.slopeDeg) ? scoreSlope(env.slopeDeg, 'terrain (global estimate, no footprint)', advancedSettings) : undefined
@@ -1615,7 +1622,7 @@ export default function App() {
       telecom,
       sunStats ? scoreSunlight(sunStats.pct, advancedSettings) : undefined,
     ], ['temperature', 'radiation', 'slope', 'telecommunications', 'sunlight'])
-  }, [selected, siteEnvForPeriod, footprintSlope, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow, advancedSettings])
+  }, [selected, siteEnvForPeriod, footprintSlopeDeg, score.footprint, dsnTl, sunStats, scorePeriod, analysisPeriodInWindow, advancedSettings])
 
   // ---- crew outside the habitat: AxEMU suit + NASA-STD-3001 limits (lib/human.ts), same period ----
   const human = useMemo(() => {
@@ -1781,7 +1788,7 @@ export default function App() {
       isMission: missionInWindow || landingDay !== undefined,
       settings: advancedSettings,
       footprint: score.footprint,
-      slopeField: bundle?.fields.slope,
+      slopeMax,
       dem: bundle?.fields.dem_south,
       onProgress,
       signal,

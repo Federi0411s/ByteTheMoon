@@ -5,14 +5,14 @@
  *
  * Messages (main -> worker):
  *   { type: 'init', cfg: DemConfig, hz?: HorizonConfig }   hz: precomputed horizons (lib/horizonTiles.ts), if generated
- *   { type: 'window', version, window, sun, nightSun, nightEarth, nightTimes, earth, dsn, thermalSun, thermalEarth, thermalTimes }
- *        (earth / nightEarth / thermalEarth: Earth direction + angular radius at the same instants as the
- *        Sun samples, for solar eclipses: the Earth covering the Sun, see eclipseCover)
- *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
- *   { type: 'window', ..., thermalSun: Float32Array(T2*4), thermalCount: Uint8Array(T2), thermalDt }
+ *   { type: 'window', version, window, sun, earth, dsn, nightSun, nightEarth, nightTimes,
+ *     thermalSun: Float32Array(T2*4), thermalEarth, thermalCount: Uint8Array(T2), thermalTimes, thermalDt }
+ *        earth / nightEarth / thermalEarth: Earth direction + angular radius at the same instants as the
+ *        Sun samples, for solar eclipses (the Earth covering the Sun, see eclipseCover)
  *        nightSun/nightTimes: dedicated samples for longest night (hourly up to 90 days, then every 3 h)
- *        regular steps: Sun dir xyz + distance (AU); thermalCount marks the steps that enter the
- *        statistics (the rest are warm-up before each sampled stretch)
+ *        thermalSun: regular steps, Sun dir xyz + distance (AU); thermalCount marks the steps that enter
+ *        the statistics (the rest are warm-up before each sampled stretch)
+ *   { type: 'equipot', table: EquipotTable, threshold }                               charging model (pipeline/equipot_results.csv)
  *   { type: 'tile', id, z, x, y, n, demMax, thermal?, g?, polar?, landing?, longestNight? }
  *        polar = pole sign (-1 / +1): x, y are then the indices of a polar block (lib/heatGrid.ts), sampled
  *        on an n x n lattice of the polar stereographic plane instead of a lon/lat grid

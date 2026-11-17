@@ -168,6 +168,47 @@ export class SlopeMaxTiles {
     }
   }
 
+  /**
+   * Steepest slope (deg) inside the footprint (semi-axes a >= b m, major axis azDeg clockwise from
+   * north) centred at one point (radians), for the selected site's Landing Score: the max of the
+   * pyramid cells it touches, at the finest level where it spans a bounded number of cells (as
+   * levels(), so never finer than the score map). NaN = no data.
+   */
+  async maxAt(lon: number, lat: number, a: number, b: number, azDeg: number): Promise<number> {
+    for (let L = SlopeMaxTiles.levelFor(lat, a, this.maxLevel); ; L--) {
+      L = Math.min(L, this.maxLevel) // the fine store may turn out to be absent
+      const pix = Math.PI / (TILE * 2 ** L), cellM = pix * R
+      const cols = 2 * TILE * 2 ** L, rows = TILE * 2 ** L
+      const h = 0.5 * cellM * Math.SQRT2
+      const A = a + h, B = b + h
+      const row0 = Math.min(rows - 1, Math.max(0, Math.floor((Math.PI / 2 - lat) / pix)))
+      const col0 = Math.floor((lon + Math.PI) / pix)
+      const mRow = Math.ceil(A / cellM)
+      const mCol = Math.min(Math.ceil(A / (cellM * Math.max(Math.cos(Math.abs(lat) + mRow * pix), 1e-6))), cols >> 1)
+      const r0 = Math.max(0, row0 - mRow), r1 = Math.min(rows - 1, row0 + mRow)
+      if (!(await this.loadCells(L, r0, r1, col0 - mCol, col0 + mCol)) && L > 0) continue
+      const az = (azDeg * Math.PI) / 180
+      const ux = Math.sin(az), uy = Math.cos(az) // major axis (east, north)
+      let max = 0, missing = false
+      for (let r = r0; r <= r1 && !missing; r++) {
+        const dy = (row0 - r) * cellM // north positive; rows grow southward
+        const cellE = cellM * Math.max(Math.cos(Math.PI / 2 - (r + 0.5) * pix), 1e-9)
+        for (let dc = -mCol; dc <= mCol; dc++) {
+          const dx = dc * cellE
+          const u = dx * ux + dy * uy, v = dx * uy - dy * ux
+          if ((r !== row0 || dc !== 0) && (u * u) / (A * A) + (v * v) / (B * B) > 1) continue
+          const col = (((col0 + dc) % cols) + cols) % cols
+          const tile = this.tiles.get(SlopeMaxTiles.key(L, col >> 8, r >> 8))
+          if (tile === undefined) { missing = true; break } // evicted meanwhile: try a coarser level
+          const dn = tile === null ? 0 : tile[((r & 255) << 8) | (col & 255)]
+          if (dn > max) max = dn
+        }
+      }
+      if (missing) { if (L > 0) continue; return NaN }
+      return max > 0 ? this.p.offset + this.p.scale * max : NaN
+    }
+  }
+
   /** (lon, lat) -> true where the steepest slope in the footprint is <= limitDeg (false if steeper or unknown). */
   async checkerBanded(rect: [number, number, number, number], z: number, a: number, b: number, azDeg: number, limitDeg: number): Promise<(lon: number, lat: number) => boolean> {
     const lv = await this.levelsBanded(rect, z, a, b, azDeg, [limitDeg])

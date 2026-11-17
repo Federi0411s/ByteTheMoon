@@ -530,6 +530,8 @@ export class HeatEngine {
       })
     if (cacheable) {
       this.cache.set(key, p)
+      const old = this.order.indexOf(key)
+      if (old >= 0) this.order.splice(old, 1) // recomputed after a failure: one entry, at the back
       this.order.push(key)
       while (this.order.length > 1500) this.cache.delete(this.order.shift()!)
     }

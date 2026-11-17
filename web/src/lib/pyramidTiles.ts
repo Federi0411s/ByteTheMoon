@@ -43,7 +43,8 @@ export class PyramidTiles {
     }
     p = this.fetchPixels(z, x, y)
     this.cache.set(key, p)
-    p.then((v) => { if (v === undefined) this.cache.delete(key) })
+    // a transient failure is forgotten (retried next time), unless the entry was replaced meanwhile
+    p.then((v) => { if (v === undefined && this.cache.get(key) === p) this.cache.delete(key) })
     while (this.cache.size > CACHE_TILES) this.cache.delete(this.cache.keys().next().value!)
     return p
   }
@@ -67,11 +68,9 @@ export class PyramidTiles {
     const factor = 2 ** (z - lz)
     const ox = (x - (x >> (z - lz)) * factor) * PYR_TILE
     const oy = (y - (y >> (z - lz)) * factor) * PYR_TILE
+    const vals = this.values(pixels)
+    if (factor === 1) return vals.slice()
     const out = new Float32Array(PYR_TILE * PYR_TILE)
-    if (factor === 1) {
-      for (let i = 0; i < out.length; i++) out[i] = this.value(pixels, i)
-      return out
-    }
     for (let j = 0; j < PYR_TILE; j++) {
       const sy = Math.min(Math.max((oy + j + 0.5) / factor - 0.5, 0), PYR_TILE - 1)
       const y0 = Math.min(sy | 0, PYR_TILE - 2), wy = sy - y0
@@ -80,8 +79,8 @@ export class PyramidTiles {
         const x0 = Math.min(sx | 0, PYR_TILE - 2), wx = sx - x0
         const k = y0 * PYR_TILE + x0
         out[j * PYR_TILE + i] =
-          (this.value(pixels, k) * (1 - wx) + this.value(pixels, k + 1) * wx) * (1 - wy) +
-          (this.value(pixels, k + PYR_TILE) * (1 - wx) + this.value(pixels, k + PYR_TILE + 1) * wx) * wy
+          (vals[k] * (1 - wx) + vals[k + 1] * wx) * (1 - wy) +
+          (vals[k + PYR_TILE] * (1 - wx) + vals[k + PYR_TILE + 1] * wx) * wy
       }
     }
     return out
@@ -128,6 +127,18 @@ export class PyramidTiles {
     }
   }
 
+  /** Decoded data values of a whole tile (NaN = no data), cached per tile and channel. */
+  values(px: Uint8ClampedArray, channel = 0): Float32Array {
+    let per = decoded.get(px)
+    if (!per) decoded.set(px, (per = []))
+    let out = per[channel]
+    if (!out) {
+      out = per[channel] = new Float32Array(PYR_TILE * PYR_TILE)
+      for (let i = 0; i < out.length; i++) out[i] = this.value(px, i, channel)
+    }
+    return out
+  }
+
   /** Data value of pixel i (RGBA index i*4); NaN = no data. `channel` for u8x2 (0 = R, 1 = G). */
   value(px: Uint8ClampedArray, i: number, channel = 0): number {
     const j = i * 4, { encoding, scale, offset } = this.ix
@@ -136,6 +147,9 @@ export class PyramidTiles {
     return dn === 0 ? NaN : offset + scale * dn
   }
 }
+
+/** decoded values per tile pixels and channel (dropped with the tile) */
+const decoded = new WeakMap<Uint8ClampedArray, Float32Array[]>()
 
 const shared = new Map<string, PyramidTiles>()
 /** The shared loader of a pyramid (one per pyramid name and URL). */

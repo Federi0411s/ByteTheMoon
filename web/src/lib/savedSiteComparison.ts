@@ -4,7 +4,8 @@ import type { AdvancedSettings } from './advancedSettings'
 import type { Ephemeris } from './ephemeris'
 import { dsnTimeline } from './dsn'
 import type { HeatEngine } from './heatEngine'
-import { footprintMax, type RasterField } from './raster'
+import type { RasterField } from './raster'
+import type { SlopeMaxTiles } from './slopeMax'
 import { radiationDose } from './radiation'
 import { siteThermalSeries } from './regolith'
 import { sampleSiteEnv } from './siteEnv'
@@ -26,7 +27,8 @@ export interface CompareSavedSitesOptions {
   isMission: boolean
   settings: AdvancedSettings
   footprint: Footprint
-  slopeField?: RasterField
+  /** slope pyramid (steepest slope in the landing footprint); without it the terrain slope at the point */
+  slopeMax?: SlopeMaxTiles | null
   dem?: RasterField
   onProgress?: (completed: number, total: number) => void
   signal?: AbortSignal
@@ -48,7 +50,7 @@ export async function compareSavedSites({
   isMission,
   settings,
   footprint,
-  slopeField,
+  slopeMax,
   dem,
   onProgress,
   signal,
@@ -63,7 +65,6 @@ export async function compareSavedSites({
   const stepMs = siteScoreStep(start, end)
   const walkStepMs = Math.max(3600_000, stepMs)
   const [semiMajorM, semiMinorM, azimuthDeg] = footprintAxes(footprint)
-  const slopeAt = slopeField ? footprintMaxSampler(slopeField, semiMajorM, semiMinorM, azimuthDeg) : undefined
   const evaluated: SavedSiteComparison[] = []
 
   for (let index = 0; index < sites.length; index++) {
@@ -99,7 +100,8 @@ export async function compareSavedSites({
       longestDark = Math.max(longestDark, darkRun)
     })
     const sunlitPercent = (100 * lit) / walkSeries.sunlit.length
-    const slope = slopeAt?.(site) ?? env.slope
+    const fpSlope = slopeMax ? await slopeMax.maxAt(site.lon * Math.PI / 180, site.lat * Math.PI / 180, semiMajorM, semiMinorM, azimuthDeg) : NaN
+    const slope = Number.isFinite(fpSlope) ? fpSlope : env.slope
     const score = combine([
       scoreTemperature(env.tMean - 273.15, env.tMin - 273.15, env.tMax - 273.15, settings),
       scoreRadiation(doseUGyH, (end - start) / 3600_000, settings),
@@ -114,12 +116,4 @@ export async function compareSavedSites({
   }
 
   return evaluated.sort((a, b) => Number(b.score.feasible) - Number(a.score.feasible) || b.score.score - a.score.score)
-}
-
-function footprintMaxSampler(field: RasterField, semiMajorM: number, semiMinorM: number, azimuthDeg: number) {
-  const maxField = footprintMax(field, semiMajorM, semiMinorM, azimuthDeg)
-  return (site: Site) => {
-    const value = maxField.sampleNearest(site.lon * Math.PI / 180, site.lat * Math.PI / 180)
-    return Number.isFinite(value) ? value : undefined
-  }
 }

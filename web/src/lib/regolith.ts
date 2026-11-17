@@ -7,11 +7,13 @@
  * of 3 lunations through the start of the series. The worker only returns mean/min/max per map pixel;
  * here the full time series is kept so walks can be checked against the suit limits hour by hour.
  * The surface is tilted by the local terrain gradient from the elevation raster when one covers the site
- * (as the heatmaps do with the DEM slope); otherwise it is flat. The site's own horizon mask gives the shadows.
+ * (as the heatmaps do with the DEM slope); otherwise it is flat. The site's own horizon mask gives the shadows,
+ * and solar eclipses (the Earth in front of the Sun, lib/eclipse.ts) dim the Sun as everywhere else.
  */
 import { sunVisibleOver, type HorizonMask } from './analysis'
 import { MOON_RADIUS_M, type RasterField } from './raster'
-import { SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
+import { SUN_RADIUS_KM, earthPosition, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
+import { eclipseCoverFrom } from './eclipse'
 
 const SIGMA = 5.670374419e-8, S0 = 1361, EPS = 0.95
 const A0 = 0.12, A_A = 0.06, A_B = 0.25
@@ -101,7 +103,8 @@ export function siteThermalSeries(eph: Ephemeris, site: { lat: number; lon: numb
   const n = Math.max(1, Math.floor((end - start) / stepMs) + 1)
   const Q = new Float64Array(n), sunlit = new Uint8Array(n), light = new Float32Array(n)
   for (let j = 0; j < n; j++) {
-    const p = sunPosition(eph, start + j * stepMs)
+    const t = start + j * stepMs
+    const p = sunPosition(eph, t)
     const v = [p[0] - topo.pos[0], p[1] - topo.pos[1], p[2] - topo.pos[2]]
     const d = Math.hypot(v[0], v[1], v[2])
     const el = Math.asin(Math.max(-1, Math.min(1, (v[0] * topo.up[0] + v[1] * topo.up[1] + v[2] * topo.up[2]) / d))) * R2D
@@ -110,7 +113,9 @@ export function siteThermalSeries(eph: Ephemeris, site: { lat: number; lon: numb
       (v[0] * topo.north[0] + v[1] * topo.north[1] + v[2] * topo.north[2]) / d) * R2D
     if (az < 0) az += 360
     // share of the Sun's light above the terrain horizon (same disc model as the worker: lib/sunDisc.ts)
-    const vis = sunVisibleOver(mask, az, el, Math.asin((SUN_RADIUS_KM * 1000) / d) * R2D)
+    let vis = sunVisibleOver(mask, az, el, Math.asin((SUN_RADIUS_KM * 1000) / d) * R2D)
+    // solar eclipse: the Earth hides part of the Sun (as the timeline, power and the heatmaps)
+    if (vis > 0) vis *= 1 - eclipseCoverFrom(p, earthPosition(eph, t), topo.pos)
     sunlit[j] = vis > 0.5 ? 1 : 0
     light[j] = vis
     if (cosInc <= 0 || !vis) continue

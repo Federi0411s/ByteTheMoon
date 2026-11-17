@@ -4,7 +4,7 @@ import { demPixelM } from '../lib/dem'
 import { fromPolar, heatGrid, tileGroup } from '../lib/heatGrid'
 import { polarBlockSize, polarBox, polarSign, toPolar } from '../lib/heatGrid'
 import type { HeatEngine, HeatTile, LandingHeatOptions } from '../lib/heatEngine'
-import { PYR_TILE, type PyramidTiles } from '../lib/pyramidTiles'
+import type { PyramidTiles } from '../lib/pyramidTiles'
 
 /**
  * Whole-Moon heatmap layer computed on the fly (lib/heatEngine.ts + lib/heatWorker.ts).
@@ -462,26 +462,7 @@ export class GlobalHeatProvider {
 
   /** Elevation (m) of every pixel of map tile (z, x, y), from the DEM pyramid (shared decoded tiles). */
   private async guideFor(x: number, y: number, z: number): Promise<Float32Array | undefined> {
-    const gt = this.o.guide
-    if (!gt) return undefined
-    const [lz, px] = await gt.covering(z, x, y)
-    if (!px) return undefined
-    const out = new Float32Array(TILE * TILE)
-    const f = 2 ** (z - lz)
-    const ox = (x - (x >> (z - lz)) * f) * TILE, oy = (y - (y >> (z - lz)) * f) * TILE
-    for (let j = 0; j < TILE; j++) {
-      const sy = Math.min(Math.max((oy + j + 0.5) / f - 0.5, 0), PYR_TILE - 1)
-      const y0 = Math.min(sy | 0, PYR_TILE - 2), wy = sy - y0
-      for (let i = 0; i < TILE; i++) {
-        if (f === 1) { out[j * TILE + i] = gt.value(px, j * PYR_TILE + i); continue }
-        const sx = Math.min(Math.max((ox + i + 0.5) / f - 0.5, 0), PYR_TILE - 1)
-        const x0 = Math.min(sx | 0, PYR_TILE - 2), wx = sx - x0
-        const k = y0 * PYR_TILE + x0
-        out[j * TILE + i] = (gt.value(px, k) * (1 - wx) + gt.value(px, k + 1) * wx) * (1 - wy)
-          + (gt.value(px, k + PYR_TILE) * (1 - wx) + gt.value(px, k + PYR_TILE + 1) * wx) * wy
-      }
-    }
-    return out
+    return (await this.o.guide?.mapTileValues(z, x, y)) ?? undefined
   }
 
   /** Colour of value `val` into px at pixel o (RGBA index / 4), unless masked; true if drawn. */
@@ -544,8 +525,10 @@ export class GlobalHeatProvider {
     return any
   }
 
-  /** Fills px (row 0 = north); returns false if the tile is entirely transparent. */
-  /** gridWest / gridWidth: longitude extent of the sample grid (the tile's group, >= the tile). */
+  /**
+   * Fills px (row 0 = north); returns false if the tile is entirely transparent. gridWest / gridWidth:
+   * longitude extent of the sample grid (the tile's group, >= the tile).
+   */
   private paint(px: Uint8Array, r: Rectangle, t: HeatTile, gridWest: number, gridWidth: number, x: TileExtras): boolean {
     let any = false
     const { value, polar, polarBelowLat = -Math.PI / 2, circle } = this.o

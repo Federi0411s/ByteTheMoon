@@ -227,10 +227,10 @@ export function setSunLighting(m: MoonScene, on: boolean) {
 }
 
 /**
- * Point the scene light from the Sun (position in metres, Moon-fixed). `dim` (0..1) is the share of the
- * Sun hidden by the Earth during a solar eclipse (lib/eclipse.ts), which dims the light accordingly.
+ * Point the scene light from the Sun (position in metres, Moon-fixed). During a solar eclipse the light
+ * stays as is: the eclipse overlay (App) darkens each point by its own coverage of the Sun.
  */
-export function setSunDirection(viewer: Viewer, sunPosM: [number, number, number], dim = 0) {
+export function setSunDirection(viewer: Viewer, sunPosM: [number, number, number]) {
   const dir = Cartesian3.normalize(new Cartesian3(-sunPosM[0], -sunPosM[1], -sunPosM[2]), new Cartesian3())
-  viewer.scene.light = new DirectionalLight({ direction: dir, intensity: 2.0 * Math.max(0.03, 1 - dim) })
+  viewer.scene.light = new DirectionalLight({ direction: dir, intensity: 2.0 })
 }

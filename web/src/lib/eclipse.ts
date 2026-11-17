@@ -8,7 +8,7 @@
  * see different coverage at the same instant. Coverage = area fraction of the Sun's disc hidden by the
  * Earth (uniform disc; the Earth's disc is ~3.6x the Sun's, so a total eclipse lasts up to ~3.8 h).
  */
-import { azEl, EARTH_RADIUS_KM, earthPosition, ephemerisRange, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris, type Topo, type Vec3 } from './ephemeris'
+import { azEl, EARTH_RADIUS_KM, earthPosition, ephemerisRange, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris, type Vec3 } from './ephemeris'
 
 const D2R = Math.PI / 180
 
@@ -30,11 +30,6 @@ export function eclipseCoverFrom(sunP: Vec3, earthP: Vec3, p: Vec3): number {
   const sep = Math.acos(Math.min(1, Math.max(-1, (sx * ex + sy * ey + sz * ez) / (ds * de))))
   const rs = Math.asin((SUN_RADIUS_KM * 1000) / ds), re = Math.asin((EARTH_RADIUS_KM * 1000) / de)
   return overlapFraction(rs, re, sep)
-}
-
-/** Coverage at a site at time t. */
-export function eclipseCoverAt(eph: Ephemeris, topo: Topo, t: number): number {
-  return eclipseCoverFrom(sunPosition(eph, t), earthPosition(eph, t), topo.pos as Vec3)
 }
 
 /**

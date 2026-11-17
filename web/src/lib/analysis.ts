@@ -1,12 +1,11 @@
 /**
  * Site analysis: terrain horizon + Sun/Earth tracks -> lit / Earth-visible timelines.
  *
- * Horizon masks come either precomputed from LOLA DEMs (pipeline/horizons.py, for preset sites)
- * or are computed here from the elevation raster loaded in the browser (custom sites).
+ * Horizon masks come either precomputed from LOLA DEMs (pipeline/lunar_horizon.py, for preset sites)
+ * or from the global elevation tiles by the heatmap workers (HeatEngine.horizon, custom sites).
  * Both use the same method: for each azimuth, march outward along the great circle and keep the
  * highest elevation angle, including the Moon's curvature (no atmosphere -> no refraction).
  */
-import { MOON_RADIUS_M, type RasterField } from './raster'
 import {
   azEl,
   earthPosition,
@@ -36,50 +35,6 @@ export function horizonAt(mask: HorizonMask | undefined, azDeg: number): number 
 }
 
 const D2R = Math.PI / 180
-
-/** Compute a horizon mask from an elevation field (heights in metres relative to 1737.4 km). */
-export function computeHorizon(
-  dem: RasterField,
-  latDeg: number,
-  lonDeg: number,
-  opts: { azStepDeg?: number; maxDistM?: number; observerHeightM?: number } = {},
-): HorizonMask {
-  const azStep = opts.azStepDeg ?? 1
-  const maxDist = opts.maxDistM ?? 250_000
-  const obsH = opts.observerHeightM ?? 2
-  const R = MOON_RADIUS_M
-  const lat0 = latDeg * D2R
-  const lon0 = lonDeg * D2R
-  const h0 = dem.sample(lon0, lat0)
-  const hs = (Number.isNaN(h0) ? 0 : h0) + obsH
-
-  // distances: fine near the site, coarser far away (geometric growth)
-  const res = dem.meta.resolutionM
-  const dists: number[] = []
-  for (let d = res; d < maxDist; d *= 1.02) dists.push(d)
-
-  const n = Math.round(360 / azStep)
-  const elev = new Array<number>(n)
-  const sinLat0 = Math.sin(lat0), cosLat0 = Math.cos(lat0)
-  for (let k = 0; k < n; k++) {
-    const az = k * azStep * D2R
-    const sinAz = Math.sin(az), cosAz = Math.cos(az)
-    let best = -90
-    for (const d of dists) {
-      const th = d / R // central angle
-      const sinTh = Math.sin(th), cosTh = Math.cos(th)
-      const lat = Math.asin(sinLat0 * cosTh + cosLat0 * sinTh * cosAz)
-      const lon = lon0 + Math.atan2(sinAz * sinTh * cosLat0, cosTh - sinLat0 * Math.sin(lat))
-      const h = dem.sample(lon, lat)
-      if (Number.isNaN(h)) break // left the DEM
-      const rt = R + h
-      const e = Math.atan2(rt * cosTh - (R + hs), rt * sinTh) / D2R
-      if (e > best) best = e
-    }
-    elev[k] = best
-  }
-  return { azStepDeg: azStep, elevDeg: elev, source: `${dem.meta.title} (browser)` }
-}
 
 export interface TimelineSample {
   t: number
@@ -277,35 +232,6 @@ export function summarizeIndexed(index: TimelineSummaryIndex, startMs = -Infinit
     nextEarthsetMs: first.earthVisibleFrac <= 0.5 ? null : nextEarthset > low ? samples[nextEarthset].t - first.t : null,
     longestDarkH: index.longestDarkSuffix[low] * stepH,
   }
-}
-
-export function summarize(tl: TimelineSample[]): SiteSummary {
-  return summarizeIndexed(indexTimeline(tl))
-}
-
-/**
- * Longest night (no direct sunlight above the terrain horizon) among the nights
- * that overlap [start, end], each measured over its FULL length: nights cut by the window edges are
- * followed up to `padMs` before / after (within the loaded ephemeris), so a short window that starts
- * or ends in the middle of a night does not report a fraction of it. Hours.
- */
-export function longestFullNightH(eph: Ephemeris, site: { lat: number; lon: number; heightM?: number }, mask: HorizonMask | undefined,
-  start: number, end: number, stepMs: number, padMs = 30 * 86400_000): number {
-  const [e0, e1] = ephemerisRange(eph)
-  const a = Math.max(e0, start - padMs), b = Math.min(e1, end + padMs)
-  const tl = computeTimeline(eph, site, mask, a, b, stepMs)
-  let longest = 0, runStart = -1
-  const close = (i: number) => {
-    // run = samples runStart .. i-1; keep it if it overlaps [start, end]
-    if (runStart >= 0 && tl[i - 1].t >= start && tl[runStart].t <= end) longest = Math.max(longest, (i - runStart) * stepMs)
-    runStart = -1
-  }
-  for (let i = 0; i < tl.length; i++) {
-    if (tl[i].sunVisibleFrac > 0) close(i)
-    else if (runStart < 0) runStart = i
-  }
-  close(tl.length)
-  return longest / 3600_000
 }
 
 export interface DarkInterval {

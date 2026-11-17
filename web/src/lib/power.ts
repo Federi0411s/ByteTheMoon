@@ -15,8 +15,8 @@
  * same ridge during an eclipse (rare). No temperature derating, dust or degradation.
  */
 import { sunVisibleOver, type HorizonMask } from './analysis'
-import { overlapFraction } from './eclipse'
-import { azEl, EARTH_RADIUS_KM, earthPosition, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
+import { eclipseCoverFrom } from './eclipse'
+import { azEl, earthPosition, SUN_RADIUS_KM, sunPosition, topoFrame, type Ephemeris } from './ephemeris'
 
 const D2R = Math.PI / 180
 const AU_M = 149_597_870_700
@@ -49,8 +49,6 @@ export interface PowerSample {
   irradiance: number
 }
 
-export { overlapFraction } from './eclipse'
-
 export function powerAt(eph: Ephemeris, site: { lat: number; lon: number; heightM?: number }, mask: HorizonMask | undefined, tMs: number, panel: PanelConfig): PowerSample {
   const topo = topoFrame(site.lat, site.lon, site.heightM ?? 0)
   const sunP = sunPosition(eph, tMs), earthP = earthPosition(eph, tMs)
@@ -59,14 +57,8 @@ export function powerAt(eph: Ephemeris, site: { lat: number; lon: number; height
   // share of the Sun's light over the terrain (limb-darkened disc, oblique horizon: lib/sunDisc.ts)
   const terrainFrac = sunVisibleOver(mask, s.az, s.el, rs / D2R)
 
-  // Earth in front of the Sun?
-  const e = azEl(topo, earthP)
-  const re = Math.asin((EARTH_RADIUS_KM * 1000) / e.distM)
-  const vs = [sunP[0] - topo.pos[0], sunP[1] - topo.pos[1], sunP[2] - topo.pos[2]]
-  const ve = [earthP[0] - topo.pos[0], earthP[1] - topo.pos[1], earthP[2] - topo.pos[2]]
-  const cosSep = (vs[0] * ve[0] + vs[1] * ve[1] + vs[2] * ve[2]) / (s.distM * e.distM)
-  const sep = Math.acos(Math.min(1, Math.max(-1, cosSep)))
-  const eclipseFrac = overlapFraction(rs, re, sep)
+  // Earth in front of the Sun? (topocentric, lib/eclipse.ts)
+  const eclipseFrac = eclipseCoverFrom(sunP, earthP, topo.pos)
 
   const irradiance = SOLAR_CONSTANT * (AU_M / s.distM) ** 2
   const incidence = panel.mode === 'tracking' ? 1 : Math.max(0, Math.sin(s.el * D2R))
