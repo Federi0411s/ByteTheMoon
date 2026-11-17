@@ -499,10 +499,11 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .terrain-preview-arrow { position: relative; padding: 0 10px 10px; color: #fff; font-size: 18px; text-shadow: 0 1px 5px #000; }
 .terrain-view-error { color: #ffc27a; font-size: 12px; }
 .terrain-view-controls {
-  /* first person: a single Back button in the title row's left column, level with the settings button */
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
+  /* first person: a single Back button just right of the left panel (12px + 360px wide + 12px gap) */
+  position: absolute;
+  top: 12px;
+  left: 384px;
+  z-index: 3;
   pointer-events: auto;
   padding: 6px 12px;
   border: 1px solid var(--border);
@@ -511,6 +512,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-weight: 600;
   white-space: nowrap;
 }
+.terrain-view-controls.beside-expanded { left: calc(24px + 50vw); }
+/* first person: the title centred between the Back button (~70px + gap) and the right panel, so they never overlap */
+.brand.fpv { left: 464px; right: 344px; transform: none; width: auto; max-width: none; }
+.brand.fpv.beside-expanded { left: calc(104px + 50vw); }
 .terrain-view-controls .fpv-night { color: var(--muted); font-size: 11px; font-weight: 400; }
 
 .panorama, .timeline { width: 100%; display: block; background: #0a0e1a; border-radius: 6px; margin-top: 8px; }

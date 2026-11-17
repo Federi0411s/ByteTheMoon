@@ -113,6 +113,8 @@ export interface DisplaySettings {
   reachRadiusKm: number
   /** where the heatmaps are computed: 'auto' = graphics card (WebGPU) and processor together, 'cpu' = processor only */
   compute: 'auto' | 'cpu'
+  /** first-person ground near the viewer: 'photo' = the sharpest Moon Trek orbital photo plus procedural detail, 'procedural' = the procedural regolith surrogate only (no download) */
+  fpvGround: 'photo' | 'procedural'
 }
 
 export const MOVE_SLOPE_MIN_DEG = 1
@@ -120,4 +122,4 @@ export const MOVE_SLOPE_MAX_DEG = 45
 export const REACH_RADIUS_MIN_KM = 5
 export const REACH_RADIUS_MAX_KM = 300
 /** 15 deg: a common design limit for lunar rovers */
-export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = { guided: true, moveSlopeDeg: 15, reachRadiusKm: 100, compute: 'auto' }
+export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = { guided: true, moveSlopeDeg: 15, reachRadiusKm: 100, compute: 'auto', fpvGround: 'photo' }

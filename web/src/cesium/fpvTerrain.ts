@@ -6,7 +6,13 @@
  * Cesium's geographic terrain tiles converge on the poles: near them the tiles degenerate, mixing
  * elevation sources gave seams and cliffs, and the drawn horizon disagreed with the computed one. A
  * local polar mesh has none of that, loads with one request, and has real normals, so slopes are
- * shaded by the Sun (or earthshine) and it casts / receives shadows.
+ * shaded by the Sun (or earthshine).
+ *
+ * Terrain shadows are traced in the shader over the mesh's own heights (a float texture, azimuth x
+ * ring): from each pixel towards the light, keeping the steepest terrain in the way, and the share of
+ * the Sun's disc above it (penumbra). Same heights as the horizon analysis, so a spot is in shadow
+ * exactly when the analysis says the Sun is hidden there; no shadow map (Cesium's, on a 150 km mesh
+ * shadowing itself, turned the whole ground black even under a high Sun).
  *
  * Within PHOTO_HALF_M (500 m) of the viewer the sharpest Moon Trek photo of the spot (NAC site mosaics
  * 0.5-1.3 m / px, the polar NAC mosaics ~4 m / px, else Kaguya / WAC) is draped on the mesh, normalised
@@ -30,20 +36,42 @@ import {
   ShadowMode,
   type Scene,
 } from 'cesium'
+import * as Cesium from 'cesium'
 import trekLayers from './trekLayers.json'
+
+/** renderer classes Cesium exports at runtime but leaves out of its type definitions */
+type CesiumRenderer = {
+  Texture: new (o: object) => { destroy(): void }
+  Sampler: new (o: object) => object
+  PixelFormat: { RED: number }
+  PixelDatatype: { FLOAT: number }
+  TextureMinificationFilter: { NEAREST: number }
+  TextureMagnificationFilter: { NEAREST: number }
+  TextureWrap: { CLAMP_TO_EDGE: number }
+}
+const CR = Cesium as unknown as CesiumRenderer
 
 const R = 1737400
 export const FPV_AZIMUTHS = 360
 /** radius of the photo-draped area around the viewer (m); the photo is a square of twice that */
 const PHOTO_HALF_M = 500
 const PHOTO_PX = 1024
+/** the Sun's angular radius (rad), as in the shader's shadow tracer */
+const SUN_RADIUS_RAD = 0.00466
 const TREK = 'https://trek.nasa.gov/tiles/Moon/EQ'
 const MAX_PHOTO_TILES = 80
 
+/** ring distances (m): RING0 m .. 150 km, x RING_GROWTH (the shadow tracer indexes rings by these) */
+const RING0 = 4
+const RING_GROWTH = 1.035
+/** the viewer's eye above the ground (m) */
+export const EYE_HEIGHT_M = 1.75
+/** the shadow tracer stops at the mesh's outer ring */
+const MESH_EDGE_M = 150_000
 /** ring distances (m): 4 m .. 150 km, x1.035 */
 export function fpvRings(): number[] {
   const d: number[] = []
-  for (let r = 4; r < 150_000; r *= 1.035) d.push(r)
+  for (let r = RING0; r < 150_000; r *= RING_GROWTH) d.push(r)
   return d
 }
 
@@ -68,7 +96,9 @@ void main() {
   // lighting off: a light raised ~50 deg above the horizon in the Sun's direction, so slopes and the
   // micro-relief read like a shaded map
   float raised = max(dot(normalize(m.normal), normalize(n * 1.2 + czm_lightDirectionEC)), 0.0);
-  vec3 c = amb > 0.0 ? m.diffuse * amb * (0.25 + 0.9 * raised) : m.diffuse * czm_lightColor * lambert;
+  // realistic: m.shininess = share of the light's disc not hidden by terrain; in shadow, a few % of
+  // light scattered from the sunlit terrain around
+  vec3 c = amb > 0.0 ? m.diffuse * amb * (0.25 + 0.9 * raised) : m.diffuse * czm_lightColor * lambert * mix(0.04, 1.0, m.shininess);
   out_FragColor = vec4(c, 1.0);
 }
 `
@@ -111,6 +141,45 @@ vec2 fpvCraters(vec2 en, float S, float seed) {
   }
   return g;
 }
+// mesh height (m) at local east / north q, distance d from the centre: bilinear in azimuth x ring
+float fpvHeight(vec2 q, float d) {
+  float fk = log(max(d, ${RING0.toFixed(1)}) / ${RING0.toFixed(1)}) / ${Math.log(RING_GROWTH).toFixed(8)};
+  float fa = atan(q.x, q.y) / 6.2831853 * ${FPV_AZIMUTHS.toFixed(1)};
+  fa = fa < 0.0 ? fa + ${FPV_AZIMUTHS.toFixed(1)} : fa;
+  int k0 = int(floor(fk)), a0 = int(floor(fa));
+  float wk = fk - float(k0), wa = fa - float(a0);
+  int K = textureSize(heights, 0).y;
+  k0 = clamp(k0, 0, K - 1);
+  int k1 = min(k0 + 1, K - 1), a1 = (a0 + 1) % ${FPV_AZIMUTHS};
+  a0 = a0 % ${FPV_AZIMUTHS};
+  float h00 = texelFetch(heights, ivec2(a0, k0), 0).r, h10 = texelFetch(heights, ivec2(a1, k0), 0).r;
+  float h01 = texelFetch(heights, ivec2(a0, k1), 0).r, h11 = texelFetch(heights, ivec2(a1, k1), 0).r;
+  return mix(mix(h00, h10, wa), mix(h01, h11, wa), wk);
+}
+// share of the light's disc (radius 0.267 deg) visible from (en, height hp above the centre's tangent
+// plane), light direction l in the local east / north / up frame. Heights are compared on that plane
+// (terrain lowered by d^2 / 2R for the curvature); 80 steps growing x1.16 reach the mesh edge.
+float fpvLit(vec2 en, float hp, vec3 l) {
+  float hz = length(l.xy);
+  if (hz < 1e-5) return 1.0;
+  vec2 dir = l.xy / hz;
+  float tanE = l.z / hz;
+  float tanLow = tan(atan(tanE) - 0.00466);                    // the disc's lower edge
+  float steep = -1e9;                                         // steepest terrain seen: (h - hp) / t
+  float t = max(0.6, 0.004 * length(en));
+  for (int i = 0; i < 80; i++) {
+    vec2 q = en + dir * t;
+    float d = length(q);
+    if (d > ${MESH_EDGE_M.toFixed(1)}) break;
+    float h = fpvHeight(q, d) - d * d / ${(2 * 1737400).toFixed(1)};
+    steep = max(steep, (h - hp - 0.3 - 0.002 * t) / t);
+    if (hp + t * tanLow > maxHeight) break;                   // above every peak: nothing more can block
+    t *= 1.16;
+  }
+  float margin = (atan(tanE) - atan(steep)) / 0.00466;        // light centre above the terrain, in disc radii
+  float y = clamp(-margin, -1.0, 1.0);
+  return (acos(y) - y * sqrt(1.0 - y * y)) / 3.14159265;
+}
 czm_material czm_getMaterial(czm_materialInput mi) {
   czm_material m = czm_getDefaultMaterial(mi);
   vec3 eEC = normalize(czm_viewRotation * eastAxis), nEC = normalize(czm_viewRotation * northAxis);
@@ -149,6 +218,14 @@ czm_material czm_getMaterial(czm_materialInput mi) {
   }
   m.normal = normalize(mi.normalEC - g.x * eEC - g.y * nEC);
   m.specular = ambient;
+  // terrain shadow (realistic lighting only): height of this point above the centre's tangent plane
+  // from its eye-relative position, light direction in the local frame
+  m.shininess = 1.0;
+  if (ambient <= 0.0) {
+    vec3 uEC = normalize(czm_viewRotation * upAxis);
+    vec3 l = czm_lightDirectionEC;
+    m.shininess = fpvLit(en, eyeHeight + dot(p, uEC), vec3(dot(l, eEC), dot(l, nEC), dot(l, uEC)));
+  }
   m.alpha = 1.0;
   return m;
 }
@@ -161,6 +238,13 @@ export interface FpvTerrain {
   /** mesh height (m) at lat / lon (deg); NaN outside the mesh */
   heightAt(latDeg: number, lonDeg: number): number
   setAmbient(a: number): void
+  /** drape the Moon Trek photo near the viewer (loaded on first use) or show the procedural regolith only */
+  setPhoto(on: boolean): void
+  /**
+   * Share (0..1) of the Sun's disc above the terrain horizon seen from the eye at the centre, for a Sun
+   * at sunPosM (Moon-fixed, m): same heights and curvature as the shader's shadow tracer (fpvLit)
+   */
+  sunVisible(sunPosM: [number, number, number]): number
   destroy(): void
 }
 
@@ -175,7 +259,7 @@ function dest(sinP: number, cosP: number, lon0: number, sa: number, ca: number, 
  * heights: out[0] = centre, then azimuth-major (FPV_AZIMUTHS x rings), from HeatEngine.heightField.
  * Missing samples (NaN) take their ring neighbour's value.
  */
-export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, heights: Float32Array, rings: number[]): FpvTerrain {
+export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, heights: Float32Array, rings: number[], usePhoto = true): FpvTerrain {
   const nAz = FPV_AZIMUTHS, K = rings.length
   const lat0 = (latDeg * Math.PI) / 180, lon0 = (lonDeg * Math.PI) / 180
   const sinP = Math.sin(lat0), cosP = Math.cos(lat0)
@@ -225,12 +309,19 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
   // photo: a 1 px grey placeholder until loaded (weight 0 then)
   const blank = document.createElement('canvas')
   blank.width = blank.height = 1
+  const up = new Cartesian3(cosP * Math.cos(lon0), cosP * Math.sin(lon0), sinP)
   const east = new Cartesian3(-Math.sin(lon0), Math.cos(lon0), 0)
   const north = new Cartesian3(-sinP * Math.cos(lon0), -sinP * Math.sin(lon0), cosP)
   const material = new Material({
     fabric: {
       type: 'FpvRegolith',
-      uniforms: { ambient: 0.0, image: blank.toDataURL(), photoGain: 0.0, eastAxis: east, northAxis: north },
+      uniforms: {
+        ambient: 0.0, image: blank.toDataURL(), photoGain: 0.0, eastAxis: east, northAxis: north,
+        // terrain shadows: mesh heights (float texture, set below), the eye's height, the local up
+        // (the default image id loads nothing: a placeholder image finishing its load after the height
+        // texture was set replaced it and destroyed it)
+        heights: Material.DefaultImageId, maxHeight: 0.0, eyeHeight: h0 + EYE_HEIGHT_M, upAxis: up,
+      },
       source: REGOLITH_MATERIAL,
     },
   })
@@ -241,17 +332,50 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
       fragmentShaderSource: GROUND_FS,
     }),
     asynchronous: false,
-    shadows: ShadowMode.ENABLED,
+    shadows: ShadowMode.DISABLED, // terrain shadows are traced in the shader (REGOLITH_MATERIAL fpvLit)
   })) as Primitive
+  // mesh heights as a float texture (x = azimuth, y = ring; heights relative to the centre's tangent
+  // plane come from these minus d^2 / 2R in the shader) and the highest point on that plane
+  const hTex = new Float32Array(nAz * K)
+  let maxHeight = -1e9
+  for (let a = 0; a < nAz; a++) for (let k = 0; k < K; k++) {
+    const h = H[v(a, k)]
+    hTex[k * nAz + a] = h
+    maxHeight = Math.max(maxHeight, h - (rings[k] * rings[k]) / (2 * R))
+  }
+  const heightTexture = new CR.Texture({
+    context: (scene as unknown as { context: object }).context,
+    width: nAz, height: K,
+    pixelFormat: CR.PixelFormat.RED, pixelDatatype: CR.PixelDatatype.FLOAT,
+    source: { arrayBufferView: hTex }, flipY: false,
+    sampler: new CR.Sampler({
+      minificationFilter: CR.TextureMinificationFilter.NEAREST, magnificationFilter: CR.TextureMagnificationFilter.NEAREST,
+      wrapS: CR.TextureWrap.CLAMP_TO_EDGE, wrapT: CR.TextureWrap.CLAMP_TO_EDGE,
+    }),
+  })
+  material.uniforms.heights = heightTexture
+  material.uniforms.maxHeight = maxHeight
   scene.requestRender()
 
+  // photo off: photoGain 0 gives the procedural regolith alone (the shader skips the photo weight)
   let disposed = false
-  void loadPhoto(lat0, lon0).then((photo) => {
-    if (disposed || !photo) return
-    material.uniforms.image = photo.url
-    material.uniforms.photoGain = photo.gain
+  let photo: { url: string; gain: number } | null = null
+  let photoRequested = false
+  const applyPhoto = () => {
+    if (usePhoto && photo) material.uniforms.image = photo.url
+    material.uniforms.photoGain = usePhoto && photo ? photo.gain : 0
     scene.requestRender()
-  })
+  }
+  const requestPhoto = () => {
+    if (photoRequested) return
+    photoRequested = true
+    void loadPhoto(lat0, lon0).then((p) => {
+      if (disposed || !p) return
+      photo = p
+      applyPhoto()
+    })
+  }
+  if (usePhoto) requestPhoto()
 
   return {
     primitive,
@@ -270,7 +394,38 @@ export function buildFpvTerrain(scene: Scene, latDeg: number, lonDeg: number, he
       return (g(a0, k0) * (1 - wa) + g(a0 + 1, k0) * wa) * (1 - wk) + (g(a0, k0 + 1) * (1 - wa) + g(a0 + 1, k0 + 1) * wa) * wk
     },
     setAmbient(a) { material.uniforms.ambient = a; scene.requestRender() },
-    destroy() { disposed = true; scene.primitives.remove(primitive) },
+    sunVisible(sunPosM) {
+      // Sun direction in the local east / north / up frame (it is far enough to ignore the eye's offset)
+      const n = Math.hypot(sunPosM[0], sunPosM[1], sunPosM[2])
+      const sx = sunPosM[0] / n, sy = sunPosM[1] / n, sz = sunPosM[2] / n
+      const se = sx * east.x + sy * east.y + sz * east.z
+      const sn = sx * north.x + sy * north.y + sz * north.z
+      const su = sx * up.x + sy * up.y + sz * up.z
+      const elev = Math.atan2(su, Math.hypot(se, sn))
+      // terrain horizon at the Sun's azimuth: steepest (height on the tangent plane - eye) / distance
+      // over the rings, linear between the two nearest spokes
+      const fa = ((((Math.atan2(se, sn) / (2 * Math.PI)) * nAz) % nAz) + nAz) % nAz
+      const a0 = Math.floor(fa), wa = fa - a0
+      const eye = h0 + EYE_HEIGHT_M
+      let steep = -Infinity
+      for (let k = 0; k < K; k++) {
+        const d = rings[k]
+        const h = H[v(a0, k)] * (1 - wa) + H[v(a0 + 1, k)] * wa - (d * d) / (2 * R)
+        steep = Math.max(steep, (h - eye) / d)
+      }
+      const y = Math.max(-1, Math.min(1, -(elev - Math.atan(steep)) / SUN_RADIUS_RAD))
+      return (Math.acos(y) - y * Math.sqrt(1 - y * y)) / Math.PI
+    },
+    setPhoto(on) {
+      usePhoto = on
+      if (on) requestPhoto()
+      applyPhoto()
+    },
+    destroy() {
+      disposed = true
+      scene.primitives.remove(primitive)
+      if (!material.isDestroyed()) material.destroy() // with its textures (the photo, the height texture)
+    },
   }
 }
 

@@ -128,6 +128,20 @@ export function SettingsDialog({
             <p className="muted">Steepest terrain a rover or crew can drive up or down. Used by the Reachable area map layer.</p>
           </fieldset>
 
+          <fieldset className="advanced-section">
+            <legend>First-person view</legend>
+            <label className="slider">
+              <span>Ground texture</span>
+              <select value={draftDisplay.fpvGround} onChange={(e) => setDraftDisplay((d) => ({ ...d, fpvGround: e.target.value as DisplaySettings['fpvGround'] }))}>
+                <option value="photo">Real orbital photos + procedural detail</option>
+                <option value="procedural">Procedural surrogate only</option>
+              </select>
+            </label>
+            <p className="muted">{draftDisplay.fpvGround === 'photo'
+              ? 'Drapes the sharpest Moon Trek photo of the spot (LROC NAC, down to ~0.5 m/px) within 500 m of you, with procedural grain on top. Needs a download each time you enter.'
+              : 'Synthetic regolith only: procedural brightness mottling and micro-relief over the elevation-model terrain, no photo download. Faster, but small rocks and craters seen in the photo are not shown.'}</p>
+          </fieldset>
+
           <details className="settings-advanced">
             <summary>Advanced settings <InfoTip topic="advancedSettings" /></summary>
             <div className="settings-advanced-content">

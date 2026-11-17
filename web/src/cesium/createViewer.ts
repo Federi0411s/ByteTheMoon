@@ -230,9 +230,10 @@ export function setSunLighting(m: MoonScene, on: boolean, firstPerson = false) {
   if (m.tileset) m.tileset.customShader = on ? undefined : new CustomShader({ lightingModel: LightingModel.UNLIT })
   const globe = m.viewer.scene.globe
   if (globe) globe.enableLighting = on
-  // cast shadows: always with the 3D tileset; on the Moon Trek globe only in the first-person view
-  // (a shadow map is costly and invisible from orbit)
-  const shadows = on && (!!m.tileset || firstPerson)
+  // shadow map: only for the 3D tileset. The first-person terrain traces its own shadows in its shader
+  // (cesium/fpvTerrain.ts); a shadow map on that 150 km mesh shadowed it onto itself (black ground
+  // under a high Sun), and the Moon Trek globe from orbit does not need one
+  const shadows = on && !!m.tileset
   m.viewer.shadows = shadows
   if (globe) globe.shadows = shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED
   if (shadows) {
@@ -240,7 +241,7 @@ export function setSunLighting(m: MoonScene, on: boolean, firstPerson = false) {
     // no atmosphere: shadows are almost black (Cesium's default leaves 30 % light), and with the Sun a
     // degree above the polar horizon they run for tens of km (default range: 5 km)
     sm.darkness = 0.04
-    sm.maximumDistance = firstPerson ? 60_000 : 5_000
+    sm.maximumDistance = firstPerson ? 60_000 : 5_000 // the tileset seen from the ground: shadows run for km
     sm.size = 4096
     sm.softShadows = false
   }
@@ -264,33 +265,63 @@ export function earthshineRatio(sunPosM: [number, number, number], earthPosM: [n
   return (2 / 3) * 0.3 * (6371e3 / d) ** 2 * phi
 }
 
-/** Light the scene by earthshine only (night side), at its physical share of sunlight x NIGHT_EXPOSURE. */
-export function setEarthLight(viewer: Viewer, sunPosM: [number, number, number], earthPosM: [number, number, number]) {
-  const dir = Cartesian3.normalize(new Cartesian3(-earthPosM[0], -earthPosM[1], -earthPosM[2]), new Cartesian3())
-  // only the part of the Earth's disc (radius ~0.95 deg) above the camera's horizon lights the ground:
-  // with the Earth set too, the lunar night is dark (starlight only)
+/**
+ * Earthshine reaching the camera as a share of direct sunlight: only the part of the Earth's disc
+ * (radius ~0.95 deg) above the camera's horizon lights the ground (with the Earth set too, the lunar
+ * night is dark: starlight only, kept as a 0.2 % floor so the ground stays faintly visible).
+ */
+export function earthshineAtCamera(viewer: Viewer, sunPosM: [number, number, number], earthPosM: [number, number, number]) {
   const c = viewer.camera.positionWC
   const up = Cartesian3.normalize(c, new Cartesian3())
   const toEarth = Cartesian3.normalize(Cartesian3.subtract(new Cartesian3(...earthPosM), c, new Cartesian3()), new Cartesian3())
   const el = Math.asin(Cartesian3.dot(up, toEarth)) * (180 / Math.PI)
   const above = Math.min(1, Math.max(0, (el + 0.95) / 1.9))
-  const intensity = 2.0 * earthshineRatio(sunPosM, earthPosM) * NIGHT_EXPOSURE * Math.max(above, 0.002)
+  return earthshineRatio(sunPosM, earthPosM) * Math.max(above, 0.002)
+}
+
+/** Light the scene by earthshine only (night side), at its physical share of sunlight x the camera exposure. */
+export function setEarthLight(viewer: Viewer, sunPosM: [number, number, number], earthPosM: [number, number, number], exposure = NIGHT_EXPOSURE) {
+  const dir = Cartesian3.normalize(new Cartesian3(-earthPosM[0], -earthPosM[1], -earthPosM[2]), new Cartesian3())
+  const intensity = 2.0 * earthshineAtCamera(viewer, sunPosM, earthPosM) * exposure
   viewer.scene.light = new DirectionalLight({ direction: dir, color: new Color(0.86, 0.92, 1.0, 1), intensity })
 }
 
-/** Is the Sun's disc entirely below the camera's (geometric) horizon? */
-export function sunBelowCameraHorizon(viewer: Viewer, sunPosM: [number, number, number]) {
-  const c = viewer.camera.positionWC
-  const up = Cartesian3.normalize(c, new Cartesian3())
-  const s = Cartesian3.normalize(Cartesian3.subtract(new Cartesian3(...sunPosM), c, new Cartesian3()), new Cartesian3())
-  return Math.asin(Cartesian3.dot(up, s)) < -0.27 * (Math.PI / 180)
+/**
+ * First-person camera exposure for a Sun whose disc is a share sunVisible (0..1) above the terrain
+ * horizon, with earthshine (share of sunlight) as the darkest scene: 1 in full sunlight, NIGHT_EXPOSURE
+ * once the Sun is dimmer than the earthshine, and in between sunVisible^-g, the power g joining the two
+ * ends. Continuous, so sunrise / sunset fade instead of jumping x NIGHT_EXPOSURE (the jump, with the
+ * Sun's glare raised by the same factor while a sliver of it still showed over the terrain, flashed).
+ * The apparent brightness (exposure x sunVisible) falls smoothly from 1 to the night level, never above.
+ */
+export function fpvExposure(sunVisible: number, earthshine: number) {
+  const night = Math.min(Math.max(earthshine, 1e-9), 0.5 / NIGHT_EXPOSURE)
+  if (sunVisible <= night) return NIGHT_EXPOSURE
+  const g = Math.log(NIGHT_EXPOSURE) / Math.log(1 / night)
+  return Math.min(NIGHT_EXPOSURE, Math.max(1, sunVisible ** -g))
 }
 
 /**
- * Point the scene light from the Sun (position in metres, Moon-fixed). During a solar eclipse the light
- * stays as is: the eclipse overlay (App) darkens each point by its own coverage of the Sun.
+ * Sunlight left by a solar eclipse (the Earth covering a share `cover` of the Sun's disc, as seen from
+ * the camera): the uncovered part of the disc, plus sunlight refracted through the Earth's atmosphere
+ * into its shadow - in totality ~1.5e-4 of full sunlight and copper red (Danjon L ~2-3; why the Moon
+ * turns red in a lunar eclipse seen from Earth), negligible until the disc is almost covered.
  */
-export function setSunDirection(viewer: Viewer, sunPosM: [number, number, number]) {
+export function eclipseSunlight(cover: number) {
+  const refracted = 1.5e-4 * cover ** 8
+  return { level: 1 - cover + refracted, refracted }
+}
+
+/**
+ * Point the scene light from the Sun (position in metres, Moon-fixed), at 2 x the camera exposure.
+ * cover: share of the Sun's disc hidden by the Earth (first-person view; from orbit the eclipse overlay
+ * in App darkens each point by its own coverage instead): the light dims with it and turns copper red
+ * in totality (eclipseSunlight).
+ */
+export function setSunDirection(viewer: Viewer, sunPosM: [number, number, number], exposure = 1, cover = 0) {
   const dir = Cartesian3.normalize(new Cartesian3(-sunPosM[0], -sunPosM[1], -sunPosM[2]), new Cartesian3())
-  viewer.scene.light = new DirectionalLight({ direction: dir, intensity: 2.0 })
+  const { level, refracted } = eclipseSunlight(cover)
+  const red = refracted / Math.max(level, 1e-12) // share of the light that is refracted
+  const color = new Color(1, 1 - 0.58 * red, 1 - 0.8 * red, 1) // white -> copper (1, 0.42, 0.2)
+  viewer.scene.light = new DirectionalLight({ direction: dir, color, intensity: 2.0 * exposure * level })
 }

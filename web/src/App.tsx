@@ -20,8 +20,8 @@ import {
 } from 'cesium'
 import { createCelestial, type Celestial } from './cesium/celestial'
 import { FpvHud } from './components/FpvHud'
-import { FPV_AZIMUTHS, buildFpvTerrain, fpvRings, type FpvTerrain } from './cesium/fpvTerrain'
-import { NIGHT_EXPOSURE, earthshineRatio, setEarthLight, sunBelowCameraHorizon } from './cesium/createViewer'
+import { EYE_HEIGHT_M, FPV_AZIMUTHS, buildFpvTerrain, fpvRings, type FpvTerrain } from './cesium/fpvTerrain'
+import { NIGHT_EXPOSURE, eclipseSunlight, earthshineAtCamera, earthshineRatio, fpvExposure, setEarthLight } from './cesium/createViewer'
 import { createMoonScene, flyToSite, setSunDirection, setSunLighting, viewFromEarth, type MoonScene } from './cesium/createViewer'
 import { asProvider, FieldImageryProvider, levelForResolution } from './cesium/FieldImageryProvider'
 import { PyramidImageryProvider } from './cesium/PyramidImageryProvider'
@@ -171,8 +171,6 @@ function removeLayer(scene: MoonScene, layer: ImageryLayer) {
 
 /** landmark tags: fully shown up to ~32,000 km from the camera, gone by ~50,000 km */
 const LANDMARK_FADE = new NearFarScalar(3.2e7, 1, 5.0e7, 0)
-/** eye height of the first-person view above the terrain (m) */
-const EYE_HEIGHT_M = 1.75
 
 const FUTURE_SITE_GROUPS = new Set([
   'Artemis III candidate regions',
@@ -341,8 +339,17 @@ export default function App() {
   const terrainSiteId = useRef<string | undefined>(undefined)
   const terrainRequest = useRef(0)
   const fpvTerrainRef = useRef<FpvTerrain | null>(null)
+  // first-person ground texture (Settings): orbital photo + procedural detail, or the procedural surrogate only
+  const fpvPhoto = display.fpvGround === 'photo'
+  const fpvPhotoRef = useRef(fpvPhoto)
+  useEffect(() => {
+    fpvPhotoRef.current = fpvPhoto
+    fpvTerrainRef.current?.setPhoto(fpvPhoto)
+  }, [fpvPhoto])
   const lightingRef = useRef(false)
   const restoreElevationOnExit = useRef(false)
+  // the first-person view opens with realistic Sun lighting; the map gets its own setting back on exit
+  const lightingBeforeFpv = useRef<boolean | null>(null)
   const [iceVisible, setIceVisible] = useState(false)
   const [iceError, setIceError] = useState<string>()
   const [pitsVisible, setPitsVisible] = useState(false)
@@ -392,6 +399,10 @@ export default function App() {
     setTerrainViewActive(false)
     setTerrainViewLoading(false)
     setTerrainViewError(undefined)
+    if (lightingBeforeFpv.current !== null) {
+      setLighting(lightingBeforeFpv.current)
+      lightingBeforeFpv.current = null
+    }
     if (restoreElevationOnExit.current) {
       setBasemapState((state) => ({ ...state, elevation: false }))
       restoreElevationOnExit.current = false
@@ -574,7 +585,7 @@ export default function App() {
       if (!field || !Number.isFinite(field.heights[0])) throw new Error('Elevation data is unavailable for this point.')
       const lat = (field.lat * 180) / Math.PI
       fpvTerrainRef.current?.destroy()
-      const terrain = buildFpvTerrain(viewer.scene, lat, site.lon, field.heights, rings)
+      const terrain = buildFpvTerrain(viewer.scene, lat, site.lon, field.heights, rings, fpvPhotoRef.current)
       fpvTerrainRef.current = terrain
       terrain.setAmbient(lightingRef.current ? 0 : 0.9)
       viewer.scene.globe.show = false // the mesh is the ground now
@@ -582,6 +593,8 @@ export default function App() {
         destination: Cartesian3.fromDegrees(site.lon, lat, terrain.centerHeight + EYE_HEIGHT_M, Ellipsoid.MOON),
         orientation: { heading: 0, pitch: 0, roll: 0 },
       })
+      if (lightingBeforeFpv.current === null) lightingBeforeFpv.current = lightingRef.current
+      setLighting(true)
       setTerrainViewActive(true)
     } catch (error) {
       if (requestId !== terrainRequest.current) return
@@ -1360,17 +1373,33 @@ export default function App() {
     const sun = sunPosition(eph, t)
     const earth = earthPosition(eph, t)
     // (during a solar eclipse the shadow overlay below darkens each point by its own coverage)
-    // first person at night (Sun below the horizon): earthshine only, no shadow map (cheap and real);
-    // otherwise the Sun
-    const night = lighting && terrainViewActive && sunBelowCameraHorizon(scene.viewer, sun)
-    if (night) setEarthLight(scene.viewer, sun, earth)
-    else setSunDirection(scene.viewer, sun)
+    // first person with Sun lighting: the camera exposure follows the share of the Sun's disc above the
+    // terrain horizon (fpvExposure: continuous, so sunrise / sunset fade instead of flashing); the light
+    // is the Sun until it is dimmer than the earthshine, then the Earth (both equal at the switch). The
+    // ground shader dims each pixel by its own share of the disc, so the light carries only the exposure.
+    // Solar eclipse (the Earth in front of the Sun): the share of the disc it covers from the camera
+    // goes into the Sun's visible share, so the light, the exposure and the night switch all follow
+    // it continuously; in totality only copper-red refracted sunlight is left (eclipseSunlight), and
+    // the auto-exposure rises until the red ground and the Earth's red-rimmed black disc show.
+    const fpv = lighting && terrainViewActive ? fpvTerrainRef.current : null
+    const cam = scene.viewer.camera.positionWC
+    const cover = fpv ? eclipseCoverFrom(sun, earth, [cam.x, cam.y, cam.z]) : 0
+    const eclipse = eclipseSunlight(cover)
+    const terrainVis = fpv ? fpv.sunVisible(sun) : 1
+    const sunVis = terrainVis * eclipse.level
+    const earthshine = fpv ? earthshineAtCamera(scene.viewer, sun, earth) : 0
+    // the refracted light counts as the darkest scene in totality (as the earthshine at night: the
+    // Earth's night side faces us then, so its earthshine is ~0)
+    const exposure = fpv ? fpvExposure(sunVis, Math.max(earthshine, terrainVis * eclipse.refracted)) : 1
+    const night = !!fpv && sunVis <= earthshine
+    if (night) setEarthLight(scene.viewer, sun, earth, exposure)
+    else setSunDirection(scene.viewer, sun, exposure, cover)
     setNightView(night ? earthshineRatio(sun, earth) : null)
     // the real Earth (size, texture, rotation, phase) and Sun (at infinity, true angular size): cesium/celestial.ts
     if (!celestialRef.current) celestialRef.current = createCelestial(scene.viewer, (window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL ?? '/cesiumStatic')
     celestialRef.current.update(t, sun, earth)
     // the camera's exposure: raised for earthshine at night, and the Earth / Sun with it
-    celestialRef.current.setExposure(night ? NIGHT_EXPOSURE : 1)
+    celestialRef.current.setExposure(exposure)
     if (terrainViewActive) celestialRef.current.loadDetail()
   }, [ready, ephemeris, t, lighting, terrainViewActive, terrainCamTick])
   useEffect(() => () => { celestialRef.current?.dispose(); celestialRef.current = undefined }, [])
@@ -1964,15 +1993,8 @@ export default function App() {
   return (
     <div className="app">
       <div ref={containerRef} className="globe" />
-      <header className="brand">
+      <header className={`brand${terrainViewActive ? (sitePanelExpanded ? ' fpv beside-expanded' : ' fpv') : ''}`}>
         <div className="brand-title">
-          {/* first person: Back, in the title row's left column (mirrors the settings button; never overlaps the title) */}
-          {terrainViewActive && (
-            <button type="button" className="terrain-view-controls fpv-back" onClick={() => stopTerrainView(true)}
-            title={nightView !== null ? `Back to the map · night: lit by earthshine only (${(nightView * 110_000).toFixed(1)} lux, ${(nightView * 1e5).toFixed(2)}e-5 of sunlight), shown brightened ×${NIGHT_EXPOSURE} like a dark-adapted eye` : 'Back to the map'}>
-            ← Back{nightView !== null && <span className="fpv-night"> · night (earthshine)</span>}
-          </button>
-          )}
           <h1>ByteTheMoon</h1>
           {!terrainViewActive && (
             <button type="button" className="insights-button" title={INSIGHTS_BUTTON.title}
@@ -1981,8 +2003,6 @@ export default function App() {
         </div>
         <span className="muted">Lunar Landing Site Navigator{sceneRef.current && ` · basemap: ${sceneRef.current.basemap === 'ion' ? 'Cesium Moon 3D' : 'NASA Moon Trek'}`}</span>
       </header>
-        {/* first person: next to the left panel, top left of the free area */}
-        
       {bundle && (
         <>
           <aside className={`side left${sitePanelExpanded ? ' expanded' : ''}`}>
@@ -2013,6 +2033,13 @@ export default function App() {
               terrainViewActive={terrainViewActive} terrainViewLoading={terrainViewLoading}
               terrainViewError={terrainViewError} onToggleTerrainView={() => void toggleTerrainView()} />
           </aside>
+          {/* first person: Back, just right of the left panel (follows it when expanded) */}
+          {terrainViewActive && (
+            <button type="button" className={`terrain-view-controls fpv-back${sitePanelExpanded ? ' beside-expanded' : ''}`} onClick={() => stopTerrainView(true)}
+              title={nightView !== null ? `Back to the map · night: lit by earthshine only (${(nightView * 110_000).toFixed(1)} lux, ${(nightView * 1e5).toFixed(2)}e-5 of sunlight), shown brightened ×${NIGHT_EXPOSURE} like a dark-adapted eye` : 'Back to the map'}>
+              ← Back{nightView !== null && <span className="fpv-night"> · night (earthshine)</span>}
+            </button>
+          )}
           {settingsOpen && (
             <SettingsDialog
               settings={advancedSettings}
